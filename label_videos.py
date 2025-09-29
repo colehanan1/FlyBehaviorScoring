@@ -431,6 +431,21 @@ def main():
     # ---------- GUI ----------
     root = tk.Tk()
     root.title("Fly Behavior Scoring")
+    try:
+        root.iconbitmap(default='')
+    except Exception:
+        pass
+    root.configure(bg="#f8f8fb")
+
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+    style.configure("Likert.TRadiobutton", padding=6)
+    style.map("Likert.TRadiobutton", background=[("active", "#e6eefc")])
+    style.configure("Likert.TLabel", background="#f8f8fb")
+    style.configure("Likert.TFrame", background="#f8f8fb")
 
     # Compute max canvas size
     max_w, max_h = 640, 480
@@ -443,37 +458,60 @@ def main():
             max_w = max(max_w, w)
             max_h = max(max_h, h)
 
-    canvas = tk.Canvas(root, width=max_w, height=max_h, bg="black")
+    canvas = tk.Canvas(root, width=max_w, height=max_h, bg="black", highlightthickness=0)
     canvas.pack()
 
-    info = tk.Label(root, text="Watch the first 90 seconds. Score each interval 0 (NR) … 10 (Strongest). Submit to reveal data metrics.")
-    info.pack(pady=6)
+    info = ttk.Label(root, text="Watch the first 90 seconds. Provide a rating for each interval using the scale below, then submit to reveal the data metrics.", style="Likert.TLabel", wraplength=max_w)
+    info.pack(pady=(10, 6), padx=16, anchor="w")
 
-    # Rating row
-    rating_frame = tk.Frame(root)
-    rating_frame.pack(pady=4, fill="x")
     score_vars = {}
-    labels = [("0 (NR)",0),("1",1),("2",2),("3",3),("4",4),("5 (Average)",5),("6",6),("7",7),("8",8),("9",9),("10 (Strongest)",10)]
-    for seg_key, seg_cfg in SEGMENTS.items():
-        seg_frame = tk.LabelFrame(rating_frame, text=seg_cfg['label'])
-        seg_frame.pack(fill="x", pady=2)
+
+    def build_likert_scale(parent, seg_key, seg_cfg):
+        container = ttk.Frame(parent, padding=(12, 10), style="Likert.TFrame")
+        container.pack(fill="x", pady=4)
+        ttk.Label(container, text=seg_cfg['label'], font=("Helvetica", 13, "bold"), style="Likert.TLabel").pack(anchor="w")
+
+        descriptors = ttk.Frame(container, style="Likert.TFrame")
+        descriptors.pack(fill="x", pady=(8, 4))
+        ttk.Label(descriptors, text="No Reaction", style="Likert.TLabel").pack(side="left")
+        ttk.Label(descriptors, text="Strong Reaction", style="Likert.TLabel").pack(side="right")
+
+        scale_inner = ttk.Frame(container, style="Likert.TFrame")
+        scale_inner.pack()
+
         var = tk.IntVar(value=-1)
         score_vars[seg_key] = var
-        for text,val in labels:
-            tk.Radiobutton(seg_frame, text=text, variable=var, value=val).pack(side=tk.LEFT)
+
+        for idx, val in enumerate(range(0, 11)):
+            cell = ttk.Frame(scale_inner, padding=2, style="Likert.TFrame")
+            cell.grid(row=0, column=idx, padx=6)
+            btn = ttk.Radiobutton(cell, variable=var, value=val, style="Likert.TRadiobutton", takefocus=0)
+            btn.pack()
+            ttk.Label(cell, text=str(val), style="Likert.TLabel").pack(pady=(4, 0))
+
+    # Rating row
+    rating_frame = ttk.Frame(root, padding=(8, 4), style="Likert.TFrame")
+    rating_frame.pack(pady=4, fill="x")
+    for seg_key, seg_cfg in SEGMENTS.items():
+        build_likert_scale(rating_frame, seg_key, seg_cfg)
 
     # Buttons
-    btns = tk.Frame(root); btns.pack(pady=4)
-    submit_btn = tk.Button(btns, text="Submit Score")
-    next_btn   = tk.Button(btns, text="Next Video", state=tk.DISABLED)
-    replay_btn = tk.Button(btns, text="Replay Video")
+    btns = ttk.Frame(root, padding=6, style="Likert.TFrame"); btns.pack(pady=8)
+    submit_btn = ttk.Button(btns, text="Submit Score")
+    next_btn   = ttk.Button(btns, text="Next Video", state=tk.DISABLED)
+    replay_btn = ttk.Button(btns, text="Replay Video")
     submit_btn.grid(row=0,column=0,padx=4)
     next_btn.grid(row=0,column=1,padx=4)
     replay_btn.grid(row=0,column=2,padx=4)
 
     # Data panel (revealed post-submit)
-    data_lbl = tk.Label(root, text="", fg="blue", justify=tk.LEFT, anchor="w")
-    data_lbl.pack(pady=6, fill="x")
+    data_panel = ttk.Frame(root, padding=(12, 8), style="Likert.TFrame")
+    data_panel.pack(pady=(4, 10), fill="both", expand=True)
+    data_text = tk.Text(data_panel, height=8, wrap="word", state="disabled", bg="#ffffff", relief="flat")
+    data_scroll = ttk.Scrollbar(data_panel, orient="vertical", command=data_text.yview)
+    data_text.configure(yscrollcommand=data_scroll.set)
+    data_text.pack(side="left", fill="both", expand=True)
+    data_scroll.pack(side="right", fill="y")
 
     # State
     idx = 0
@@ -501,7 +539,9 @@ def main():
         current_max_frames = item['max_frames']
         for var in score_vars.values():
             var.set(-1)
-        data_lbl.config(text="")
+        data_text.configure(state="normal")
+        data_text.delete("1.0", tk.END)
+        data_text.configure(state="disabled")
         info.config(text=(
             f"{os.path.basename(vp)}  [{index+1}/{len(items)}] — "
             f"rate each interval (0–10). Showing first {item['display_duration']:.1f}s."
@@ -621,7 +661,11 @@ def main():
 
         results.append(row)
 
-        data_lbl.config(text="\n\n".join(lines))
+        data_text.configure(state="normal")
+        data_text.delete("1.0", tk.END)
+        data_text.insert("1.0", "\n\n".join(lines))
+        data_text.configure(state="disabled")
+        data_text.yview_moveto(0.0)
 
         submit_btn.config(state=tk.DISABLED)
         next_btn.config(state=tk.NORMAL)
