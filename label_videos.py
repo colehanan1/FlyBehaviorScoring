@@ -280,24 +280,13 @@ def main():
             print(f"[WARN] No playable frames for {vp}, skipping.")
             continue
 
-        item = {
-            'video_path': vp,
-            'csv_path': source_csv,
-            'matrix_row_index': row_idx if row_idx is not None else -1,
-            'fly_id': None,
-            'trial_id': None,
-            'segments': segment_metrics,
-            'threshold': threshold,
-            'fps': fps_for_calc,
-            'max_frames': max_frames,
-            'display_duration': min(
+        item = {'video_path': vp, 'csv_path': source_csv, 'matrix_row_index': row_idx if row_idx is not None else -1,
+                'fly_id': (parse_fly_trial(vp))[0], 'trial_id': (parse_fly_trial(vp))[1], 'segments': segment_metrics,
+                'threshold': threshold, 'fps': fps_for_calc, 'max_frames': max_frames, 'display_duration': min(
                 analysis_seconds,
                 max_frames / fps_for_calc if fps_for_calc > 0 else analysis_seconds,
-            ),
-            'segment_windows': segment_windows,
-            'odor_latency_seconds': odor_latency_seconds,
-        }
-        item['fly_id'], item['trial_id'] = parse_fly_trial(vp)
+            ), 'segment_windows': segment_windows, 'odor_latency_seconds': odor_latency_seconds}
+
         items.append(item)
 
     if not items:
@@ -428,7 +417,7 @@ def main():
         data_text.configure(state="disabled")
         info.config(text=(
             f"{os.path.basename(vp)}  [{index+1}/{len(items)}] — "
-            f"windows include 30 s baseline + {odor_latency_seconds:.1f}s latency. "
+            f"windows include 30 s baseline + 2x{odor_latency_seconds:.1f}s latency. "
             f"Rate each active interval (0–10). Showing first {item['display_duration']:.1f}s."
         ))
         playing = True
@@ -538,16 +527,11 @@ def main():
                 'time_above_threshold': time_above
             }
 
-        row = {
-            "fly_id": fly_id,
-            "trial_id": trial_id,
-            "video_file": os.path.basename(it['video_path']),
-            "csv_file": os.path.basename(it['csv_path']) if it['csv_path'] else "",
-            "matrix_row_index": it.get("matrix_row_index", -1),
-            "display_duration_seconds": it['display_duration'],
-            "odor_latency_seconds": latency_value,
-        }
-        row["threshold"] = threshold_value
+        row = {"fly_id": fly_id, "trial_id": trial_id, "video_file": os.path.basename(it['video_path']),
+               "csv_file": os.path.basename(it['csv_path']) if it['csv_path'] else "",
+               "matrix_row_index": it.get("matrix_row_index", -1), "display_duration_seconds": it['display_duration'],
+               "odor_latency_seconds": latency_value, "threshold": threshold_value}
+
         for seg_key, seg_res in segment_results.items():
             user_entry = seg_res['user_score'] if seg_res['user_score'] is not None else None
             row[f"user_score_{seg_key}"] = user_entry

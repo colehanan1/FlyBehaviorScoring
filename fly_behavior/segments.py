@@ -10,8 +10,8 @@ ODOR_SECONDS: float = 30.0
 POST_SECONDS: float = 30.0
 
 ODOR_LATENCY_CHOICES: Dict[str, float] = {
-    "opto": 2.0,
-    "manual": 3.0,
+    "opto": 2.15321342434201,
+    "manual": 3.01241129416006,
 }
 
 
@@ -54,7 +54,7 @@ SEGMENT_MAP: Dict[str, SegmentDefinition] = {seg.key: seg for seg in SEGMENT_DEF
 def analysis_duration_seconds(latency_seconds: float) -> float:
     """Total seconds analysed for metrics including latency gap."""
     latency = max(latency_seconds, 0.0)
-    return BASELINE_SECONDS + latency + ODOR_SECONDS + POST_SECONDS
+    return BASELINE_SECONDS + latency + ODOR_SECONDS + POST_SECONDS + latency
 
 
 def compute_segment_windows(
