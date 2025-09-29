@@ -33,6 +33,7 @@ TOTAL_DISPLAY_SECONDS = sum(seg['duration_seconds'] for seg in SEGMENTS.values()
 ODOR_ON_SECONDS = 30.0
 DEFAULT_SMOOTHING_FPS = 40.0
 ENVELOPE_WINDOW_SECONDS = 0.25
+=======
 # ===============================================================
 
 def _analytic_signal(values):
@@ -244,6 +245,10 @@ def main():
 
         segment_metrics = {}
         signal_limit_frames = len(envelope)
+        sig = choose_signal_column(df)
+        fps_for_calc = fps if fps and fps > 0 else 30.0
+        segment_metrics = {}
+        signal_limit_frames = len(sig)
         frames_total_display = int(round(fps_for_calc * TOTAL_DISPLAY_SECONDS)) if fps_for_calc > 0 else 0
         if frames_total_display > 0:
             signal_limit_frames = min(signal_limit_frames, frames_total_display)
@@ -263,6 +268,10 @@ def main():
             seg_signal = envelope[start_idx:end_idx]
             start_idx = end_idx
             metrics = compute_metrics(seg_signal, fps_for_calc, threshold) if len(seg_signal) else None
+
+            seg_signal = sig[start_idx:end_idx]
+            start_idx = end_idx
+            metrics = compute_metrics(seg_signal, fps_for_calc) if len(seg_signal) else None
             if metrics:
                 global_max_auc[seg_key] = max(global_max_auc[seg_key], metrics['auc'])
             segment_metrics[seg_key] = metrics
@@ -395,6 +404,18 @@ def main():
         if current_max_frames and frame_counter >= current_max_frames:
             playing = False
             return
+
+            playing = False
+            return
+        frame_counter += 1
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        im = Image.fromarray(frame)
+        imgtk = ImageTk.PhotoImage(image=im)
+        canvas.imgtk = imgtk
+        canvas.create_image(0,0,anchor=tk.NW,image=imgtk)
+        if current_max_frames and frame_counter >= current_max_frames:
+            playing = False
+            return
         delay = int(1000/max(1.0,fps))
         root.after(delay, advance)
 
@@ -420,6 +441,10 @@ def main():
 
         segment_results = {}
         lines = [f"Threshold (μ_before + 4σ_before): {threshold_value:.3f}"]
+
+        segment_results = {}
+        lines = []
+
         for seg_key, seg_cfg in SEGMENTS.items():
             metrics = it['segments'].get(seg_key)
             user_score = int(score_vars[seg_key].get())
