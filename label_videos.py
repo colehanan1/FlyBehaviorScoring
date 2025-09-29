@@ -195,7 +195,7 @@ def main():
             cap.release()
             continue
         fps_val = cap.get(cv2.CAP_PROP_FPS)
-        fps = float(fps_val) if fps_val and fps_val > 0 else 30.0
+        fps = float(fps_val) if fps_val and fps_val > 0 else 40.0
         frame_count_val = cap.get(cv2.CAP_PROP_FRAME_COUNT)
         frame_count = int(frame_count_val) if frame_count_val and frame_count_val > 0 else None
         cap.release()
@@ -390,7 +390,7 @@ def main():
     idx = 0
     results = []
     cap = None
-    fps = 30.0
+    fps = 40.0
     playing = False
     frame_counter = 0
     current_max_frames = 0
@@ -407,7 +407,7 @@ def main():
         fps_val = cap.get(cv2.CAP_PROP_FPS)
         fps = float(fps_val) if fps_val and fps_val > 0 else item['fps']
         if not fps or fps <= 0:
-            fps = item['fps'] if item['fps'] > 0 else 30.0
+            fps = item['fps'] if item['fps'] > 0 else 40.0
         frame_counter = 0
         current_max_frames = item['max_frames']
         for var in score_vars.values():
