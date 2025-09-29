@@ -473,8 +473,8 @@ def main():
 
         descriptors = ttk.Frame(container, style="Likert.TFrame")
         descriptors.pack(fill="x", pady=(8, 4))
-        ttk.Label(descriptors, text="Not at all likely", style="Likert.TLabel").pack(side="left")
-        ttk.Label(descriptors, text="Extremely likely", style="Likert.TLabel").pack(side="right")
+        ttk.Label(descriptors, text="No Reaction", style="Likert.TLabel").pack(side="left")
+        ttk.Label(descriptors, text="Strong Reaction", style="Likert.TLabel").pack(side="right")
 
         scale_inner = ttk.Frame(container, style="Likert.TFrame")
         scale_inner.pack()
