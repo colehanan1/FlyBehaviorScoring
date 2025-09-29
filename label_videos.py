@@ -1,14 +1,8 @@
-import os
-import sys
-import argparse
+import os, sys, argparse, json, re
 import tkinter as tk
-from tkinter import messagebox
-from tkinter import ttk
-import cv2
-import numpy as np
-import pandas as pd
+from tkinter import messagebox, ttk
+import cv2, numpy as np, pandas as pd
 from PIL import Image, ImageTk
-import re
 
 # =================== CONFIG (edit as needed) ===================
 METRIC_WEIGHTS = {
@@ -175,8 +169,17 @@ def parse_fly_trial(path):
 def main():
     ap = argparse.ArgumentParser(description="Label fly behavior videos (0–10) and compute data-driven scores.")
     ap.add_argument("-v","--videos", required=True, help="Folder with videos (recursively scanned).")
-    ap.add_argument("-d","--data", default=None, help="Folder with CSV traces (if not next to videos).")
+    # Legacy CSV input is now optional/unused; kept for backward compatibility.
+    ap.add_argument("-d","--data", default=None, help="(Deprecated) Folder with CSV traces. If provided and matrix row not found, will fallback.")
     ap.add_argument("-o","--output", default="scoring_results.csv", help="Output master CSV.")
+    # NEW: matrix + maps supplied explicitly
+    ap.add_argument("--matrix", required=True, help="Path to envelope matrix .npy (float16) file.")
+    ap.add_argument("--codes",  required=True, help="Path to code_maps.json (column order + code maps).")
+    # Optional overrides
+    ap.add_argument("--dataset", default=None, help="Dataset name (e.g., 'opto_benz'). If omitted, will try to infer.")
+    ap.add_argument("--trial-type", default="testing", help="Trial type name (default: 'testing').")
+    ap.add_argument("--fly-name", default=None, help="Override fly name to match code_maps['fly'] keys (e.g., 'september_24_fly_1').")
+    ap.add_argument("--trial-label", default=None, help="Override trial label (e.g., 'testing_3').")
     args = ap.parse_args()
 
     # Find videos
@@ -192,38 +195,127 @@ def main():
         print("No videos found.")
         sys.exit(1)
 
-    # Map base name -> CSV path
-    data_map = {}
-    if args.data:
-        for root,_,files in os.walk(args.data):
-            for f in files:
-                fname_lower = f.lower()
-                if fname_lower.endswith(".csv") and 'testing' in fname_lower:
-                    data_map[os.path.splitext(f)[0]] = os.path.join(root,f)
+    # ----- Load matrix + code maps -----
+    mat = np.load(args.matrix, mmap_mode="r")
+    with open(args.codes, "r") as f:
+        maps_obj = json.load(f)
+    COLS = maps_obj.get("column_order", [])
+    CODE = maps_obj.get("code_maps", {})
 
-    def csv_for(video_path):
-        base = os.path.splitext(os.path.basename(video_path))[0]
-        if 'testing' not in base.lower():
-            return None
-        if base in data_map:
-            return data_map[base]
-        candidate = os.path.join(os.path.dirname(video_path), base + ".csv")
-        return candidate if os.path.exists(candidate) else None
+    def invert(d):
+        return {v: k for k, v in d.items()}
+
+    R = {
+        "dataset": invert(CODE.get("dataset", {})),
+        "fly":     invert(CODE.get("fly", {})),
+        "trial_type": invert(CODE.get("trial_type", {})),
+        "trial_label": invert(CODE.get("trial_label", {})),
+        "fps":     invert(CODE.get("fps", {})),
+    }
+
+    IDX = {name: idx for idx, name in enumerate(COLS)}
+    try:
+        first_dir_idx = next(i for i, name in enumerate(COLS) if name.startswith("dir_val_"))
+    except StopIteration:
+        raise ValueError("Matrix is missing directional envelope columns (dir_val_*).")
+
+    # -------- Helpers to parse video → metadata keys in code_maps --------
+    def _infer_trial_label_from_name(name):
+        # Look for patterns like testing_3, testing_09, etc.
+        m = re.search(r'(testing(?:_|-)?\d+)', name, flags=re.IGNORECASE)
+        return m.group(1).lower().replace('-', '_') if m else None
+
+    def _infer_fly_from_path(video_path):
+        # Prefer parent directory if it looks like '*_fly_*'
+        parent = os.path.basename(os.path.dirname(video_path))
+        if "_fly_" in parent.lower():
+            return parent
+        # Fallback to any dir segment that matches keys in code_maps['fly']
+        parts = [p for p in os.path.normpath(video_path).split(os.sep) if p]
+        fly_keys = set(CODE.get("fly", {}).keys())
+        for p in reversed(parts):
+            if p in fly_keys:
+                return p
+        # Fallback to digits → choose any fly name that endswith '_fly_<digits>'
+        digits = ''.join(filter(str.isdigit, os.path.splitext(os.path.basename(video_path))[0]))
+        if digits:
+            suffix = f"_fly_{digits}"
+            candidates = [k for k in fly_keys if k.endswith(suffix)]
+            if len(candidates) == 1:
+                return candidates[0]
+        return None
+
+    def encode(meta_name, meta_value):
+        # Map string value to code integer stored in matrix (as float16)
+        cmap = CODE.get(meta_name, {})
+        if meta_value in cmap:
+            return float(cmap[meta_value])
+        return float(0)
+
+    def decode_fps_code(code_float16):
+        # fps map in JSON uses strings; invert() produced string keys (e.g., "1":"40.0")
+        try:
+            key = int(round(float(code_float16)))
+        except Exception:
+            key = 0
+        str_val = R["fps"].get(key, "0")
+        try:
+            return float(str_val)
+        except Exception:
+            return 0.0
+
+    def find_matrix_row(video_path):
+        # Determine metadata strings
+        fly_name = args.fly_name or _infer_fly_from_path(video_path)
+        base_name = os.path.basename(video_path)
+        trial_label = (
+            args.trial_label
+            or _infer_trial_label_from_name(base_name)
+            or _infer_trial_label_from_name(os.path.splitext(base_name)[0])
+        )
+        dataset_candidates = [k for k in CODE.get("dataset", {}) if k != "UNKNOWN"]
+        dataset = args.dataset or (dataset_candidates[0] if dataset_candidates else "UNKNOWN")
+        trial_type = args.trial_type or "testing"
+
+        # Encode to codes
+        want = {
+            "dataset": encode("dataset", dataset),
+            "fly": encode("fly", fly_name) if fly_name else float(0),
+            "trial_type": encode("trial_type", trial_type),
+            "trial_label": encode("trial_label", trial_label) if trial_label else float(0),
+        }
+
+        col_d = IDX.get("dataset")
+        col_f = IDX.get("fly")
+        col_tt = IDX.get("trial_type")
+        col_tl = IDX.get("trial_label")
+
+        rows = []
+        for r in range(mat.shape[0]):
+            ok = True
+            if col_d is not None and want["dataset"] != 0 and mat[r, col_d] != want["dataset"]:
+                ok = False
+            if col_f is not None and want["fly"] != 0 and mat[r, col_f] != want["fly"]:
+                ok = False
+            if col_tt is not None and want["trial_type"] != 0 and mat[r, col_tt] != want["trial_type"]:
+                ok = False
+            if col_tl is not None and want["trial_label"] != 0 and mat[r, col_tl] != want["trial_label"]:
+                ok = False
+            if ok:
+                rows.append(r)
+        return rows[0] if rows else None
 
     # Precompute metrics + global max AUC for scaling
     items = []
     global_max_auc = {key: 0.0 for key in SEGMENTS}
+    legacy_csv_cache = {}
     for vp in videos:
-        cp = csv_for(vp)
-        if cp is None or not os.path.exists(cp):
-            print(f"[WARN] No CSV for {vp}, skipping.")
-            continue
-        try:
-            df = pd.read_csv(cp)
-        except Exception as e:
-            print(f"[WARN] Failed reading {cp}: {e}")
-            continue
-
+        row_idx = find_matrix_row(vp)
+        if row_idx is None:
+            # Optional fallback: try CSV if user passed --data
+            if not args.data:
+                print(f"[WARN] No matrix row for {vp}; skipping. (Provide --fly-name/--trial-label if needed.)")
+                continue
         cap = cv2.VideoCapture(vp)
         if not cap.isOpened():
             print(f"[WARN] Cannot open video {vp}, skipping.")
@@ -235,12 +327,53 @@ def main():
         frame_count = int(frame_count_val) if frame_count_val and frame_count_val > 0 else None
         cap.release()
 
-        sig_raw = choose_signal_column(df)
-        sig_series = pd.to_numeric(pd.Series(sig_raw), errors='coerce').fillna(0.0).to_numpy(dtype=float)
-        fps_for_calc = fps if fps and fps > 0 else 30.0
-        time_axis = extract_time_seconds(df, fps_for_calc)
-        envelope = compute_envelope(sig_series, fps_for_calc)
-        threshold = compute_threshold(time_axis, envelope, fps_for_calc)
+        if row_idx is not None:
+            row = mat[row_idx, :]
+            fps_col = IDX.get("fps")
+            fps_code = row[fps_col] if fps_col is not None else 0
+            fps_from_matrix = decode_fps_code(fps_code)
+            fps_for_calc = fps_from_matrix if fps_from_matrix > 0 else (fps if fps > 0 else DEFAULT_SMOOTHING_FPS)
+            envelope = row[first_dir_idx:].astype(np.float32)
+            if envelope.size and envelope[-1] == 0.0:
+                nz = np.nonzero(envelope)[0]
+                if nz.size:
+                    envelope = envelope[: (nz[-1] + 1)]
+            time_axis = (
+                np.arange(len(envelope), dtype=float) / float(fps_for_calc)
+                if fps_for_calc > 0
+                else np.arange(len(envelope), dtype=float)
+            )
+            threshold = compute_threshold(time_axis, envelope, fps_for_calc)
+            source_csv = None
+        else:
+            base = os.path.splitext(os.path.basename(vp))[0]
+            candidate = os.path.join(os.path.dirname(vp), base + ".csv")
+            cp = candidate if os.path.exists(candidate) else None
+            if not cp and args.data:
+                if base in legacy_csv_cache:
+                    cp = legacy_csv_cache[base]
+                else:
+                    found = None
+                    for root, _, files in os.walk(args.data):
+                        for f in files:
+                            if f.lower().endswith('.csv') and os.path.splitext(f)[0] == base:
+                                found = os.path.join(root, f)
+                                break
+                        if found:
+                            break
+                    legacy_csv_cache[base] = found
+                    cp = found
+            if not cp:
+                print(f"[WARN] No matrix row and no CSV for {vp}; skipping.")
+                continue
+            df = pd.read_csv(cp)
+            sig_raw = choose_signal_column(df)
+            sig_series = pd.to_numeric(pd.Series(sig_raw), errors='coerce').fillna(0.0).to_numpy(dtype=float)
+            fps_for_calc = fps if fps and fps > 0 else DEFAULT_SMOOTHING_FPS
+            time_axis = extract_time_seconds(df, fps_for_calc)
+            envelope = compute_envelope(sig_series, fps_for_calc)
+            threshold = compute_threshold(time_axis, envelope, fps_for_calc)
+            source_csv = cp
 
         segment_metrics = {}
         signal_limit_frames = len(envelope)
@@ -278,7 +411,8 @@ def main():
 
         item = {
             'video_path': vp,
-            'csv_path': cp,
+            'csv_path': source_csv,
+            'matrix_row_index': row_idx if row_idx is not None else -1,
             'fly_id': None,
             'trial_id': None,
             'segments': segment_metrics,
@@ -297,6 +431,21 @@ def main():
     # ---------- GUI ----------
     root = tk.Tk()
     root.title("Fly Behavior Scoring")
+    try:
+        root.iconbitmap(default='')
+    except Exception:
+        pass
+    root.configure(bg="#f8f8fb")
+
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+    style.configure("Likert.TRadiobutton", padding=6)
+    style.map("Likert.TRadiobutton", background=[("active", "#e6eefc")])
+    style.configure("Likert.TLabel", background="#f8f8fb")
+    style.configure("Likert.TFrame", background="#f8f8fb")
 
     # Compute max canvas size
     max_w, max_h = 640, 480
@@ -309,37 +458,60 @@ def main():
             max_w = max(max_w, w)
             max_h = max(max_h, h)
 
-    canvas = tk.Canvas(root, width=max_w, height=max_h, bg="black")
+    canvas = tk.Canvas(root, width=max_w, height=max_h, bg="black", highlightthickness=0)
     canvas.pack()
 
-    info = tk.Label(root, text="Watch the first 90 seconds. Score each interval 0 (NR) … 10 (Strongest). Submit to reveal data metrics.")
-    info.pack(pady=6)
+    info = ttk.Label(root, text="Watch the first 90 seconds. Provide a rating for each interval using the scale below, then submit to reveal the data metrics.", style="Likert.TLabel", wraplength=max_w)
+    info.pack(pady=(10, 6), padx=16, anchor="w")
 
-    # Rating row
-    rating_frame = tk.Frame(root)
-    rating_frame.pack(pady=4, fill="x")
     score_vars = {}
-    labels = [("0 (NR)",0),("1",1),("2",2),("3",3),("4",4),("5 (Average)",5),("6",6),("7",7),("8",8),("9",9),("10 (Strongest)",10)]
-    for seg_key, seg_cfg in SEGMENTS.items():
-        seg_frame = tk.LabelFrame(rating_frame, text=seg_cfg['label'])
-        seg_frame.pack(fill="x", pady=2)
+
+    def build_likert_scale(parent, seg_key, seg_cfg):
+        container = ttk.Frame(parent, padding=(12, 10), style="Likert.TFrame")
+        container.pack(fill="x", pady=4)
+        ttk.Label(container, text=seg_cfg['label'], font=("Helvetica", 13, "bold"), style="Likert.TLabel").pack(anchor="w")
+
+        descriptors = ttk.Frame(container, style="Likert.TFrame")
+        descriptors.pack(fill="x", pady=(8, 4))
+        ttk.Label(descriptors, text="Not at all likely", style="Likert.TLabel").pack(side="left")
+        ttk.Label(descriptors, text="Extremely likely", style="Likert.TLabel").pack(side="right")
+
+        scale_inner = ttk.Frame(container, style="Likert.TFrame")
+        scale_inner.pack()
+
         var = tk.IntVar(value=-1)
         score_vars[seg_key] = var
-        for text,val in labels:
-            tk.Radiobutton(seg_frame, text=text, variable=var, value=val).pack(side=tk.LEFT)
+
+        for idx, val in enumerate(range(0, 11)):
+            cell = ttk.Frame(scale_inner, padding=2, style="Likert.TFrame")
+            cell.grid(row=0, column=idx, padx=6)
+            btn = ttk.Radiobutton(cell, variable=var, value=val, style="Likert.TRadiobutton", takefocus=0)
+            btn.pack()
+            ttk.Label(cell, text=str(val), style="Likert.TLabel").pack(pady=(4, 0))
+
+    # Rating row
+    rating_frame = ttk.Frame(root, padding=(8, 4), style="Likert.TFrame")
+    rating_frame.pack(pady=4, fill="x")
+    for seg_key, seg_cfg in SEGMENTS.items():
+        build_likert_scale(rating_frame, seg_key, seg_cfg)
 
     # Buttons
-    btns = tk.Frame(root); btns.pack(pady=4)
-    submit_btn = tk.Button(btns, text="Submit Score")
-    next_btn   = tk.Button(btns, text="Next Video", state=tk.DISABLED)
-    replay_btn = tk.Button(btns, text="Replay Video")
+    btns = ttk.Frame(root, padding=6, style="Likert.TFrame"); btns.pack(pady=8)
+    submit_btn = ttk.Button(btns, text="Submit Score")
+    next_btn   = ttk.Button(btns, text="Next Video", state=tk.DISABLED)
+    replay_btn = ttk.Button(btns, text="Replay Video")
     submit_btn.grid(row=0,column=0,padx=4)
     next_btn.grid(row=0,column=1,padx=4)
     replay_btn.grid(row=0,column=2,padx=4)
 
     # Data panel (revealed post-submit)
-    data_lbl = tk.Label(root, text="", fg="blue", justify=tk.LEFT, anchor="w")
-    data_lbl.pack(pady=6, fill="x")
+    data_panel = ttk.Frame(root, padding=(12, 8), style="Likert.TFrame")
+    data_panel.pack(pady=(4, 10), fill="both", expand=True)
+    data_text = tk.Text(data_panel, height=8, wrap="word", state="disabled", bg="#ffffff", relief="flat")
+    data_scroll = ttk.Scrollbar(data_panel, orient="vertical", command=data_text.yview)
+    data_text.configure(yscrollcommand=data_scroll.set)
+    data_text.pack(side="left", fill="both", expand=True)
+    data_scroll.pack(side="right", fill="y")
 
     # State
     idx = 0
@@ -367,7 +539,9 @@ def main():
         current_max_frames = item['max_frames']
         for var in score_vars.values():
             var.set(-1)
-        data_lbl.config(text="")
+        data_text.configure(state="normal")
+        data_text.delete("1.0", tk.END)
+        data_text.configure(state="disabled")
         info.config(text=(
             f"{os.path.basename(vp)}  [{index+1}/{len(items)}] — "
             f"rate each interval (0–10). Showing first {item['display_duration']:.1f}s."
@@ -471,7 +645,8 @@ def main():
             "fly_id": fly_id,
             "trial_id": trial_id,
             "video_file": os.path.basename(it['video_path']),
-            "csv_file": os.path.basename(it['csv_path']),
+            "csv_file": os.path.basename(it['csv_path']) if it['csv_path'] else "",
+            "matrix_row_index": it.get("matrix_row_index", -1),
             "display_duration_seconds": it['display_duration']
         }
         row["threshold"] = threshold_value
@@ -486,7 +661,11 @@ def main():
 
         results.append(row)
 
-        data_lbl.config(text="\n\n".join(lines))
+        data_text.configure(state="normal")
+        data_text.delete("1.0", tk.END)
+        data_text.insert("1.0", "\n\n".join(lines))
+        data_text.configure(state="disabled")
+        data_text.yview_moveto(0.0)
 
         submit_btn.config(state=tk.DISABLED)
         next_btn.config(state=tk.NORMAL)
