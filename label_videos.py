@@ -324,7 +324,7 @@ def main():
     style.configure("Likert.TFrame", background="#f8f8fb")
 
     # Compute max canvas size
-    max_w, max_h = 640, 480
+    max_w, max_h = 540, 540
     for it in items:
         cap = cv2.VideoCapture(it['video_path'])
         if cap.isOpened():

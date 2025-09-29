@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 BASELINE_SECONDS: float = 30.0
-ODOR_SECONDS: float = 60.0
+ODOR_SECONDS: float = 30.0
 POST_SECONDS: float = 30.0
 
 ODOR_LATENCY_CHOICES: Dict[str, float] = {
@@ -28,7 +28,7 @@ SEGMENT_DEFINITIONS: List[SegmentDefinition] = [
     SegmentDefinition(
         key="baseline",
         label="Baseline (first 30 s)",
-        duration_seconds=BASELINE_SECONDS,
+        duration_seconds=BASELINE_SECONDS ,
         rateable=False,
         role="baseline",
     ),
@@ -77,7 +77,7 @@ def compute_segment_windows(
     odor_start = clamp(int(round((BASELINE_SECONDS + latency) * fps_val)))
     if odor_start < baseline_end:
         odor_start = baseline_end
-    odor_end = clamp(odor_start + int(round(ODOR_SECONDS * fps_val)))
+    odor_end = clamp(odor_start + int(round((ODOR_SECONDS+ latency) * fps_val)))
     post_start = odor_end
     post_end = clamp(post_start + int(round(POST_SECONDS * fps_val)))
 
