@@ -447,8 +447,11 @@ def main():
     style.configure("Likert.TLabel", background="#f8f8fb")
     style.configure("Likert.TFrame", background="#f8f8fb")
 
+    # Set target display size for video frames
+    TARGET_W, TARGET_H = 540, 540  # Change these values as desired
+
     # Compute max canvas size
-    max_w, max_h = 640, 480
+    max_w, max_h = TARGET_W, TARGET_H
     for it in items:
         cap = cv2.VideoCapture(it['video_path'])
         if cap.isOpened():
@@ -458,7 +461,7 @@ def main():
             max_w = max(max_w, w)
             max_h = max(max_h, h)
 
-    canvas = tk.Canvas(root, width=max_w, height=max_h, bg="black", highlightthickness=0)
+    canvas = tk.Canvas(root, width=TARGET_W, height=TARGET_H, bg="black", highlightthickness=0)
     canvas.pack()
 
     info = ttk.Label(root, text="Watch the first 90 seconds. Provide a rating for each interval using the scale below, then submit to reveal the data metrics.", style="Likert.TLabel", wraplength=max_w)
@@ -517,7 +520,7 @@ def main():
     idx = 0
     results = []
     cap = None
-    fps = 30.0
+    fps = 40.0
     playing = False
     frame_counter = 0
     current_max_frames = 0
@@ -561,7 +564,9 @@ def main():
             playing = False
             return
         frame_counter += 1
+        # Resize frame before displaying
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = cv2.resize(frame, (TARGET_W, TARGET_H), interpolation=cv2.INTER_AREA)
         im = Image.fromarray(frame)
         imgtk = ImageTk.PhotoImage(image=im)
         canvas.imgtk = imgtk
