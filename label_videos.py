@@ -4,167 +4,33 @@ from tkinter import messagebox, ttk
 import cv2, numpy as np, pandas as pd
 from PIL import Image, ImageTk
 
+from fly_behavior import (
+    BASELINE_SECONDS,
+    ODOR_LATENCY_CHOICES,
+    SEGMENT_DEFINITIONS,
+    SEGMENT_MAP,
+    analysis_duration_seconds,
+    choose_signal_column,
+    compute_envelope,
+    compute_metrics,
+    compute_segment_windows,
+    compute_threshold,
+    extract_time_seconds,
+    parse_fly_trial,
+    DEFAULT_SMOOTHING_FPS,
+)
+
+
 # =================== CONFIG (edit as needed) ===================
 METRIC_WEIGHTS = {
     # Increase/decrease to change influence on data_score (0–10 scale per metric)
     'time_fraction': 1.0,   # fraction of frames above threshold
     'auc': 1.0              # integral above threshold (scaled by global max)
 }
-
-SEGMENTS = {
-    'odor': {
-        'label': 'During odor',
-        'duration_seconds': 60.0
-    },
-    'post': {
-        'label': '30s after odor',
-        'duration_seconds': 30.0
-    }
-}
-
-TOTAL_DISPLAY_SECONDS = sum(seg['duration_seconds'] for seg in SEGMENTS.values())
-# Threshold computation parameters (match envelope script behaviour)
-ODOR_ON_SECONDS = 30.0
-DEFAULT_SMOOTHING_FPS = 40.0
-ENVELOPE_WINDOW_SECONDS = 0.25
 # ===============================================================
 
-def _analytic_signal(values):
-    """Return analytic signal via FFT-based Hilbert transform (SciPy-free)."""
-    arr = np.asarray(values, dtype=float)
-    n = arr.size
-    if n == 0:
-        return arr.astype(complex)
-    spectrum = np.fft.fft(arr, n)
-    h = np.zeros(n)
-    if n % 2 == 0:
-        h[0] = h[n // 2] = 1.0
-        h[1:n // 2] = 2.0
-    else:
-        h[0] = 1.0
-        h[1:(n + 1) // 2] = 2.0
-    return np.fft.ifft(spectrum * h)
-
-def compute_envelope(signal, fps):
-    """Compute clipped analytic envelope smoothed over ENVELOPE_WINDOW_SECONDS."""
-    arr = np.asarray(signal, dtype=float)
-    if arr.size == 0:
-        return arr
-    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    arr = np.clip(arr, 0.0, 100.0)
-    analytic = _analytic_signal(arr)
-    env = np.abs(analytic)
-    fps_for_window = fps if fps and fps > 0 else DEFAULT_SMOOTHING_FPS
-    window_frames = max(int(round(ENVELOPE_WINDOW_SECONDS * fps_for_window)), 1)
-    if window_frames > 1:
-        env = (
-            pd.Series(env)
-            .rolling(window=window_frames, center=True, min_periods=1)
-            .mean()
-            .to_numpy()
-        )
-    return env
-
-def compute_threshold(time_s, envelope, fps):
-    """Compute μ_before + 4σ_before using pre-odor window (< ODOR_ON_SECONDS)."""
-    env = np.asarray(envelope, dtype=float)
-    if env.size == 0:
-        return 0.0
-    times = np.asarray(time_s, dtype=float)
-    if times.size != env.size:
-        times = np.arange(env.size, dtype=float) / (fps if fps and fps > 0 else DEFAULT_SMOOTHING_FPS)
-    pre_mask = times < ODOR_ON_SECONDS
-    if np.any(pre_mask):
-        pre_vals = env[pre_mask]
-    else:
-        n_pre = max(int(round(ODOR_ON_SECONDS * (fps if fps and fps > 0 else DEFAULT_SMOOTHING_FPS))), 1)
-        pre_vals = env[:n_pre]
-    if pre_vals.size == 0:
-        return 0.0
-    mu = float(np.nanmean(pre_vals))
-    sigma = float(np.nanstd(pre_vals, ddof=0))
-    return mu + 4.0 * sigma
-
-def compute_metrics(signal, fps, threshold):
-    """
-    Compute core reaction metrics from a 1D signal.
-    Returns dict with: time_fraction, auc, duration.
-    """
-    signal = np.asarray(signal).astype(float)
-    n = len(signal)
-    if n == 0:
-        return None
-    duration = n / fps if fps and fps > 0 else float(n)
-
-    thresh = float(threshold) if threshold is not None else 0.0
-    above = signal > thresh
-    time_fraction = float(np.count_nonzero(above)) / float(n)
-
-    if above.any():
-        auc = float(np.sum(signal[above] - thresh)) / (fps if fps and fps > 0 else 1.0)
-    else:
-        auc = 0.0
-
-    return {'time_fraction': time_fraction, 'auc': auc, 'duration': duration}
-
-def choose_signal_column(df):
-    """Pick a likely signal column from a dataframe."""
-    preferred = ['RMS', 'rms', 'envelope', 'Envelope', 'distance', 'Eye_Prob_Dist']
-    for p in preferred:
-        if p in df.columns:
-            return df[p].values
-    # Otherwise, pick the first non-time column
-    candidates = [c for c in df.columns if c.lower() not in ('time','timestamp','frame','frames','t','ms','seconds')]
-    if candidates:
-        return df[candidates[0]].values
-    # Fallback: last column
-    return df.iloc[:, -1].values
-
-def extract_time_seconds(df, fps):
-    """Derive a time axis in seconds from dataframe columns or FPS."""
-    time_like = []
-    for col in df.columns:
-        lower = col.lower()
-        if any(token in lower for token in ('time', 'second', 'timestamp')):
-            series = pd.to_numeric(df[col], errors='coerce')
-            if series.notna().sum() > 0:
-                time_like.append(series.to_numpy(dtype=float))
-    if time_like:
-        # Prefer the first viable column
-        return time_like[0]
-    n = len(df)
-    fps_val = fps if fps and fps > 0 else DEFAULT_SMOOTHING_FPS
-    if fps_val and fps_val > 0:
-        return np.arange(n, dtype=float) / float(fps_val)
-    return np.arange(n, dtype=float)
-
-def parse_fly_trial(path):
-    """Try to parse fly_id and trial_id from path/filename digits."""
-    fname = os.path.splitext(os.path.basename(path))[0]
-    parent = os.path.basename(os.path.dirname(path))
-
-    fly_id = None
-    trial_id = None
-
-    # Prefer parent dir if like 'fly2736'
-    if parent.lower().startswith('fly'):
-        digits = ''.join(filter(str.isdigit, parent))
-        if digits:
-            fly_id = digits
-    elif parent.isdigit():
-        fly_id = parent
-
-    nums = re.findall(r'\d+', fname)
-    if nums:
-        if len(nums) >= 2:
-            fly_id = fly_id or nums[0]
-            trial_id = nums[1]
-        else:
-            if fly_id is None:
-                fly_id = nums[0]
-            else:
-                trial_id = nums[0]
-    return fly_id, trial_id
+# Set target display size for video frames
+TARGET_W, TARGET_H = 640, 640  # You can adjust these values
 
 def main():
     ap = argparse.ArgumentParser(description="Label fly behavior videos (0–10) and compute data-driven scores.")
@@ -180,6 +46,12 @@ def main():
     ap.add_argument("--trial-type", default="testing", help="Trial type name (default: 'testing').")
     ap.add_argument("--fly-name", default=None, help="Override fly name to match code_maps['fly'] keys (e.g., 'september_24_fly_1').")
     ap.add_argument("--trial-label", default=None, help="Override trial label (e.g., 'testing_3').")
+    ap.add_argument(
+        "--odor-latency",
+        choices=sorted(ODOR_LATENCY_CHOICES.keys()),
+        default="manual",
+        help="Preset for odor delivery latency (seconds).",
+    )
     args = ap.parse_args()
 
     # Find videos
@@ -194,6 +66,11 @@ def main():
     if not videos:
         print("No videos found.")
         sys.exit(1)
+
+    # Odor latency preset → seconds
+    odor_latency_seconds = ODOR_LATENCY_CHOICES.get(args.odor_latency, 0.0)
+    segment_defs = SEGMENT_DEFINITIONS
+    analysis_seconds = analysis_duration_seconds(odor_latency_seconds)
 
     # ----- Load matrix + code maps -----
     mat = np.load(args.matrix, mmap_mode="r")
@@ -307,6 +184,7 @@ def main():
 
     # Precompute metrics + global max AUC for scaling
     items = []
+    global_max_auc = {seg.key: 0.0 for seg in segment_defs}
     global_max_auc = {key: 0.0 for key in SEGMENTS}
     legacy_csv_cache = {}
     for vp in videos:
@@ -322,7 +200,7 @@ def main():
             cap.release()
             continue
         fps_val = cap.get(cv2.CAP_PROP_FPS)
-        fps = float(fps_val) if fps_val and fps_val > 0 else 30.0
+        fps = float(fps_val) if fps_val and fps_val > 0 else 40.0
         frame_count_val = cap.get(cv2.CAP_PROP_FRAME_COUNT)
         frame_count = int(frame_count_val) if frame_count_val and frame_count_val > 0 else None
         cap.release()
@@ -343,6 +221,7 @@ def main():
                 if fps_for_calc > 0
                 else np.arange(len(envelope), dtype=float)
             )
+            threshold = compute_threshold(time_axis, envelope, fps_for_calc, BASELINE_SECONDS)
             threshold = compute_threshold(time_axis, envelope, fps_for_calc)
             source_csv = None
         else:
@@ -372,42 +251,49 @@ def main():
             fps_for_calc = fps if fps and fps > 0 else DEFAULT_SMOOTHING_FPS
             time_axis = extract_time_seconds(df, fps_for_calc)
             envelope = compute_envelope(sig_series, fps_for_calc)
+            threshold = compute_threshold(time_axis, envelope, fps_for_calc, BASELINE_SECONDS)
             threshold = compute_threshold(time_axis, envelope, fps_for_calc)
             source_csv = cp
 
         segment_metrics = {}
-        signal_limit_frames = len(envelope)
-        frames_total_display = int(round(fps_for_calc * TOTAL_DISPLAY_SECONDS)) if fps_for_calc > 0 else 0
-        if frames_total_display > 0:
-            signal_limit_frames = min(signal_limit_frames, frames_total_display)
+        frames_total_analysis = int(round(fps_for_calc * analysis_seconds)) if fps_for_calc > 0 else 0
+        if frames_total_analysis > 0:
+            signal_limit_frames = min(len(envelope), frames_total_analysis)
+        else:
+            signal_limit_frames = len(envelope)
 
-        start_idx = 0
-        segment_items = list(SEGMENTS.items())
-        for seg_idx, (seg_key, seg_cfg) in enumerate(segment_items):
-            seg_frames = int(round(fps_for_calc * seg_cfg['duration_seconds'])) if fps_for_calc > 0 else 0
-            if seg_idx == len(segment_items) - 1 and signal_limit_frames > start_idx:
-                end_idx = signal_limit_frames
-            else:
-                end_idx = start_idx + seg_frames if seg_frames > 0 else start_idx
-                if signal_limit_frames >= 0:
-                    end_idx = min(signal_limit_frames, end_idx)
+        segment_windows = compute_segment_windows(
+            fps_for_calc,
+            odor_latency_seconds,
+            signal_limit_frames,
+        )
+
+        for seg in segment_defs:
+            start_idx, end_idx = segment_windows.get(seg.key, (0, 0))
             if end_idx < start_idx:
                 end_idx = start_idx
             seg_signal = envelope[start_idx:end_idx]
-            start_idx = end_idx
-            metrics = compute_metrics(seg_signal, fps_for_calc, threshold) if len(seg_signal) else None
+            metrics = compute_metrics(seg_signal, fps_for_calc, threshold) if seg_signal.size else None
             if metrics:
-                global_max_auc[seg_key] = max(global_max_auc[seg_key], metrics['auc'])
-            segment_metrics[seg_key] = metrics
+                global_max_auc[seg.key] = max(global_max_auc[seg.key], metrics['auc'])
+            segment_metrics[seg.key] = metrics
 
-        max_frames = int(round(fps_for_calc * TOTAL_DISPLAY_SECONDS)) if fps_for_calc > 0 else 0
+        max_frames = int(round(fps_for_calc * analysis_seconds)) if fps_for_calc > 0 else 0
         if frame_count is not None:
             max_frames = min(max_frames, frame_count) if max_frames > 0 else frame_count
         if max_frames <= 0:
-            max_frames = frames_total_display if frames_total_display > 0 else signal_limit_frames
+            max_frames = frames_total_analysis if frames_total_analysis > 0 else signal_limit_frames
         if max_frames <= 0:
             print(f"[WARN] No playable frames for {vp}, skipping.")
             continue
+
+        item = {'video_path': vp, 'csv_path': source_csv, 'matrix_row_index': row_idx if row_idx is not None else -1,
+                'fly_id': (parse_fly_trial(vp))[0], 'trial_id': (parse_fly_trial(vp))[1], 'segments': segment_metrics,
+                'threshold': threshold, 'fps': fps_for_calc, 'max_frames': max_frames, 'display_duration': min(
+                analysis_seconds,
+                max_frames / fps_for_calc if fps_for_calc > 0 else analysis_seconds,
+            ), 'segment_windows': segment_windows, 'odor_latency_seconds': odor_latency_seconds}
+
 
         item = {
             'video_path': vp,
@@ -447,16 +333,53 @@ def main():
     style.configure("Likert.TLabel", background="#f8f8fb")
     style.configure("Likert.TFrame", background="#f8f8fb")
 
-    # Compute max canvas size
-    max_w, max_h = 640, 480
-    for it in items:
-        cap = cv2.VideoCapture(it['video_path'])
-        if cap.isOpened():
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 0
-            cap.release()
-            max_w = max(max_w, w)
-            max_h = max(max_h, h)
+    # Replace max_w, max_h computation and canvas creation:
+    max_w, max_h = TARGET_W, TARGET_H
+    canvas = tk.Canvas(root, width=TARGET_W, height=TARGET_H, bg="black", highlightthickness=0)
+    canvas.pack()
+
+    info_text = (
+        f"Watch the first {int(round(analysis_seconds))} seconds "
+        f"(30 s baseline + {odor_latency_seconds:.1f} s latency + "
+        f"{int(SEGMENT_MAP['odor'].duration_seconds)} s odor + "
+        f"{int(SEGMENT_MAP['post'].duration_seconds)} s post-odor).\n"
+        "Provide a rating for each rateable interval using the scale below, then submit to reveal the data metrics."
+    )
+    info = ttk.Label(root, text=info_text, style="Likert.TLabel", wraplength=TARGET_W, justify="left")
+    info.pack(pady=(6, 4), padx=8, anchor="w")
+
+    rateable_segments = [seg for seg in segment_defs if seg.rateable]
+    score_vars = {}
+
+    def build_likert_scale(parent, seg):
+        # Reduce padding and font size for compactness
+        container = ttk.Frame(parent, padding=(6, 4), style="Likert.TFrame")
+        container.pack(fill="x", pady=2)
+        ttk.Label(container, text=seg.label, font=("Helvetica", 10, "bold"), style="Likert.TLabel").pack(anchor="w")
+
+        descriptors = ttk.Frame(container, style="Likert.TFrame")
+        descriptors.pack(fill="x", pady=(4, 2))
+        ttk.Label(descriptors, text="Not at all likely", style="Likert.TLabel", font=("Helvetica", 9)).pack(side="left")
+        ttk.Label(descriptors, text="Extremely likely", style="Likert.TLabel", font=("Helvetica", 9)).pack(side="right")
+
+        scale_inner = ttk.Frame(container, style="Likert.TFrame")
+        scale_inner.pack()
+
+        var = tk.IntVar(value=-1)
+        score_vars[seg.key] = var
+
+        for idx, val in enumerate(range(0, 11)):
+            cell = ttk.Frame(scale_inner, padding=1, style="Likert.TFrame")
+            cell.grid(row=0, column=idx, padx=2)
+            btn = ttk.Radiobutton(cell, variable=var, value=val, style="Likert.TRadiobutton", takefocus=0)
+            btn.pack()
+            ttk.Label(cell, text=str(val), style="Likert.TLabel", font=("Helvetica", 8)).pack(pady=(2, 0))
+
+    # Rating row
+    rating_frame = ttk.Frame(root, padding=(8, 4), style="Likert.TFrame")
+    rating_frame.pack(pady=4, fill="x")
+    for seg in rateable_segments:
+        build_likert_scale(rating_frame, seg)
 
     canvas = tk.Canvas(root, width=max_w, height=max_h, bg="black", highlightthickness=0)
     canvas.pack()
@@ -494,7 +417,7 @@ def main():
     rating_frame.pack(pady=4, fill="x")
     for seg_key, seg_cfg in SEGMENTS.items():
         build_likert_scale(rating_frame, seg_key, seg_cfg)
-
+        
     # Buttons
     btns = ttk.Frame(root, padding=6, style="Likert.TFrame"); btns.pack(pady=8)
     submit_btn = ttk.Button(btns, text="Submit Score")
@@ -517,7 +440,7 @@ def main():
     idx = 0
     results = []
     cap = None
-    fps = 30.0
+    fps = 40.0
     playing = False
     frame_counter = 0
     current_max_frames = 0
@@ -534,7 +457,7 @@ def main():
         fps_val = cap.get(cv2.CAP_PROP_FPS)
         fps = float(fps_val) if fps_val and fps_val > 0 else item['fps']
         if not fps or fps <= 0:
-            fps = item['fps'] if item['fps'] > 0 else 30.0
+            fps = item['fps'] if item['fps'] > 0 else 40.0
         frame_counter = 0
         current_max_frames = item['max_frames']
         for var in score_vars.values():
@@ -544,7 +467,8 @@ def main():
         data_text.configure(state="disabled")
         info.config(text=(
             f"{os.path.basename(vp)}  [{index+1}/{len(items)}] — "
-            f"rate each interval (0–10). Showing first {item['display_duration']:.1f}s."
+            f"windows include 30 s baseline + 2x{odor_latency_seconds:.1f}s latency. "
+            f"Rate each active interval (0–10). Showing first {item['display_duration']:.1f}s."
         ))
         playing = True
         root.after(0, advance)
@@ -562,6 +486,8 @@ def main():
             return
         frame_counter += 1
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Resize frame before displaying
+        frame = cv2.resize(frame, (TARGET_W, TARGET_H), interpolation=cv2.INTER_AREA)
         im = Image.fromarray(frame)
         imgtk = ImageTk.PhotoImage(image=im)
         canvas.imgtk = imgtk
@@ -583,7 +509,7 @@ def main():
 
     def on_submit():
         nonlocal playing
-        missing = [seg_cfg['label'] for seg_key, seg_cfg in SEGMENTS.items() if score_vars[seg_key].get() == -1]
+        missing = [seg.label for seg in rateable_segments if score_vars[seg.key].get() == -1]
         if missing:
             messagebox.showwarning("Select scores", f"Please score each interval: {', '.join(missing)}")
             return
@@ -591,12 +517,16 @@ def main():
         it = items[idx]
         fly_id, trial_id = it.get('fly_id'), it.get('trial_id')
         threshold_value = float(it.get('threshold', 0.0))
+        latency_value = float(it.get('odor_latency_seconds', odor_latency_seconds))
 
         segment_results = {}
-        lines = [f"Threshold (μ_before + 4σ_before): {threshold_value:.3f}"]
-        for seg_key, seg_cfg in SEGMENTS.items():
-            metrics = it['segments'].get(seg_key)
-            user_score = int(score_vars[seg_key].get())
+        lines = [
+            f"Threshold (μ_baseline + 4σ_baseline): {threshold_value:.3f}",
+            f"Odor latency applied: {latency_value:.2f} s ({args.odor_latency})",
+        ]
+        for seg in segment_defs:
+            metrics = it['segments'].get(seg.key)
+            user_score = int(score_vars[seg.key].get()) if seg.rateable else None
             duration = metrics['duration'] if metrics else 0.0
             time_fraction = metrics['time_fraction'] if metrics else 0.0
             auc_val = metrics['auc'] if metrics else 0.0
@@ -605,7 +535,7 @@ def main():
             if metrics:
                 m_parts = {
                     'time_fraction': max(0.0, min(10.0, time_fraction * 10.0)),
-                    'auc': max(0.0, min(10.0, (auc_val / global_max_auc[seg_key] * 10.0) if global_max_auc[seg_key] > 0 else 0.0))
+                    'auc': max(0.0, min(10.0, (auc_val / global_max_auc[seg.key] * 10.0) if global_max_auc[seg.key] > 0 else 0.0))
                 }
             else:
                 m_parts = {'time_fraction': 0.0, 'auc': 0.0}
@@ -617,21 +547,35 @@ def main():
                     score_sum += float(w) * float(m_parts[k])
                     wsum += float(w)
             data_score = int(round(score_sum / wsum)) if wsum > 0 else 0
-            combined = (user_score + data_score) / 2.0
+
+            # Adjust combined score weighting: user (75%) and data (25%)
+            combined = (
+                (3 * user_score + data_score) / 4.0
+                if seg.rateable and user_score is not None
+                else float(data_score)
+            )
 
             time_above = time_fraction * duration
             pct = time_fraction * 100.0
             if metrics:
-                lines.append(
-                    f"{seg_cfg['label']}:\n"
-                    f"  Time above threshold: {time_above:.2f}s ({pct:.1f}%)\n"
-                    f"  AUC over threshold: {auc_val:.3f}\n"
-                    f"  Data-suggested score: {data_score}"
-                )
+                label = seg.label
+                if not seg.rateable:
+                    label += " (not rated)"
+                entry_lines = [
+                    f"{label}:",
+                    f"  Time above threshold: {time_above:.2f}s ({pct:.1f}%)",
+                    f"  AUC over threshold: {auc_val:.3f}",
+                    f"  Data-suggested score: {data_score}",
+                ]
+                if seg.rateable:
+                    entry_lines.append(f"  Your score: {user_score}")
+                    entry_lines.append(f"  Combined score: {combined:.1f}")
+                lines.append("\n".join(entry_lines))
             else:
-                lines.append(f"{seg_cfg['label']}: No data available for this interval.")
+                label = seg.label + (" (not rated)" if not seg.rateable else "")
+                lines.append(f"{label}: No data available for this interval.")
 
-            segment_results[seg_key] = {
+            segment_results[seg.key] = {
                 'user_score': user_score,
                 'data_score': data_score,
                 'combined_score': combined,
@@ -640,6 +584,11 @@ def main():
                 'duration': duration,
                 'time_above_threshold': time_above
             }
+
+        row = {"fly_id": fly_id, "trial_id": trial_id, "video_file": os.path.basename(it['video_path']),
+               "csv_file": os.path.basename(it['csv_path']) if it['csv_path'] else "",
+               "matrix_row_index": it.get("matrix_row_index", -1), "display_duration_seconds": it['display_duration'],
+               "odor_latency_seconds": latency_value, "threshold": threshold_value}
 
         row = {
             "fly_id": fly_id,
@@ -650,8 +599,10 @@ def main():
             "display_duration_seconds": it['display_duration']
         }
         row["threshold"] = threshold_value
-        for seg_key, seg_res in segment_results.items():
-            row[f"user_score_{seg_key}"] = seg_res['user_score']
+
+    for seg_key, seg_res in segment_results.items():
+            user_entry = seg_res['user_score'] if seg_res['user_score'] is not None else None
+            row[f"user_score_{seg_key}"] = user_entry
             row[f"data_score_{seg_key}"] = seg_res['data_score']
             row[f"combined_score_{seg_key}"] = seg_res['combined_score']
             row[f"time_fraction_{seg_key}"] = seg_res['time_fraction']
