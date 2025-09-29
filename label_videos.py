@@ -28,6 +28,9 @@ METRIC_WEIGHTS = {
 }
 # ===============================================================
 
+# Set target display size for video frames
+TARGET_W, TARGET_H = 640, 640  # You can adjust these values
+
 def main():
     ap = argparse.ArgumentParser(description="Label fly behavior videos (0–10) and compute data-driven scores.")
     ap.add_argument("-v","--videos", required=True, help="Folder with videos (recursively scanned).")
@@ -312,18 +315,9 @@ def main():
     style.configure("Likert.TLabel", background="#f8f8fb")
     style.configure("Likert.TFrame", background="#f8f8fb")
 
-    # Compute max canvas size
-    max_w, max_h = 540, 540
-    for it in items:
-        cap = cv2.VideoCapture(it['video_path'])
-        if cap.isOpened():
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 0
-            cap.release()
-            max_w = max(max_w, w)
-            max_h = max(max_h, h)
-
-    canvas = tk.Canvas(root, width=max_w, height=max_h, bg="black", highlightthickness=0)
+    # Replace max_w, max_h computation and canvas creation:
+    max_w, max_h = TARGET_W, TARGET_H
+    canvas = tk.Canvas(root, width=TARGET_W, height=TARGET_H, bg="black", highlightthickness=0)
     canvas.pack()
 
     info_text = (
@@ -333,21 +327,22 @@ def main():
         f"{int(SEGMENT_MAP['post'].duration_seconds)} s post-odor).\n"
         "Provide a rating for each rateable interval using the scale below, then submit to reveal the data metrics."
     )
-    info = ttk.Label(root, text=info_text, style="Likert.TLabel", wraplength=max_w, justify="left")
-    info.pack(pady=(10, 6), padx=16, anchor="w")
+    info = ttk.Label(root, text=info_text, style="Likert.TLabel", wraplength=TARGET_W, justify="left")
+    info.pack(pady=(6, 4), padx=8, anchor="w")
 
     rateable_segments = [seg for seg in segment_defs if seg.rateable]
     score_vars = {}
 
     def build_likert_scale(parent, seg):
-        container = ttk.Frame(parent, padding=(12, 10), style="Likert.TFrame")
-        container.pack(fill="x", pady=4)
-        ttk.Label(container, text=seg.label, font=("Helvetica", 13, "bold"), style="Likert.TLabel").pack(anchor="w")
+        # Reduce padding and font size for compactness
+        container = ttk.Frame(parent, padding=(6, 4), style="Likert.TFrame")
+        container.pack(fill="x", pady=2)
+        ttk.Label(container, text=seg.label, font=("Helvetica", 10, "bold"), style="Likert.TLabel").pack(anchor="w")
 
         descriptors = ttk.Frame(container, style="Likert.TFrame")
-        descriptors.pack(fill="x", pady=(8, 4))
-        ttk.Label(descriptors, text="Not at all likely", style="Likert.TLabel").pack(side="left")
-        ttk.Label(descriptors, text="Extremely likely", style="Likert.TLabel").pack(side="right")
+        descriptors.pack(fill="x", pady=(4, 2))
+        ttk.Label(descriptors, text="Not at all likely", style="Likert.TLabel", font=("Helvetica", 9)).pack(side="left")
+        ttk.Label(descriptors, text="Extremely likely", style="Likert.TLabel", font=("Helvetica", 9)).pack(side="right")
 
         scale_inner = ttk.Frame(container, style="Likert.TFrame")
         scale_inner.pack()
@@ -356,11 +351,11 @@ def main():
         score_vars[seg.key] = var
 
         for idx, val in enumerate(range(0, 11)):
-            cell = ttk.Frame(scale_inner, padding=2, style="Likert.TFrame")
-            cell.grid(row=0, column=idx, padx=6)
+            cell = ttk.Frame(scale_inner, padding=1, style="Likert.TFrame")
+            cell.grid(row=0, column=idx, padx=2)
             btn = ttk.Radiobutton(cell, variable=var, value=val, style="Likert.TRadiobutton", takefocus=0)
             btn.pack()
-            ttk.Label(cell, text=str(val), style="Likert.TLabel").pack(pady=(4, 0))
+            ttk.Label(cell, text=str(val), style="Likert.TLabel", font=("Helvetica", 8)).pack(pady=(2, 0))
 
     # Rating row
     rating_frame = ttk.Frame(root, padding=(8, 4), style="Likert.TFrame")
@@ -436,6 +431,8 @@ def main():
             return
         frame_counter += 1
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Resize frame before displaying
+        frame = cv2.resize(frame, (TARGET_W, TARGET_H), interpolation=cv2.INTER_AREA)
         im = Image.fromarray(frame)
         imgtk = ImageTk.PhotoImage(image=im)
         canvas.imgtk = imgtk
@@ -495,7 +492,13 @@ def main():
                     score_sum += float(w) * float(m_parts[k])
                     wsum += float(w)
             data_score = int(round(score_sum / wsum)) if wsum > 0 else 0
-            combined = (user_score + data_score) / 2.0 if seg.rateable and user_score is not None else float(data_score)
+
+            # Adjust combined score weighting: user (75%) and data (25%)
+            combined = (
+                (3 * user_score + data_score) / 4.0
+                if seg.rateable and user_score is not None
+                else float(data_score)
+            )
 
             time_above = time_fraction * duration
             pct = time_fraction * 100.0
