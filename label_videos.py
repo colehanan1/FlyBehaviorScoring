@@ -11,11 +11,10 @@ from PIL import Image, ImageTk
 import re
 
 # =================== CONFIG (edit as needed) ===================
-THRESHOLD = 1.0  # Signal threshold defining 'reaction'
 METRIC_WEIGHTS = {
     # Increase/decrease to change influence on data_score (0–10 scale per metric)
-    'time_fraction': 1.0,   # fraction of frames above THRESHOLD
-    'auc': 1.0              # integral above THRESHOLD (scaled by global max)
+    'time_fraction': 1.0,   # fraction of frames above threshold
+    'auc': 1.0              # integral above threshold (scaled by global max)
 }
 
 SEGMENTS = {
@@ -30,9 +29,70 @@ SEGMENTS = {
 }
 
 TOTAL_DISPLAY_SECONDS = sum(seg['duration_seconds'] for seg in SEGMENTS.values())
+# Threshold computation parameters (match envelope script behaviour)
+ODOR_ON_SECONDS = 30.0
+DEFAULT_SMOOTHING_FPS = 40.0
+ENVELOPE_WINDOW_SECONDS = 0.25
+=======
 # ===============================================================
 
-def compute_metrics(signal, fps):
+def _analytic_signal(values):
+    """Return analytic signal via FFT-based Hilbert transform (SciPy-free)."""
+    arr = np.asarray(values, dtype=float)
+    n = arr.size
+    if n == 0:
+        return arr.astype(complex)
+    spectrum = np.fft.fft(arr, n)
+    h = np.zeros(n)
+    if n % 2 == 0:
+        h[0] = h[n // 2] = 1.0
+        h[1:n // 2] = 2.0
+    else:
+        h[0] = 1.0
+        h[1:(n + 1) // 2] = 2.0
+    return np.fft.ifft(spectrum * h)
+
+def compute_envelope(signal, fps):
+    """Compute clipped analytic envelope smoothed over ENVELOPE_WINDOW_SECONDS."""
+    arr = np.asarray(signal, dtype=float)
+    if arr.size == 0:
+        return arr
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    arr = np.clip(arr, 0.0, 100.0)
+    analytic = _analytic_signal(arr)
+    env = np.abs(analytic)
+    fps_for_window = fps if fps and fps > 0 else DEFAULT_SMOOTHING_FPS
+    window_frames = max(int(round(ENVELOPE_WINDOW_SECONDS * fps_for_window)), 1)
+    if window_frames > 1:
+        env = (
+            pd.Series(env)
+            .rolling(window=window_frames, center=True, min_periods=1)
+            .mean()
+            .to_numpy()
+        )
+    return env
+
+def compute_threshold(time_s, envelope, fps):
+    """Compute μ_before + 4σ_before using pre-odor window (< ODOR_ON_SECONDS)."""
+    env = np.asarray(envelope, dtype=float)
+    if env.size == 0:
+        return 0.0
+    times = np.asarray(time_s, dtype=float)
+    if times.size != env.size:
+        times = np.arange(env.size, dtype=float) / (fps if fps and fps > 0 else DEFAULT_SMOOTHING_FPS)
+    pre_mask = times < ODOR_ON_SECONDS
+    if np.any(pre_mask):
+        pre_vals = env[pre_mask]
+    else:
+        n_pre = max(int(round(ODOR_ON_SECONDS * (fps if fps and fps > 0 else DEFAULT_SMOOTHING_FPS))), 1)
+        pre_vals = env[:n_pre]
+    if pre_vals.size == 0:
+        return 0.0
+    mu = float(np.nanmean(pre_vals))
+    sigma = float(np.nanstd(pre_vals, ddof=0))
+    return mu + 4.0 * sigma
+
+def compute_metrics(signal, fps, threshold):
     """
     Compute core reaction metrics from a 1D signal.
     Returns dict with: time_fraction, auc, duration.
@@ -43,11 +103,12 @@ def compute_metrics(signal, fps):
         return None
     duration = n / fps if fps and fps > 0 else float(n)
 
-    above = signal > THRESHOLD
+    thresh = float(threshold) if threshold is not None else 0.0
+    above = signal > thresh
     time_fraction = float(np.count_nonzero(above)) / float(n)
 
     if above.any():
-        auc = float(np.sum(signal[above] - THRESHOLD)) / (fps if fps and fps > 0 else 1.0)
+        auc = float(np.sum(signal[above] - thresh)) / (fps if fps and fps > 0 else 1.0)
     else:
         auc = 0.0
 
@@ -65,6 +126,24 @@ def choose_signal_column(df):
         return df[candidates[0]].values
     # Fallback: last column
     return df.iloc[:, -1].values
+
+def extract_time_seconds(df, fps):
+    """Derive a time axis in seconds from dataframe columns or FPS."""
+    time_like = []
+    for col in df.columns:
+        lower = col.lower()
+        if any(token in lower for token in ('time', 'second', 'timestamp')):
+            series = pd.to_numeric(df[col], errors='coerce')
+            if series.notna().sum() > 0:
+                time_like.append(series.to_numpy(dtype=float))
+    if time_like:
+        # Prefer the first viable column
+        return time_like[0]
+    n = len(df)
+    fps_val = fps if fps and fps > 0 else DEFAULT_SMOOTHING_FPS
+    if fps_val and fps_val > 0:
+        return np.arange(n, dtype=float) / float(fps_val)
+    return np.arange(n, dtype=float)
 
 def parse_fly_trial(path):
     """Try to parse fly_id and trial_id from path/filename digits."""
@@ -157,6 +236,15 @@ def main():
         frame_count = int(frame_count_val) if frame_count_val and frame_count_val > 0 else None
         cap.release()
 
+        sig_raw = choose_signal_column(df)
+        sig_series = pd.to_numeric(pd.Series(sig_raw), errors='coerce').fillna(0.0).to_numpy(dtype=float)
+        fps_for_calc = fps if fps and fps > 0 else 30.0
+        time_axis = extract_time_seconds(df, fps_for_calc)
+        envelope = compute_envelope(sig_series, fps_for_calc)
+        threshold = compute_threshold(time_axis, envelope, fps_for_calc)
+
+        segment_metrics = {}
+        signal_limit_frames = len(envelope)
         sig = choose_signal_column(df)
         fps_for_calc = fps if fps and fps > 0 else 30.0
         segment_metrics = {}
@@ -177,6 +265,10 @@ def main():
                     end_idx = min(signal_limit_frames, end_idx)
             if end_idx < start_idx:
                 end_idx = start_idx
+            seg_signal = envelope[start_idx:end_idx]
+            start_idx = end_idx
+            metrics = compute_metrics(seg_signal, fps_for_calc, threshold) if len(seg_signal) else None
+
             seg_signal = sig[start_idx:end_idx]
             start_idx = end_idx
             metrics = compute_metrics(seg_signal, fps_for_calc) if len(seg_signal) else None
@@ -199,6 +291,7 @@ def main():
             'fly_id': None,
             'trial_id': None,
             'segments': segment_metrics,
+            'threshold': threshold,
             'fps': fps_for_calc,
             'max_frames': max_frames,
             'display_duration': min(TOTAL_DISPLAY_SECONDS, max_frames / fps_for_calc if fps_for_calc > 0 else TOTAL_DISPLAY_SECONDS)
@@ -311,6 +404,18 @@ def main():
         if current_max_frames and frame_counter >= current_max_frames:
             playing = False
             return
+
+            playing = False
+            return
+        frame_counter += 1
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        im = Image.fromarray(frame)
+        imgtk = ImageTk.PhotoImage(image=im)
+        canvas.imgtk = imgtk
+        canvas.create_image(0,0,anchor=tk.NW,image=imgtk)
+        if current_max_frames and frame_counter >= current_max_frames:
+            playing = False
+            return
         delay = int(1000/max(1.0,fps))
         root.after(delay, advance)
 
@@ -332,9 +437,14 @@ def main():
         playing = False
         it = items[idx]
         fly_id, trial_id = it.get('fly_id'), it.get('trial_id')
+        threshold_value = float(it.get('threshold', 0.0))
+
+        segment_results = {}
+        lines = [f"Threshold (μ_before + 4σ_before): {threshold_value:.3f}"]
 
         segment_results = {}
         lines = []
+
         for seg_key, seg_cfg in SEGMENTS.items():
             metrics = it['segments'].get(seg_key)
             user_score = int(score_vars[seg_key].get())
@@ -389,6 +499,7 @@ def main():
             "csv_file": os.path.basename(it['csv_path']),
             "display_duration_seconds": it['display_duration']
         }
+        row["threshold"] = threshold_value
         for seg_key, seg_res in segment_results.items():
             row[f"user_score_{seg_key}"] = seg_res['user_score']
             row[f"data_score_{seg_key}"] = seg_res['data_score']
