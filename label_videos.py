@@ -342,7 +342,7 @@ def main():
         return remaining + completed_rows
 
     def finalize_and_close(message=None, show_dialog=True):
-        nonlocal cap
+        nonlocal cap, slider_active, slider_resume_playback
         out_rows = gather_output_rows()
         if out_rows:
             pd.DataFrame(out_rows).to_csv(args.output, index=False)
@@ -350,6 +350,8 @@ def main():
             pd.DataFrame([]).to_csv(args.output, index=False)
         if cap:
             cap.release()
+        slider_active = False
+        slider_resume_playback = False
         cap = None
         if show_dialog and message:
             messagebox.showinfo("Progress Saved", message)
@@ -378,6 +380,18 @@ def main():
     max_w, max_h = TARGET_W, TARGET_H
     canvas = tk.Canvas(root, width=TARGET_W, height=TARGET_H, bg="black", highlightthickness=0)
     canvas.pack()
+
+    progress_var = tk.DoubleVar(value=0.0)
+    progress_scale = ttk.Scale(
+        root,
+        from_=0.0,
+        to=1.0,
+        orient="horizontal",
+        variable=progress_var,
+    )
+    progress_scale.pack(fill="x", padx=12, pady=(6, 0))
+    progress_label = ttk.Label(root, text="0.00 s / 0.00 s", style="Likert.TLabel")
+    progress_label.pack(anchor="e", padx=12, pady=(0, 6))
 
     info_text = (
         f"Watch the first {int(round(analysis_seconds))} seconds "
@@ -449,9 +463,93 @@ def main():
     playing = False
     frame_counter = 0
     current_max_frames = 0
+    current_duration_seconds = 0.0
+    slider_active = False
+    slider_resume_playback = False
+    slider_updating = False
+
+    def update_progress_readout(frame_index):
+        total_seconds = current_duration_seconds
+        if (not total_seconds) and current_max_frames and fps > 0:
+            total_seconds = current_max_frames / fps
+        if total_seconds is None:
+            total_seconds = 0.0
+        current_seconds = frame_index / fps if fps > 0 else 0.0
+        progress_label.config(text=f"{current_seconds:0.2f} s / {total_seconds:0.2f} s")
+
+    def set_progress(frame_index):
+        nonlocal slider_updating
+        if not slider_active:
+            slider_updating = True
+            progress_var.set(frame_index)
+            slider_updating = False
+        update_progress_readout(frame_index)
+
+    def draw_frame(frame):
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_resized = cv2.resize(frame_rgb, (TARGET_W, TARGET_H), interpolation=cv2.INTER_AREA)
+        im = Image.fromarray(frame_resized)
+        imgtk = ImageTk.PhotoImage(image=im)
+        canvas.imgtk = imgtk
+        canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
+
+    def seek_to_frame(target_frame, resume_playback):
+        nonlocal cap, frame_counter, playing
+        if cap is None:
+            return
+        if current_max_frames:
+            max_index = max(0, current_max_frames - 1)
+            target_frame = max(0, min(int(round(target_frame)), max_index))
+        else:
+            target_frame = max(0, int(round(target_frame)))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        ok, frame = cap.read()
+        if ok:
+            frame_counter = target_frame + 1
+            draw_frame(frame)
+            set_progress(target_frame)
+        else:
+            frame_counter = target_frame
+        if resume_playback and (not current_max_frames or frame_counter < current_max_frames):
+            playing = True
+            delay = int(1000 / max(1.0, fps))
+            root.after(delay, advance)
+        else:
+            playing = False
+
+    def on_slider_move(value):
+        if slider_updating:
+            return
+        try:
+            frame_index = float(value)
+        except (TypeError, ValueError):
+            frame_index = 0.0
+        update_progress_readout(frame_index)
+
+    progress_scale.configure(command=on_slider_move)
+
+    def on_slider_press(event):
+        nonlocal slider_active, slider_resume_playback, playing
+        if cap is None:
+            return
+        slider_active = True
+        slider_resume_playback = playing
+        playing = False
+
+    def on_slider_release(event):
+        nonlocal slider_active
+        if cap is None:
+            slider_active = False
+            return
+        slider_active = False
+        seek_to_frame(progress_var.get(), slider_resume_playback)
+
+    progress_scale.bind("<ButtonPress-1>", on_slider_press)
+    progress_scale.bind("<ButtonRelease-1>", on_slider_release)
 
     def play_current():
         nonlocal cap, fps, playing, frame_counter, current_max_frames
+        nonlocal current_duration_seconds, slider_active, slider_resume_playback
         if cap:
             cap.release()
         item = items[idx]
@@ -493,6 +591,16 @@ def main():
             fps = item['fps'] if item['fps'] > 0 else 40.0
         frame_counter = 0
         current_max_frames = item['max_frames']
+        current_duration_seconds = item.get('display_duration', 0.0) or 0.0
+        if current_max_frames and fps > 0:
+            current_duration_seconds = max(current_duration_seconds, current_max_frames / fps)
+        slider_max = 1.0
+        if current_max_frames:
+            slider_max = max(1.0, float(current_max_frames - 1))
+        elif current_duration_seconds and fps > 0:
+            slider_max = max(1.0, current_duration_seconds * fps)
+        progress_scale.configure(to=slider_max)
+        set_progress(0.0)
         for var in score_vars.values():
             var.set(-1)
         data_text.configure(state="normal")
@@ -518,13 +626,8 @@ def main():
             playing = False
             return
         frame_counter += 1
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # Resize frame before displaying
-        frame = cv2.resize(frame, (TARGET_W, TARGET_H), interpolation=cv2.INTER_AREA)
-        im = Image.fromarray(frame)
-        imgtk = ImageTk.PhotoImage(image=im)
-        canvas.imgtk = imgtk
-        canvas.create_image(0,0,anchor=tk.NW,image=imgtk)
+        draw_frame(frame)
+        set_progress(max(0, frame_counter - 1))
         if current_max_frames and frame_counter >= current_max_frames:
             playing = False
             return
@@ -536,6 +639,7 @@ def main():
         if not cap: return
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         frame_counter = 0
+        set_progress(0.0)
         if not playing:
             playing = True
             root.after(0, advance)
