@@ -25,7 +25,8 @@ from fly_behavior import (
 METRIC_WEIGHTS = {
     # Increase/decrease to change influence on data_score (0–10 scale per metric)
     'time_fraction': 1.0,   # fraction of frames above threshold
-    'auc': 1.0              # integral above threshold (scaled by global max)
+    'auc': 1.0,             # integral above threshold (scaled by global max)
+    'time_to_threshold': 1.0  # rapid responses score higher (lower time is better)
 }
 # ===============================================================
 
@@ -185,7 +186,6 @@ def main():
     # Precompute metrics + global max AUC for scaling
     items = []
     global_max_auc = {seg.key: 0.0 for seg in segment_defs}
-    global_max_auc = {key: 0.0 for key in SEGMENTS}
     legacy_csv_cache = {}
     for vp in videos:
         row_idx = find_matrix_row(vp)
@@ -222,7 +222,6 @@ def main():
                 else np.arange(len(envelope), dtype=float)
             )
             threshold = compute_threshold(time_axis, envelope, fps_for_calc, BASELINE_SECONDS)
-            threshold = compute_threshold(time_axis, envelope, fps_for_calc)
             source_csv = None
         else:
             base = os.path.splitext(os.path.basename(vp))[0]
@@ -252,7 +251,6 @@ def main():
             time_axis = extract_time_seconds(df, fps_for_calc)
             envelope = compute_envelope(sig_series, fps_for_calc)
             threshold = compute_threshold(time_axis, envelope, fps_for_calc, BASELINE_SECONDS)
-            threshold = compute_threshold(time_axis, envelope, fps_for_calc)
             source_csv = cp
 
         segment_metrics = {}
@@ -287,32 +285,69 @@ def main():
             print(f"[WARN] No playable frames for {vp}, skipping.")
             continue
 
-        item = {'video_path': vp, 'csv_path': source_csv, 'matrix_row_index': row_idx if row_idx is not None else -1,
-                'fly_id': (parse_fly_trial(vp))[0], 'trial_id': (parse_fly_trial(vp))[1], 'segments': segment_metrics,
-                'threshold': threshold, 'fps': fps_for_calc, 'max_frames': max_frames, 'display_duration': min(
-                analysis_seconds,
-                max_frames / fps_for_calc if fps_for_calc > 0 else analysis_seconds,
-            ), 'segment_windows': segment_windows, 'odor_latency_seconds': odor_latency_seconds}
-
-
+        fly_id, trial_id = parse_fly_trial(vp)
         item = {
             'video_path': vp,
+            'video_file': os.path.basename(vp),
             'csv_path': source_csv,
             'matrix_row_index': row_idx if row_idx is not None else -1,
-            'fly_id': None,
-            'trial_id': None,
+            'fly_id': fly_id,
+            'trial_id': trial_id,
             'segments': segment_metrics,
             'threshold': threshold,
             'fps': fps_for_calc,
             'max_frames': max_frames,
-            'display_duration': min(TOTAL_DISPLAY_SECONDS, max_frames / fps_for_calc if fps_for_calc > 0 else TOTAL_DISPLAY_SECONDS)
+            'display_duration': min(
+                analysis_seconds,
+                max_frames / fps_for_calc if fps_for_calc > 0 else analysis_seconds,
+            ),
+            'segment_windows': segment_windows,
+            'odor_latency_seconds': odor_latency_seconds,
         }
-        item['fly_id'], item['trial_id'] = parse_fly_trial(vp)
         items.append(item)
 
     if not items:
         print("Nothing to score (no metric-bearing pairs).")
         sys.exit(1)
+
+    # Load any prior annotations so we can optionally reuse them
+    existing_rows = []
+    existing_by_video = {}
+    if os.path.exists(args.output):
+        try:
+            prior_df = pd.read_csv(args.output)
+            existing_rows = prior_df.to_dict("records")
+            for row in existing_rows:
+                video_file = row.get("video_file")
+                if isinstance(video_file, str) and video_file:
+                    existing_by_video.setdefault(video_file, []).append(row)
+        except Exception as exc:
+            print(f"[WARN] Failed to load existing output CSV '{args.output}': {exc}")
+            existing_rows = []
+            existing_by_video = {}
+
+    processed_videos = set()
+    completed_rows = []
+
+    def gather_output_rows():
+        remaining = [
+            row for row in existing_rows if row.get("video_file") not in processed_videos
+        ]
+        return remaining + completed_rows
+
+    def finalize_and_close(message=None, show_dialog=True):
+        nonlocal cap
+        out_rows = gather_output_rows()
+        if out_rows:
+            pd.DataFrame(out_rows).to_csv(args.output, index=False)
+        else:
+            pd.DataFrame([]).to_csv(args.output, index=False)
+        if cap:
+            cap.release()
+        cap = None
+        if show_dialog and message:
+            messagebox.showinfo("Progress Saved", message)
+        root.destroy()
 
     # ---------- GUI ----------
     root = tk.Tk()
@@ -380,52 +415,17 @@ def main():
     rating_frame.pack(pady=4, fill="x")
     for seg in rateable_segments:
         build_likert_scale(rating_frame, seg)
-
-    canvas = tk.Canvas(root, width=max_w, height=max_h, bg="black", highlightthickness=0)
-    canvas.pack()
-
-    info = ttk.Label(root, text="Watch the first 90 seconds. Provide a rating for each interval using the scale below, then submit to reveal the data metrics.", style="Likert.TLabel", wraplength=max_w)
-    info.pack(pady=(10, 6), padx=16, anchor="w")
-
-    score_vars = {}
-
-    def build_likert_scale(parent, seg_key, seg_cfg):
-        container = ttk.Frame(parent, padding=(12, 10), style="Likert.TFrame")
-        container.pack(fill="x", pady=4)
-        ttk.Label(container, text=seg_cfg['label'], font=("Helvetica", 13, "bold"), style="Likert.TLabel").pack(anchor="w")
-
-        descriptors = ttk.Frame(container, style="Likert.TFrame")
-        descriptors.pack(fill="x", pady=(8, 4))
-        ttk.Label(descriptors, text="No Reaction", style="Likert.TLabel").pack(side="left")
-        ttk.Label(descriptors, text="Strong Reaction", style="Likert.TLabel").pack(side="right")
-
-        scale_inner = ttk.Frame(container, style="Likert.TFrame")
-        scale_inner.pack()
-
-        var = tk.IntVar(value=-1)
-        score_vars[seg_key] = var
-
-        for idx, val in enumerate(range(0, 11)):
-            cell = ttk.Frame(scale_inner, padding=2, style="Likert.TFrame")
-            cell.grid(row=0, column=idx, padx=6)
-            btn = ttk.Radiobutton(cell, variable=var, value=val, style="Likert.TRadiobutton", takefocus=0)
-            btn.pack()
-            ttk.Label(cell, text=str(val), style="Likert.TLabel").pack(pady=(4, 0))
-
-    # Rating row
-    rating_frame = ttk.Frame(root, padding=(8, 4), style="Likert.TFrame")
-    rating_frame.pack(pady=4, fill="x")
-    for seg_key, seg_cfg in SEGMENTS.items():
-        build_likert_scale(rating_frame, seg_key, seg_cfg)
         
     # Buttons
     btns = ttk.Frame(root, padding=6, style="Likert.TFrame"); btns.pack(pady=8)
     submit_btn = ttk.Button(btns, text="Submit Score")
     next_btn   = ttk.Button(btns, text="Next Video", state=tk.DISABLED)
     replay_btn = ttk.Button(btns, text="Replay Video")
+    exit_btn   = ttk.Button(btns, text="Save && Exit")
     submit_btn.grid(row=0,column=0,padx=4)
     next_btn.grid(row=0,column=1,padx=4)
     replay_btn.grid(row=0,column=2,padx=4)
+    exit_btn.grid(row=0,column=3,padx=4)
 
     # Data panel (revealed post-submit)
     data_panel = ttk.Frame(root, padding=(12, 8), style="Likert.TFrame")
@@ -438,18 +438,45 @@ def main():
 
     # State
     idx = 0
-    results = []
     cap = None
     fps = 40.0
     playing = False
     frame_counter = 0
     current_max_frames = 0
 
-    def play(index):
+    def play_current():
         nonlocal cap, fps, playing, frame_counter, current_max_frames
-        if cap: cap.release()
-        item = items[index]
+        if cap:
+            cap.release()
+        item = items[idx]
         vp = item['video_path']
+        video_file = item['video_file']
+
+        if video_file in processed_videos:
+            advance_to_next_video()
+            return
+
+        prior_rows = existing_by_video.get(video_file)
+        if prior_rows:
+            reuse = messagebox.askyesno(
+                "Reuse prior annotation?",
+                (
+                    f"An entry for '{video_file}' already exists in {args.output}.\n"
+                    "Do you want to reuse the previous annotation instead of rescoring?"
+                ),
+            )
+            if reuse:
+                processed_videos.add(video_file)
+                completed_rows.append(dict(prior_rows[-1]))
+                messagebox.showinfo(
+                    "Annotation Reused",
+                    f"Using previously saved annotations for '{video_file}'.",
+                )
+                advance_to_next_video()
+                return
+
+        submit_btn.config(state=tk.NORMAL)
+        next_btn.config(state=tk.DISABLED)
         cap = cv2.VideoCapture(vp)
         if not cap.isOpened():
             messagebox.showerror("Error", f"Cannot open video: {vp}")
@@ -466,7 +493,7 @@ def main():
         data_text.delete("1.0", tk.END)
         data_text.configure(state="disabled")
         info.config(text=(
-            f"{os.path.basename(vp)}  [{index+1}/{len(items)}] — "
+            f"{os.path.basename(vp)}  [{idx+1}/{len(items)}] — "
             f"windows include 30 s baseline + 2x{odor_latency_seconds:.1f}s latency. "
             f"Rate each active interval (0–10). Showing first {item['display_duration']:.1f}s."
         ))
@@ -530,15 +557,24 @@ def main():
             duration = metrics['duration'] if metrics else 0.0
             time_fraction = metrics['time_fraction'] if metrics else 0.0
             auc_val = metrics['auc'] if metrics else 0.0
+            time_to_threshold = metrics.get('time_to_threshold') if metrics else None
+            crossed_threshold = metrics.get('crossed_threshold', False) if metrics else False
 
             # Scale metrics to 0–10
             if metrics:
                 m_parts = {
                     'time_fraction': max(0.0, min(10.0, time_fraction * 10.0)),
-                    'auc': max(0.0, min(10.0, (auc_val / global_max_auc[seg.key] * 10.0) if global_max_auc[seg.key] > 0 else 0.0))
+                    'auc': max(0.0, min(10.0, (auc_val / global_max_auc[seg.key] * 10.0) if global_max_auc[seg.key] > 0 else 0.0)),
                 }
+                if 'time_to_threshold' in METRIC_WEIGHTS:
+                    if duration > 0 and time_to_threshold is not None:
+                        clamped_time = max(0.0, min(time_to_threshold, duration))
+                        response_score = 10.0 * (1.0 - (clamped_time / duration))
+                    else:
+                        response_score = 0.0
+                    m_parts['time_to_threshold'] = max(0.0, min(10.0, response_score))
             else:
-                m_parts = {'time_fraction': 0.0, 'auc': 0.0}
+                m_parts = {k: 0.0 for k in METRIC_WEIGHTS}
 
             wsum = 0.0
             score_sum = 0.0
@@ -565,8 +601,12 @@ def main():
                     f"{label}:",
                     f"  Time above threshold: {time_above:.2f}s ({pct:.1f}%)",
                     f"  AUC over threshold: {auc_val:.3f}",
-                    f"  Data-suggested score: {data_score}",
                 ]
+                if time_to_threshold is not None:
+                    entry_lines.append(f"  Time to threshold: {time_to_threshold:.2f}s")
+                else:
+                    entry_lines.append("  Time to threshold: not reached")
+                entry_lines.append(f"  Data-suggested score: {data_score}")
                 if seg.rateable:
                     entry_lines.append(f"  Your score: {user_score}")
                     entry_lines.append(f"  Combined score: {combined:.1f}")
@@ -582,13 +622,10 @@ def main():
                 'time_fraction': time_fraction,
                 'auc': auc_val,
                 'duration': duration,
-                'time_above_threshold': time_above
+                'time_above_threshold': time_above,
+                'time_to_threshold': time_to_threshold,
+                'crossed_threshold': crossed_threshold,
             }
-
-        row = {"fly_id": fly_id, "trial_id": trial_id, "video_file": os.path.basename(it['video_path']),
-               "csv_file": os.path.basename(it['csv_path']) if it['csv_path'] else "",
-               "matrix_row_index": it.get("matrix_row_index", -1), "display_duration_seconds": it['display_duration'],
-               "odor_latency_seconds": latency_value, "threshold": threshold_value}
 
         row = {
             "fly_id": fly_id,
@@ -596,11 +633,12 @@ def main():
             "video_file": os.path.basename(it['video_path']),
             "csv_file": os.path.basename(it['csv_path']) if it['csv_path'] else "",
             "matrix_row_index": it.get("matrix_row_index", -1),
-            "display_duration_seconds": it['display_duration']
+            "display_duration_seconds": it['display_duration'],
+            "odor_latency_seconds": latency_value,
+            "threshold": threshold_value,
         }
-        row["threshold"] = threshold_value
 
-    for seg_key, seg_res in segment_results.items():
+        for seg_key, seg_res in segment_results.items():
             user_entry = seg_res['user_score'] if seg_res['user_score'] is not None else None
             row[f"user_score_{seg_key}"] = user_entry
             row[f"data_score_{seg_key}"] = seg_res['data_score']
@@ -609,8 +647,11 @@ def main():
             row[f"auc_{seg_key}"] = seg_res['auc']
             row[f"time_above_threshold_{seg_key}"] = seg_res['time_above_threshold']
             row[f"segment_duration_{seg_key}"] = seg_res['duration']
+            row[f"time_to_threshold_{seg_key}"] = seg_res.get('time_to_threshold')
+            row[f"crossed_threshold_{seg_key}"] = seg_res.get('crossed_threshold')
 
-        results.append(row)
+        completed_rows.append(row)
+        processed_videos.add(row['video_file'])
 
         data_text.configure(state="normal")
         data_text.delete("1.0", tk.END)
@@ -621,26 +662,44 @@ def main():
         submit_btn.config(state=tk.DISABLED)
         next_btn.config(state=tk.NORMAL)
 
-    def on_next():
-        nonlocal idx, cap
+    def advance_to_next_video():
+        nonlocal idx, cap, playing
+        playing = False
+        if cap:
+            cap.release()
+            cap = None
         idx += 1
         if idx >= len(items):
-            out = args.output
-            pd.DataFrame(results).to_csv(out, index=False)
-            if cap:
-                cap.release()
-            messagebox.showinfo("Done", f"All videos scored.\nSaved: {out}")
-            root.destroy()
+            finalize_and_close(
+                message=f"All videos scored.\nSaved: {args.output}",
+                show_dialog=True,
+            )
             return
-        next_btn.config(state=tk.DISABLED)
         submit_btn.config(state=tk.NORMAL)
-        play(idx)
+        next_btn.config(state=tk.DISABLED)
+        play_current()
+
+    def on_next():
+        advance_to_next_video()
+
+    def on_exit():
+        if messagebox.askyesno(
+            "Save and Exit",
+            "Save current progress to the output CSV and exit the scorer?",
+        ):
+            finalize_and_close(
+                message=f"Progress saved to {args.output}.",
+                show_dialog=True,
+            )
 
     submit_btn.config(command=on_submit)
     next_btn.config(command=on_next)
     replay_btn.config(command=on_replay)
+    exit_btn.config(command=on_exit)
 
-    play(idx)
+    root.protocol("WM_DELETE_WINDOW", on_exit)
+
+    play_current()
     root.mainloop()
 
 if __name__ == "__main__":
