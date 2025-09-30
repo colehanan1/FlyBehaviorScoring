@@ -58,11 +58,17 @@ def main():
     # Find videos
     video_exts = (".mp4",".avi",".mov",".mpg",".mpeg",".wmv",".mkv")
     videos = []
-    for root,_,files in os.walk(args.videos):
+    for root, _, files in os.walk(args.videos):
         for f in files:
             fname_lower = f.lower()
-            if fname_lower.endswith(video_exts) and 'testing' in fname_lower:
-                videos.append(os.path.join(root,f))
+            if not fname_lower.endswith(video_exts):
+                continue
+            if 'testing' not in fname_lower:
+                continue
+            stem, _ = os.path.splitext(fname_lower)
+            if not stem or not stem[-1].isdigit():
+                continue
+            videos.append(os.path.join(root, f))
     videos.sort()
     if not videos:
         print("No videos found.")
