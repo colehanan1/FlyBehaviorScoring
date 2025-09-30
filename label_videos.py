@@ -352,6 +352,7 @@ def main():
             cap.release()
         slider_active = False
         slider_resume_playback = False
+
         cap = None
         if show_dialog and message:
             messagebox.showinfo("Progress Saved", message)
@@ -547,9 +548,9 @@ def main():
     progress_scale.bind("<ButtonPress-1>", on_slider_press)
     progress_scale.bind("<ButtonRelease-1>", on_slider_release)
 
+
     def play_current():
         nonlocal cap, fps, playing, frame_counter, current_max_frames
-        nonlocal current_duration_seconds, slider_active, slider_resume_playback
         if cap:
             cap.release()
         item = items[idx]
@@ -679,6 +680,12 @@ def main():
                 m_parts = {
                     'time_fraction': max(0.0, min(5.0, time_fraction * 5.0)),
                     'auc': max(0.0, min(5.0, (auc_val / global_max_auc[seg.key] * 5.0) if global_max_auc[seg.key] > 0 else 0.0)),
+
+            # Scale metrics to 0–10
+            if metrics:
+                m_parts = {
+                    'time_fraction': max(0.0, min(10.0, time_fraction * 10.0)),
+                    'auc': max(0.0, min(10.0, (auc_val / global_max_auc[seg.key] * 10.0) if global_max_auc[seg.key] > 0 else 0.0)),
                 }
                 if 'time_to_threshold' in METRIC_WEIGHTS:
                     if duration > 0 and time_to_threshold is not None:
@@ -687,6 +694,10 @@ def main():
                     else:
                         response_score = 0.0
                     m_parts['time_to_threshold'] = max(0.0, min(5.0, response_score))
+                        response_score = 10.0 * (1.0 - (clamped_time / duration))
+                    else:
+                        response_score = 0.0
+                    m_parts['time_to_threshold'] = max(0.0, min(10.0, response_score))
             else:
                 m_parts = {k: 0.0 for k in METRIC_WEIGHTS}
 
@@ -751,6 +762,7 @@ def main():
                 'peak_value': peak_value,
                 'rise_speed': rise_speed,
                 'rise_acceleration': rise_acceleration,
+
             }
 
         row = {
