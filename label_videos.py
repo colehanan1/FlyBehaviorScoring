@@ -23,7 +23,7 @@ from fly_behavior import (
 
 # =================== CONFIG (edit as needed) ===================
 METRIC_WEIGHTS = {
-    # Increase/decrease to change influence on data_score (0–10 scale per metric)
+    # Increase/decrease to change influence on data_score (0–5 scale per metric)
     'time_fraction': 1.0,   # fraction of frames above threshold
     'auc': 1.0,             # integral above threshold (scaled by global max)
     'time_to_threshold': 1.0  # rapid responses score higher (lower time is better)
@@ -34,7 +34,7 @@ METRIC_WEIGHTS = {
 TARGET_W, TARGET_H = 640, 640  # You can adjust these values
 
 def main():
-    ap = argparse.ArgumentParser(description="Label fly behavior videos (0–10) and compute data-driven scores.")
+    ap = argparse.ArgumentParser(description="Label fly behavior videos (0–5) and compute data-driven scores.")
     ap.add_argument("-v","--videos", required=True, help="Folder with videos (recursively scanned).")
     # Legacy CSV input is now optional/unused; kept for backward compatibility.
     ap.add_argument("-d","--data", default=None, help="(Deprecated) Folder with CSV traces. If provided and matrix row not found, will fallback.")
@@ -58,11 +58,17 @@ def main():
     # Find videos
     video_exts = (".mp4",".avi",".mov",".mpg",".mpeg",".wmv",".mkv")
     videos = []
-    for root,_,files in os.walk(args.videos):
+    for root, _, files in os.walk(args.videos):
         for f in files:
             fname_lower = f.lower()
-            if fname_lower.endswith(video_exts) and 'testing' in fname_lower:
-                videos.append(os.path.join(root,f))
+            if not fname_lower.endswith(video_exts):
+                continue
+            if 'testing' not in fname_lower:
+                continue
+            stem, _ = os.path.splitext(fname_lower)
+            if not stem or not stem[-1].isdigit():
+                continue
+            videos.append(os.path.join(root, f))
     videos.sort()
     if not videos:
         print("No videos found.")
@@ -336,7 +342,7 @@ def main():
         return remaining + completed_rows
 
     def finalize_and_close(message=None, show_dialog=True):
-        nonlocal cap
+        nonlocal cap, slider_active, slider_resume_playback
         out_rows = gather_output_rows()
         if out_rows:
             pd.DataFrame(out_rows).to_csv(args.output, index=False)
@@ -344,6 +350,9 @@ def main():
             pd.DataFrame([]).to_csv(args.output, index=False)
         if cap:
             cap.release()
+        slider_active = False
+        slider_resume_playback = False
+
         cap = None
         if show_dialog and message:
             messagebox.showinfo("Progress Saved", message)
@@ -373,12 +382,24 @@ def main():
     canvas = tk.Canvas(root, width=TARGET_W, height=TARGET_H, bg="black", highlightthickness=0)
     canvas.pack()
 
+    progress_var = tk.DoubleVar(value=0.0)
+    progress_scale = ttk.Scale(
+        root,
+        from_=0.0,
+        to=1.0,
+        orient="horizontal",
+        variable=progress_var,
+    )
+    progress_scale.pack(fill="x", padx=12, pady=(6, 0))
+    progress_label = ttk.Label(root, text="0.00 s / 0.00 s", style="Likert.TLabel")
+    progress_label.pack(anchor="e", padx=12, pady=(0, 6))
+
     info_text = (
         f"Watch the first {int(round(analysis_seconds))} seconds "
         f"(30 s baseline + {odor_latency_seconds:.1f} s latency + "
         f"{int(SEGMENT_MAP['odor'].duration_seconds)} s odor + "
         f"{int(SEGMENT_MAP['post'].duration_seconds)} s post-odor).\n"
-        "Provide a rating for each rateable interval using the scale below, then submit to reveal the data metrics."
+        "Provide a rating for each rateable interval using the 0–5 scale below, then submit to reveal the data metrics."
     )
     info = ttk.Label(root, text=info_text, style="Likert.TLabel", wraplength=TARGET_W, justify="left")
     info.pack(pady=(6, 4), padx=8, anchor="w")
@@ -403,7 +424,7 @@ def main():
         var = tk.IntVar(value=-1)
         score_vars[seg.key] = var
 
-        for idx, val in enumerate(range(0, 11)):
+        for idx, val in enumerate(range(0, 6)):
             cell = ttk.Frame(scale_inner, padding=1, style="Likert.TFrame")
             cell.grid(row=0, column=idx, padx=2)
             btn = ttk.Radiobutton(cell, variable=var, value=val, style="Likert.TRadiobutton", takefocus=0)
@@ -443,6 +464,90 @@ def main():
     playing = False
     frame_counter = 0
     current_max_frames = 0
+    current_duration_seconds = 0.0
+    slider_active = False
+    slider_resume_playback = False
+    slider_updating = False
+
+    def update_progress_readout(frame_index):
+        total_seconds = current_duration_seconds
+        if (not total_seconds) and current_max_frames and fps > 0:
+            total_seconds = current_max_frames / fps
+        if total_seconds is None:
+            total_seconds = 0.0
+        current_seconds = frame_index / fps if fps > 0 else 0.0
+        progress_label.config(text=f"{current_seconds:0.2f} s / {total_seconds:0.2f} s")
+
+    def set_progress(frame_index):
+        nonlocal slider_updating
+        if not slider_active:
+            slider_updating = True
+            progress_var.set(frame_index)
+            slider_updating = False
+        update_progress_readout(frame_index)
+
+    def draw_frame(frame):
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_resized = cv2.resize(frame_rgb, (TARGET_W, TARGET_H), interpolation=cv2.INTER_AREA)
+        im = Image.fromarray(frame_resized)
+        imgtk = ImageTk.PhotoImage(image=im)
+        canvas.imgtk = imgtk
+        canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
+
+    def seek_to_frame(target_frame, resume_playback):
+        nonlocal cap, frame_counter, playing
+        if cap is None:
+            return
+        if current_max_frames:
+            max_index = max(0, current_max_frames - 1)
+            target_frame = max(0, min(int(round(target_frame)), max_index))
+        else:
+            target_frame = max(0, int(round(target_frame)))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        ok, frame = cap.read()
+        if ok:
+            frame_counter = target_frame + 1
+            draw_frame(frame)
+            set_progress(target_frame)
+        else:
+            frame_counter = target_frame
+        if resume_playback and (not current_max_frames or frame_counter < current_max_frames):
+            playing = True
+            delay = int(1000 / max(1.0, fps))
+            root.after(delay, advance)
+        else:
+            playing = False
+
+    def on_slider_move(value):
+        if slider_updating:
+            return
+        try:
+            frame_index = float(value)
+        except (TypeError, ValueError):
+            frame_index = 0.0
+        update_progress_readout(frame_index)
+
+    progress_scale.configure(command=on_slider_move)
+
+    def on_slider_press(event):
+        nonlocal slider_active, slider_resume_playback, playing
+        if cap is None:
+            return
+        slider_active = True
+        slider_resume_playback = playing
+        playing = False
+
+    def on_slider_release(event):
+        nonlocal slider_active
+        if cap is None:
+            slider_active = False
+            return
+        slider_active = False
+        seek_to_frame(progress_var.get(), slider_resume_playback)
+
+    progress_scale.bind("<ButtonPress-1>", on_slider_press)
+    progress_scale.bind("<ButtonRelease-1>", on_slider_release)
+
 
     def play_current():
         nonlocal cap, fps, playing, frame_counter, current_max_frames
@@ -487,6 +592,16 @@ def main():
             fps = item['fps'] if item['fps'] > 0 else 40.0
         frame_counter = 0
         current_max_frames = item['max_frames']
+        current_duration_seconds = item.get('display_duration', 0.0) or 0.0
+        if current_max_frames and fps > 0:
+            current_duration_seconds = max(current_duration_seconds, current_max_frames / fps)
+        slider_max = 1.0
+        if current_max_frames:
+            slider_max = max(1.0, float(current_max_frames - 1))
+        elif current_duration_seconds and fps > 0:
+            slider_max = max(1.0, current_duration_seconds * fps)
+        progress_scale.configure(to=slider_max)
+        set_progress(0.0)
         for var in score_vars.values():
             var.set(-1)
         data_text.configure(state="normal")
@@ -495,7 +610,7 @@ def main():
         info.config(text=(
             f"{os.path.basename(vp)}  [{idx+1}/{len(items)}] — "
             f"windows include 30 s baseline + 2x{odor_latency_seconds:.1f}s latency. "
-            f"Rate each active interval (0–10). Showing first {item['display_duration']:.1f}s."
+            f"Rate each active interval (0–5). Showing first {item['display_duration']:.1f}s."
         ))
         playing = True
         root.after(0, advance)
@@ -512,13 +627,8 @@ def main():
             playing = False
             return
         frame_counter += 1
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # Resize frame before displaying
-        frame = cv2.resize(frame, (TARGET_W, TARGET_H), interpolation=cv2.INTER_AREA)
-        im = Image.fromarray(frame)
-        imgtk = ImageTk.PhotoImage(image=im)
-        canvas.imgtk = imgtk
-        canvas.create_image(0,0,anchor=tk.NW,image=imgtk)
+        draw_frame(frame)
+        set_progress(max(0, frame_counter - 1))
         if current_max_frames and frame_counter >= current_max_frames:
             playing = False
             return
@@ -530,6 +640,7 @@ def main():
         if not cap: return
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         frame_counter = 0
+        set_progress(0.0)
         if not playing:
             playing = True
             root.after(0, advance)
@@ -559,6 +670,16 @@ def main():
             auc_val = metrics['auc'] if metrics else 0.0
             time_to_threshold = metrics.get('time_to_threshold') if metrics else None
             crossed_threshold = metrics.get('crossed_threshold', False) if metrics else False
+            time_to_peak = metrics.get('time_to_peak') if metrics else None
+            peak_value = metrics.get('peak_value') if metrics else None
+            rise_speed = metrics.get('rise_speed') if metrics else None
+            rise_acceleration = metrics.get('rise_acceleration') if metrics else None
+
+            # Scale metrics to 0–5
+            if metrics:
+                m_parts = {
+                    'time_fraction': max(0.0, min(5.0, time_fraction * 5.0)),
+                    'auc': max(0.0, min(5.0, (auc_val / global_max_auc[seg.key] * 5.0) if global_max_auc[seg.key] > 0 else 0.0)),
 
             # Scale metrics to 0–10
             if metrics:
@@ -569,6 +690,10 @@ def main():
                 if 'time_to_threshold' in METRIC_WEIGHTS:
                     if duration > 0 and time_to_threshold is not None:
                         clamped_time = max(0.0, min(time_to_threshold, duration))
+                        response_score = 5.0 * (1.0 - (clamped_time / duration))
+                    else:
+                        response_score = 0.0
+                    m_parts['time_to_threshold'] = max(0.0, min(5.0, response_score))
                         response_score = 10.0 * (1.0 - (clamped_time / duration))
                     else:
                         response_score = 0.0
@@ -606,6 +731,14 @@ def main():
                     entry_lines.append(f"  Time to threshold: {time_to_threshold:.2f}s")
                 else:
                     entry_lines.append("  Time to threshold: not reached")
+                if time_to_peak is not None:
+                    entry_lines.append(f"  Time to peak: {time_to_peak:.2f}s")
+                if peak_value is not None:
+                    entry_lines.append(f"  Peak value: {peak_value:.3f}")
+                if rise_speed is not None:
+                    entry_lines.append(f"  Rise speed: {rise_speed:.3f}/s")
+                if rise_acceleration is not None:
+                    entry_lines.append(f"  Rise acceleration: {rise_acceleration:.3f}/s²")
                 entry_lines.append(f"  Data-suggested score: {data_score}")
                 if seg.rateable:
                     entry_lines.append(f"  Your score: {user_score}")
@@ -625,6 +758,11 @@ def main():
                 'time_above_threshold': time_above,
                 'time_to_threshold': time_to_threshold,
                 'crossed_threshold': crossed_threshold,
+                'time_to_peak': time_to_peak,
+                'peak_value': peak_value,
+                'rise_speed': rise_speed,
+                'rise_acceleration': rise_acceleration,
+
             }
 
         row = {
@@ -649,6 +787,10 @@ def main():
             row[f"segment_duration_{seg_key}"] = seg_res['duration']
             row[f"time_to_threshold_{seg_key}"] = seg_res.get('time_to_threshold')
             row[f"crossed_threshold_{seg_key}"] = seg_res.get('crossed_threshold')
+            row[f"time_to_peak_{seg_key}"] = seg_res.get('time_to_peak')
+            row[f"peak_value_{seg_key}"] = seg_res.get('peak_value')
+            row[f"rise_speed_{seg_key}"] = seg_res.get('rise_speed')
+            row[f"rise_acceleration_{seg_key}"] = seg_res.get('rise_acceleration')
 
         completed_rows.append(row)
         processed_videos.add(row['video_file'])
