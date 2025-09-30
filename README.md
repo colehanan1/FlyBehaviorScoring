@@ -1,10 +1,10 @@
 # Fly Behavior Scoring & ML Starter
 
 A ready-to-run, Git-ready project to:
-- Label fly behavior videos with a 0–10 human score via a simple GUI.
-- Compute data-driven metrics (e.g., time above threshold, AUC) and a data score.
+- Label fly behavior videos with a 0–5 human score via a simple GUI.
+- Compute data-driven metrics (e.g., time above threshold, AUC, reaction latency, rise speed) and a data score.
 - Persist meticulous, per-trial metadata to a single master CSV.
-- Train a baseline PyTorch regressor to predict scores from metrics (outputs 0–10 after rounding).
+- Train a baseline PyTorch regressor to predict scores from metrics (outputs 0–5 after rounding).
 
 ## Quick start
 
@@ -19,7 +19,7 @@ pip install -r requirements.txt
 python label_videos.py   --videos /path/to/videos   --data   /path/to/csvs   --output scoring_results.csv
 ```
 
-- The GUI shows **video first** with a 0–10 selector (0=NR, 5=Average, 10=Strongest).
+- The GUI shows **video first** with a 0–5 selector.
 - After you submit, it reveals metrics and **data-derived score** (weights configurable).
 - All rows are appended to a single **master CSV** with fly/trial/video/user score/data score/combined score and raw metrics.
 
@@ -29,7 +29,7 @@ python label_videos.py   --videos /path/to/videos   --data   /path/to/csvs   --o
 python train_model.py --data scoring_results.csv --epochs 100 --output-model fly_score_model.pth
 ```
 
-- Predicts a continuous score that you should **round to 0–10** for reporting.
+- Predicts a continuous score that you should **round to 0–5** for reporting.
 - GPU is used automatically when available (PyTorch + CUDA).
 
 ## Configure metric weights / threshold
