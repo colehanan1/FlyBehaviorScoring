@@ -288,6 +288,7 @@ def main():
         fly_id, trial_id = parse_fly_trial(vp)
         item = {
             'video_path': vp,
+            'video_file': os.path.basename(vp),
             'csv_path': source_csv,
             'matrix_row_index': row_idx if row_idx is not None else -1,
             'fly_id': fly_id,
@@ -308,6 +309,45 @@ def main():
     if not items:
         print("Nothing to score (no metric-bearing pairs).")
         sys.exit(1)
+
+    # Load any prior annotations so we can optionally reuse them
+    existing_rows = []
+    existing_by_video = {}
+    if os.path.exists(args.output):
+        try:
+            prior_df = pd.read_csv(args.output)
+            existing_rows = prior_df.to_dict("records")
+            for row in existing_rows:
+                video_file = row.get("video_file")
+                if isinstance(video_file, str) and video_file:
+                    existing_by_video.setdefault(video_file, []).append(row)
+        except Exception as exc:
+            print(f"[WARN] Failed to load existing output CSV '{args.output}': {exc}")
+            existing_rows = []
+            existing_by_video = {}
+
+    processed_videos = set()
+    completed_rows = []
+
+    def gather_output_rows():
+        remaining = [
+            row for row in existing_rows if row.get("video_file") not in processed_videos
+        ]
+        return remaining + completed_rows
+
+    def finalize_and_close(message=None, show_dialog=True):
+        nonlocal cap
+        out_rows = gather_output_rows()
+        if out_rows:
+            pd.DataFrame(out_rows).to_csv(args.output, index=False)
+        else:
+            pd.DataFrame([]).to_csv(args.output, index=False)
+        if cap:
+            cap.release()
+        cap = None
+        if show_dialog and message:
+            messagebox.showinfo("Progress Saved", message)
+        root.destroy()
 
     # ---------- GUI ----------
     root = tk.Tk()
@@ -381,9 +421,11 @@ def main():
     submit_btn = ttk.Button(btns, text="Submit Score")
     next_btn   = ttk.Button(btns, text="Next Video", state=tk.DISABLED)
     replay_btn = ttk.Button(btns, text="Replay Video")
+    exit_btn   = ttk.Button(btns, text="Save && Exit")
     submit_btn.grid(row=0,column=0,padx=4)
     next_btn.grid(row=0,column=1,padx=4)
     replay_btn.grid(row=0,column=2,padx=4)
+    exit_btn.grid(row=0,column=3,padx=4)
 
     # Data panel (revealed post-submit)
     data_panel = ttk.Frame(root, padding=(12, 8), style="Likert.TFrame")
@@ -396,18 +438,45 @@ def main():
 
     # State
     idx = 0
-    results = []
     cap = None
     fps = 40.0
     playing = False
     frame_counter = 0
     current_max_frames = 0
 
-    def play(index):
+    def play_current():
         nonlocal cap, fps, playing, frame_counter, current_max_frames
-        if cap: cap.release()
-        item = items[index]
+        if cap:
+            cap.release()
+        item = items[idx]
         vp = item['video_path']
+        video_file = item['video_file']
+
+        if video_file in processed_videos:
+            advance_to_next_video()
+            return
+
+        prior_rows = existing_by_video.get(video_file)
+        if prior_rows:
+            reuse = messagebox.askyesno(
+                "Reuse prior annotation?",
+                (
+                    f"An entry for '{video_file}' already exists in {args.output}.\n"
+                    "Do you want to reuse the previous annotation instead of rescoring?"
+                ),
+            )
+            if reuse:
+                processed_videos.add(video_file)
+                completed_rows.append(dict(prior_rows[-1]))
+                messagebox.showinfo(
+                    "Annotation Reused",
+                    f"Using previously saved annotations for '{video_file}'.",
+                )
+                advance_to_next_video()
+                return
+
+        submit_btn.config(state=tk.NORMAL)
+        next_btn.config(state=tk.DISABLED)
         cap = cv2.VideoCapture(vp)
         if not cap.isOpened():
             messagebox.showerror("Error", f"Cannot open video: {vp}")
@@ -424,7 +493,7 @@ def main():
         data_text.delete("1.0", tk.END)
         data_text.configure(state="disabled")
         info.config(text=(
-            f"{os.path.basename(vp)}  [{index+1}/{len(items)}] — "
+            f"{os.path.basename(vp)}  [{idx+1}/{len(items)}] — "
             f"windows include 30 s baseline + 2x{odor_latency_seconds:.1f}s latency. "
             f"Rate each active interval (0–10). Showing first {item['display_duration']:.1f}s."
         ))
@@ -558,20 +627,16 @@ def main():
                 'crossed_threshold': crossed_threshold,
             }
 
-        row = {"fly_id": fly_id, "trial_id": trial_id, "video_file": os.path.basename(it['video_path']),
-               "csv_file": os.path.basename(it['csv_path']) if it['csv_path'] else "",
-               "matrix_row_index": it.get("matrix_row_index", -1), "display_duration_seconds": it['display_duration'],
-               "odor_latency_seconds": latency_value, "threshold": threshold_value}
-
         row = {
             "fly_id": fly_id,
             "trial_id": trial_id,
             "video_file": os.path.basename(it['video_path']),
             "csv_file": os.path.basename(it['csv_path']) if it['csv_path'] else "",
             "matrix_row_index": it.get("matrix_row_index", -1),
-            "display_duration_seconds": it['display_duration']
+            "display_duration_seconds": it['display_duration'],
+            "odor_latency_seconds": latency_value,
+            "threshold": threshold_value,
         }
-        row["threshold"] = threshold_value
 
         for seg_key, seg_res in segment_results.items():
             user_entry = seg_res['user_score'] if seg_res['user_score'] is not None else None
@@ -585,7 +650,8 @@ def main():
             row[f"time_to_threshold_{seg_key}"] = seg_res.get('time_to_threshold')
             row[f"crossed_threshold_{seg_key}"] = seg_res.get('crossed_threshold')
 
-        results.append(row)
+        completed_rows.append(row)
+        processed_videos.add(row['video_file'])
 
         data_text.configure(state="normal")
         data_text.delete("1.0", tk.END)
@@ -596,26 +662,44 @@ def main():
         submit_btn.config(state=tk.DISABLED)
         next_btn.config(state=tk.NORMAL)
 
-    def on_next():
-        nonlocal idx, cap
+    def advance_to_next_video():
+        nonlocal idx, cap, playing
+        playing = False
+        if cap:
+            cap.release()
+            cap = None
         idx += 1
         if idx >= len(items):
-            out = args.output
-            pd.DataFrame(results).to_csv(out, index=False)
-            if cap:
-                cap.release()
-            messagebox.showinfo("Done", f"All videos scored.\nSaved: {out}")
-            root.destroy()
+            finalize_and_close(
+                message=f"All videos scored.\nSaved: {args.output}",
+                show_dialog=True,
+            )
             return
-        next_btn.config(state=tk.DISABLED)
         submit_btn.config(state=tk.NORMAL)
-        play(idx)
+        next_btn.config(state=tk.DISABLED)
+        play_current()
+
+    def on_next():
+        advance_to_next_video()
+
+    def on_exit():
+        if messagebox.askyesno(
+            "Save and Exit",
+            "Save current progress to the output CSV and exit the scorer?",
+        ):
+            finalize_and_close(
+                message=f"Progress saved to {args.output}.",
+                show_dialog=True,
+            )
 
     submit_btn.config(command=on_submit)
     next_btn.config(command=on_next)
     replay_btn.config(command=on_replay)
+    exit_btn.config(command=on_exit)
 
-    play(idx)
+    root.protocol("WM_DELETE_WINDOW", on_exit)
+
+    play_current()
     root.mainloop()
 
 if __name__ == "__main__":
