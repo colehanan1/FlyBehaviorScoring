@@ -186,7 +186,6 @@ def main():
     # Precompute metrics + global max AUC for scaling
     items = []
     global_max_auc = {seg.key: 0.0 for seg in segment_defs}
-    global_max_auc = {key: 0.0 for key in SEGMENTS}
     legacy_csv_cache = {}
     for vp in videos:
         row_idx = find_matrix_row(vp)
@@ -223,7 +222,6 @@ def main():
                 else np.arange(len(envelope), dtype=float)
             )
             threshold = compute_threshold(time_axis, envelope, fps_for_calc, BASELINE_SECONDS)
-            threshold = compute_threshold(time_axis, envelope, fps_for_calc)
             source_csv = None
         else:
             base = os.path.splitext(os.path.basename(vp))[0]
@@ -253,7 +251,6 @@ def main():
             time_axis = extract_time_seconds(df, fps_for_calc)
             envelope = compute_envelope(sig_series, fps_for_calc)
             threshold = compute_threshold(time_axis, envelope, fps_for_calc, BASELINE_SECONDS)
-            threshold = compute_threshold(time_axis, envelope, fps_for_calc)
             source_csv = cp
 
         segment_metrics = {}
@@ -288,27 +285,24 @@ def main():
             print(f"[WARN] No playable frames for {vp}, skipping.")
             continue
 
-        item = {'video_path': vp, 'csv_path': source_csv, 'matrix_row_index': row_idx if row_idx is not None else -1,
-                'fly_id': (parse_fly_trial(vp))[0], 'trial_id': (parse_fly_trial(vp))[1], 'segments': segment_metrics,
-                'threshold': threshold, 'fps': fps_for_calc, 'max_frames': max_frames, 'display_duration': min(
-                analysis_seconds,
-                max_frames / fps_for_calc if fps_for_calc > 0 else analysis_seconds,
-            ), 'segment_windows': segment_windows, 'odor_latency_seconds': odor_latency_seconds}
-
-
+        fly_id, trial_id = parse_fly_trial(vp)
         item = {
             'video_path': vp,
             'csv_path': source_csv,
             'matrix_row_index': row_idx if row_idx is not None else -1,
-            'fly_id': None,
-            'trial_id': None,
+            'fly_id': fly_id,
+            'trial_id': trial_id,
             'segments': segment_metrics,
             'threshold': threshold,
             'fps': fps_for_calc,
             'max_frames': max_frames,
-            'display_duration': min(TOTAL_DISPLAY_SECONDS, max_frames / fps_for_calc if fps_for_calc > 0 else TOTAL_DISPLAY_SECONDS)
+            'display_duration': min(
+                analysis_seconds,
+                max_frames / fps_for_calc if fps_for_calc > 0 else analysis_seconds,
+            ),
+            'segment_windows': segment_windows,
+            'odor_latency_seconds': odor_latency_seconds,
         }
-        item['fly_id'], item['trial_id'] = parse_fly_trial(vp)
         items.append(item)
 
     if not items:
@@ -381,43 +375,6 @@ def main():
     rating_frame.pack(pady=4, fill="x")
     for seg in rateable_segments:
         build_likert_scale(rating_frame, seg)
-
-    canvas = tk.Canvas(root, width=max_w, height=max_h, bg="black", highlightthickness=0)
-    canvas.pack()
-
-    info = ttk.Label(root, text="Watch the first 90 seconds. Provide a rating for each interval using the scale below, then submit to reveal the data metrics.", style="Likert.TLabel", wraplength=max_w)
-    info.pack(pady=(10, 6), padx=16, anchor="w")
-
-    score_vars = {}
-
-    def build_likert_scale(parent, seg_key, seg_cfg):
-        container = ttk.Frame(parent, padding=(12, 10), style="Likert.TFrame")
-        container.pack(fill="x", pady=4)
-        ttk.Label(container, text=seg_cfg['label'], font=("Helvetica", 13, "bold"), style="Likert.TLabel").pack(anchor="w")
-
-        descriptors = ttk.Frame(container, style="Likert.TFrame")
-        descriptors.pack(fill="x", pady=(8, 4))
-        ttk.Label(descriptors, text="No Reaction", style="Likert.TLabel").pack(side="left")
-        ttk.Label(descriptors, text="Strong Reaction", style="Likert.TLabel").pack(side="right")
-
-        scale_inner = ttk.Frame(container, style="Likert.TFrame")
-        scale_inner.pack()
-
-        var = tk.IntVar(value=-1)
-        score_vars[seg_key] = var
-
-        for idx, val in enumerate(range(0, 11)):
-            cell = ttk.Frame(scale_inner, padding=2, style="Likert.TFrame")
-            cell.grid(row=0, column=idx, padx=6)
-            btn = ttk.Radiobutton(cell, variable=var, value=val, style="Likert.TRadiobutton", takefocus=0)
-            btn.pack()
-            ttk.Label(cell, text=str(val), style="Likert.TLabel").pack(pady=(4, 0))
-
-    # Rating row
-    rating_frame = ttk.Frame(root, padding=(8, 4), style="Likert.TFrame")
-    rating_frame.pack(pady=4, fill="x")
-    for seg_key, seg_cfg in SEGMENTS.items():
-        build_likert_scale(rating_frame, seg_key, seg_cfg)
         
     # Buttons
     btns = ttk.Frame(root, padding=6, style="Likert.TFrame"); btns.pack(pady=8)
