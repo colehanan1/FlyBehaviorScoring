@@ -24,7 +24,19 @@ def compute_metrics(signal: np.ndarray, fps: float, threshold: float) -> dict | 
 
     if above.any():
         auc = float(np.sum(signal[above] - thresh)) / (fps_val if fps_val > 0 else 1.0)
+        first_cross_idx = int(np.flatnonzero(above)[0])
+        time_to_threshold = (
+            first_cross_idx / fps_val if fps_val > 0 else float(first_cross_idx)
+        )
     else:
         auc = 0.0
+        first_cross_idx = None
+        time_to_threshold = None
 
-    return {'time_fraction': time_fraction, 'auc': auc, 'duration': duration}
+    return {
+        'time_fraction': time_fraction,
+        'auc': auc,
+        'duration': duration,
+        'crossed_threshold': bool(first_cross_idx is not None),
+        'time_to_threshold': time_to_threshold,
+    }
