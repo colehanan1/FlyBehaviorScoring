@@ -25,7 +25,8 @@ from fly_behavior import (
 METRIC_WEIGHTS = {
     # Increase/decrease to change influence on data_score (0–10 scale per metric)
     'time_fraction': 1.0,   # fraction of frames above threshold
-    'auc': 1.0              # integral above threshold (scaled by global max)
+    'auc': 1.0,             # integral above threshold (scaled by global max)
+    'time_to_threshold': 1.0  # rapid responses score higher (lower time is better)
 }
 # ===============================================================
 
@@ -530,15 +531,24 @@ def main():
             duration = metrics['duration'] if metrics else 0.0
             time_fraction = metrics['time_fraction'] if metrics else 0.0
             auc_val = metrics['auc'] if metrics else 0.0
+            time_to_threshold = metrics.get('time_to_threshold') if metrics else None
+            crossed_threshold = metrics.get('crossed_threshold', False) if metrics else False
 
             # Scale metrics to 0–10
             if metrics:
                 m_parts = {
                     'time_fraction': max(0.0, min(10.0, time_fraction * 10.0)),
-                    'auc': max(0.0, min(10.0, (auc_val / global_max_auc[seg.key] * 10.0) if global_max_auc[seg.key] > 0 else 0.0))
+                    'auc': max(0.0, min(10.0, (auc_val / global_max_auc[seg.key] * 10.0) if global_max_auc[seg.key] > 0 else 0.0)),
                 }
+                if 'time_to_threshold' in METRIC_WEIGHTS:
+                    if duration > 0 and time_to_threshold is not None:
+                        clamped_time = max(0.0, min(time_to_threshold, duration))
+                        response_score = 10.0 * (1.0 - (clamped_time / duration))
+                    else:
+                        response_score = 0.0
+                    m_parts['time_to_threshold'] = max(0.0, min(10.0, response_score))
             else:
-                m_parts = {'time_fraction': 0.0, 'auc': 0.0}
+                m_parts = {k: 0.0 for k in METRIC_WEIGHTS}
 
             wsum = 0.0
             score_sum = 0.0
@@ -565,8 +575,12 @@ def main():
                     f"{label}:",
                     f"  Time above threshold: {time_above:.2f}s ({pct:.1f}%)",
                     f"  AUC over threshold: {auc_val:.3f}",
-                    f"  Data-suggested score: {data_score}",
                 ]
+                if time_to_threshold is not None:
+                    entry_lines.append(f"  Time to threshold: {time_to_threshold:.2f}s")
+                else:
+                    entry_lines.append("  Time to threshold: not reached")
+                entry_lines.append(f"  Data-suggested score: {data_score}")
                 if seg.rateable:
                     entry_lines.append(f"  Your score: {user_score}")
                     entry_lines.append(f"  Combined score: {combined:.1f}")
@@ -582,7 +596,9 @@ def main():
                 'time_fraction': time_fraction,
                 'auc': auc_val,
                 'duration': duration,
-                'time_above_threshold': time_above
+                'time_above_threshold': time_above,
+                'time_to_threshold': time_to_threshold,
+                'crossed_threshold': crossed_threshold,
             }
 
         row = {"fly_id": fly_id, "trial_id": trial_id, "video_file": os.path.basename(it['video_path']),
@@ -600,7 +616,7 @@ def main():
         }
         row["threshold"] = threshold_value
 
-    for seg_key, seg_res in segment_results.items():
+        for seg_key, seg_res in segment_results.items():
             user_entry = seg_res['user_score'] if seg_res['user_score'] is not None else None
             row[f"user_score_{seg_key}"] = user_entry
             row[f"data_score_{seg_key}"] = seg_res['data_score']
@@ -609,6 +625,8 @@ def main():
             row[f"auc_{seg_key}"] = seg_res['auc']
             row[f"time_above_threshold_{seg_key}"] = seg_res['time_above_threshold']
             row[f"segment_duration_{seg_key}"] = seg_res['duration']
+            row[f"time_to_threshold_{seg_key}"] = seg_res.get('time_to_threshold')
+            row[f"crossed_threshold_{seg_key}"] = seg_res.get('crossed_threshold')
 
         results.append(row)
 
