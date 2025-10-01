@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 
-TIME_COLUMN_PATTERN = re.compile(r"dir_val_(\\d+)")
+TIME_COLUMN_PATTERN = re.compile(r"dir[\\W_]*val[\\W_]*(\\d+)", re.IGNORECASE)
 
 
 @dataclass
@@ -80,9 +80,19 @@ def _decode_categorical_columns(df: pd.DataFrame, code_maps: dict) -> pd.DataFra
 
 
 def _identify_time_columns(columns: Sequence[str]) -> List[str]:
-    matches = [col for col in columns if TIME_COLUMN_PATTERN.match(col)]
-    matches.sort(key=lambda x: int(TIME_COLUMN_PATTERN.match(x).group(1)))
-    return matches
+    extracted: List[Tuple[str, int]] = []
+    for column in columns:
+        match = TIME_COLUMN_PATTERN.search(column)
+        if match:
+            try:
+                index = int(match.group(1))
+            except ValueError:
+                # Skip columns where the captured group is not an integer.
+                continue
+            extracted.append((column, index))
+
+    extracted.sort(key=lambda pair: pair[1])
+    return [name for name, _ in extracted]
 
 
 def _canonicalize_dataset_name(name: str) -> str:
@@ -128,7 +138,11 @@ def prepare_data(
 
     time_columns = _identify_time_columns(df.columns)
     if not time_columns:
-        raise ValueError("No time-series columns found matching pattern 'dir_val_\\d+'.")
+        sample_columns = ", ".join(list(df.columns[:10]))
+        raise ValueError(
+            "No time-series columns found matching pattern similar to 'dir_val_#'. "
+            f"First columns: [{sample_columns}]"
+        )
 
     # Canonicalize dataset names to expected values.
     if "dataset_name" in df.columns:
