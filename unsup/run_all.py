@@ -23,6 +23,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--min-cluster-size", type=int, default=5, help="Minimum cluster size for HDBSCAN/DBSCAN.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
     parser.add_argument("--max-pcs", type=int, default=10, help="Maximum number of principal components to retain.")
+    parser.add_argument(
+        "--datasets",
+        nargs="+",
+        default=("EB", "3-octonol"),
+        help="Dataset names to include in the analysis.",
+    )
     return parser.parse_args()
 
 
@@ -53,7 +59,7 @@ def main() -> None:
     run_dir = args.out / timestamp
     artifacts = ensure_output_dir(run_dir)
 
-    prepared = prepare_data(args.npy, args.meta)
+    prepared = prepare_data(args.npy, args.meta, target_datasets=args.datasets)
     pca_results = compute_pca(prepared.traces, max_pcs=args.max_pcs, random_state=args.seed)
     importance_df = compute_time_importance(pca_results, prepared.time_columns)
     write_time_importance(run_dir / "timepoint_importance.csv", importance_df)

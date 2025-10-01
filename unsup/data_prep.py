@@ -107,6 +107,8 @@ def _canonicalize_dataset_name(name: str) -> str:
 def prepare_data(
     npy_path: Path,
     meta_path: Path,
+    *,
+    target_datasets: Sequence[str] | None = None,
 ) -> PreparedData:
     """Load, filter, and z-score trials for clustering.
 
@@ -116,6 +118,8 @@ def prepare_data(
         Path to the trial matrix stored as a NumPy array.
     meta_path: Path
         Path to JSON metadata describing column order and categorical maps.
+    target_datasets: Sequence[str] | None, optional keyword-only
+        Dataset names to retain. Defaults to {"EB", "3-octonol"}.
 
     Returns
     -------
@@ -152,12 +156,21 @@ def prepare_data(
     trial_type_series = df.get("trial_type_name", pd.Series("", index=df.index)).astype(str)
     dataset_series = df.get("dataset_name", pd.Series("", index=df.index)).astype(str)
     filters = trial_type_series.str.lower() == "testing"
-    dataset_mask = dataset_series.isin({"EB", "3-octonol"})
+    if target_datasets is None:
+        dataset_candidates = {"EB", "3-octonol"}
+    else:
+        dataset_candidates = {
+            _canonicalize_dataset_name(str(candidate)) for candidate in target_datasets
+        }
+    dataset_mask = dataset_series.isin(dataset_candidates)
     combined_mask = filters & dataset_mask
     filtered = df.loc[combined_mask].reset_index(drop=True)
 
     if filtered.empty:
-        raise ValueError("No trials remaining after filtering for testing EB/3-octonol datasets.")
+        raise ValueError(
+            "No trials remaining after filtering for testing trials in datasets: "
+            f"{sorted(dataset_candidates)}."
+        )
 
     traces = filtered[time_columns].to_numpy(dtype=float)
 
