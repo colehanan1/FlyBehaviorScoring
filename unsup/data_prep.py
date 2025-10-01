@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 
-TIME_COLUMN_PATTERN = re.compile(r"dir[\\W_]*val[\\W_]*(\\d+)", re.IGNORECASE)
+TIME_COLUMN_PATTERN = re.compile(r"dir[\W_]*val[\W_]*(\d+)", re.IGNORECASE)
 
 
 @dataclass
