@@ -5,7 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -43,39 +43,10 @@ def _load_inputs(npy_path: Path, meta_path: Path) -> Tuple[np.ndarray, dict]:
     return data, meta
 
 
-def _to_python_scalar(value: object) -> object:
-    """Convert NumPy scalar types to native Python scalars."""
-
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
-
-
-def _normalize_mapping(mapping: object) -> dict:
-    """Return a dictionary with Python-native keys for mapping operations."""
-
-    if isinstance(mapping, dict):
-        items: Iterable[tuple] = mapping.items()
-    elif isinstance(mapping, Iterable) and not isinstance(mapping, (str, bytes)):
-        items = mapping  # type: ignore[assignment]
-    else:
-        raise TypeError("code_maps entries must be dicts or iterable pairs")
-
-    normalized: dict = {}
-    for key, value in items:  # type: ignore[misc]
-        normalized[_to_python_scalar(key)] = value
-    return normalized
-
-
 def _decode_categorical_columns(df: pd.DataFrame, code_maps: dict) -> pd.DataFrame:
-    for column, raw_mapping in code_maps.items():
-        if column not in df.columns:
-            continue
-
-        mapping = _normalize_mapping(raw_mapping)
-        df[column] = df[column].apply(
-            lambda raw: mapping.get(_to_python_scalar(raw), raw)
-        )
+    for column, mapping in code_maps.items():
+        if column in df.columns:
+            df[column] = df[column].map(mapping).fillna(df[column])
     return df
 
 
