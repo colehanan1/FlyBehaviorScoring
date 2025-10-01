@@ -182,6 +182,7 @@ def prepare_data(
     meta_path: Path,
     *,
     target_datasets: Sequence[str] | None = None,
+    debug: bool = False,
 ) -> PreparedData:
     """Load, filter, and z-score trials for clustering.
 
@@ -202,6 +203,13 @@ def prepare_data(
 
     matrix, meta = _load_inputs(npy_path, meta_path)
 
+    if debug:
+        print(
+            "[prepare_data] Loaded inputs:",
+            f"matrix_shape={matrix.shape}",
+            f"n_columns_meta={len(meta.get('column_order', []))}",
+        )
+
     column_order: Sequence[str] = meta["column_order"]
     code_maps: dict = meta.get("code_maps", {})
 
@@ -211,6 +219,10 @@ def prepare_data(
         )
 
     df = pd.DataFrame(matrix, columns=column_order)
+    if debug:
+        preview_cols = ", ".join(column_order[:8])
+        print(f"[prepare_data] Constructed DataFrame with columns: {preview_cols}...")
+
     df = _decode_categorical_columns(df, code_maps)
 
     time_columns = _identify_time_columns(df.columns)
@@ -235,6 +247,19 @@ def prepare_data(
     dataset_series = dataset_series_raw.map(_canonicalize_dataset_name)
     df["dataset_name"] = dataset_series
 
+    if debug:
+        raw_counts = dataset_series_raw.value_counts(dropna=False).to_dict()
+        canonical_counts = dataset_series.value_counts(dropna=False).to_dict()
+        print(
+            "[prepare_data] Dataset column detected:",
+            dataset_column or "<missing>",
+        )
+        print(
+            "[prepare_data] Dataset counts (raw -> canonical):",
+            raw_counts,
+            canonical_counts,
+        )
+
     trial_type_series, trial_type_column = _extract_string_series(
         df,
         (
@@ -246,6 +271,14 @@ def prepare_data(
         ),
     )
     df["trial_type_name"] = trial_type_series
+
+    if debug:
+        trial_counts = trial_type_series.value_counts(dropna=False).to_dict()
+        print(
+            "[prepare_data] Trial type column detected:",
+            trial_type_column or "<missing>",
+        )
+        print("[prepare_data] Trial type counts:", trial_counts)
 
     # Filter for testing trials and targeted datasets.
     trial_type_lower = trial_type_series.str.strip().str.lower()
@@ -259,6 +292,39 @@ def prepare_data(
     dataset_mask = dataset_series.isin(dataset_candidates)
     combined_mask = filters & dataset_mask
     filtered = df.loc[combined_mask].reset_index(drop=True)
+
+    if debug:
+        print(
+            "[prepare_data] Target datasets after canonicalization:",
+            sorted(dataset_candidates),
+        )
+        print(
+            "[prepare_data] Trials passing dataset filter:",
+            int(dataset_mask.sum()),
+            "/",
+            len(df),
+        )
+        print(
+            "[prepare_data] Trials passing combined filter:",
+            len(filtered),
+            "/",
+            len(df),
+        )
+        if not filtered.empty:
+            filtered_dataset_counts = (
+                filtered["dataset_name"].value_counts(dropna=False).to_dict()
+            )
+            filtered_trial_counts = (
+                filtered["trial_type_name"].value_counts(dropna=False).to_dict()
+            )
+            print(
+                "[prepare_data] Filtered dataset counts:",
+                filtered_dataset_counts,
+            )
+            print(
+                "[prepare_data] Filtered trial type counts:",
+                filtered_trial_counts,
+            )
 
     if filtered.empty:
         available_datasets = sorted({
