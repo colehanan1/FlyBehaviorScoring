@@ -415,8 +415,8 @@ def main():
 
         descriptors = ttk.Frame(container, style="Likert.TFrame")
         descriptors.pack(fill="x", pady=(4, 2))
-        ttk.Label(descriptors, text="Not at all likely", style="Likert.TLabel", font=("Helvetica", 9)).pack(side="left")
-        ttk.Label(descriptors, text="Extremely likely", style="Likert.TLabel", font=("Helvetica", 9)).pack(side="right")
+        ttk.Label(descriptors, text="No Reaction to Odor", style="Likert.TLabel", font=("Helvetica", 9)).pack(side="left")
+        ttk.Label(descriptors, text="Strong Reaction to Odor", style="Likert.TLabel", font=("Helvetica", 9)).pack(side="right")
 
         scale_inner = ttk.Frame(container, style="Likert.TFrame")
         scale_inner.pack()
