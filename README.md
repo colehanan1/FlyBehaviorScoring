@@ -29,6 +29,8 @@ Optional arguments:
 - `--min-cluster-size`: minimum cluster size for the density-based model (default `5`).
 - `--seed`: random seed used for PCA and clustering (default `0`).
 - `--max-pcs`: cap on retained principal components (default `10`).
+- `--datasets`: space-separated dataset names to retain (default `EB 3-octonol`).
+- `--debug`: print verbose filtering/PCA/clustering diagnostics to stdout.
 
 Each invocation creates `outputs/unsup/YYYYMMDD_HHMMSS/` containing:
 
