@@ -96,12 +96,28 @@ def _identify_time_columns(columns: Sequence[str]) -> List[str]:
 
 
 def _canonicalize_dataset_name(name: str) -> str:
-    normalized = name.strip().lower().replace(" ", "-")
-    if "3" in normalized and "oct" in normalized:
+    """Map dataset aliases onto canonical EB/3-octonol labels."""
+
+    # Collapse punctuation and underscores so variants like ``opto_EB`` or
+    # ``Manual 3 Octonol`` normalize to predictable tokens.
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(name).lower()).strip()
+    if not normalized:
+        return str(name)
+
+    tokens = normalized.split()
+    joined = "".join(tokens)
+
+    if any(token.startswith("3") for token in tokens) and "oct" in normalized:
         return "3-octonol"
-    if normalized in {"eb", "ethyl-butyrate", "ethylbutyrate"}:
+    if "3oct" in joined or "threeoct" in joined:
+        return "3-octonol"
+
+    if "eb" in tokens or joined in {"eb", "ethylbutyrate"}:
         return "EB"
-    return name
+    if "ethyl" in tokens and "butyrate" in tokens:
+        return "EB"
+
+    return str(name)
 
 
 def prepare_data(
@@ -167,9 +183,15 @@ def prepare_data(
     filtered = df.loc[combined_mask].reset_index(drop=True)
 
     if filtered.empty:
+        available_datasets = sorted({
+            _canonicalize_dataset_name(value) for value in dataset_series.unique()
+        })
+        available_trial_types = sorted({value.lower() for value in trial_type_series.unique()})
         raise ValueError(
             "No trials remaining after filtering for testing trials in datasets: "
-            f"{sorted(dataset_candidates)}."
+            f"{sorted(dataset_candidates)}. "
+            f"Available dataset_name values after canonicalization: {available_datasets}. "
+            f"Available trial_type_name values: {available_trial_types}"
         )
 
     traces = filtered[time_columns].to_numpy(dtype=float)
