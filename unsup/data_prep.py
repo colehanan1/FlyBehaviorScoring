@@ -73,6 +73,26 @@ def _decode_categorical_columns(df: pd.DataFrame, code_maps: dict) -> pd.DataFra
             continue
 
         mapping = _normalize_mapping(raw_mapping)
+
+        # Some metadata files store mappings in label -> code form instead of
+        # code -> label. Detect this by checking whether any observed column
+        # values appear as mapping keys; if not, but they do appear among the
+        # mapping values, invert the dictionary so numeric codes map onto their
+        # human-readable labels.
+        column_values = {
+            _to_python_scalar(value) for value in df[column].dropna().unique()
+        }
+        mapping_keys = set(mapping.keys())
+        if column_values and not (column_values & mapping_keys):
+            mapping_values = {
+                _to_python_scalar(value) for value in mapping.values()
+            }
+            if column_values & mapping_values:
+                inverted: dict = {}
+                for key, value in mapping.items():
+                    inverted[_to_python_scalar(value)] = key
+                mapping = inverted
+
         df[column] = df[column].apply(
             lambda raw: mapping.get(_to_python_scalar(raw), raw)
         )
