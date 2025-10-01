@@ -29,6 +29,11 @@ def _parse_args() -> argparse.Namespace:
         default=("EB", "3-octonol"),
         help="Dataset names to include in the analysis.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print verbose diagnostics during data preparation and modeling.",
+    )
     return parser.parse_args()
 
 
@@ -59,8 +64,30 @@ def main() -> None:
     run_dir = args.out / timestamp
     artifacts = ensure_output_dir(run_dir)
 
-    prepared = prepare_data(args.npy, args.meta, target_datasets=args.datasets)
+    if args.debug:
+        print(f"[run_all] Writing artifacts to: {run_dir}")
+
+    prepared = prepare_data(
+        args.npy,
+        args.meta,
+        target_datasets=args.datasets,
+        debug=args.debug,
+    )
+    if args.debug:
+        print(
+            "[run_all] Prepared traces:",
+            f"n_trials={prepared.n_trials}",
+            f"n_timepoints={prepared.n_timepoints}",
+        )
+
     pca_results = compute_pca(prepared.traces, max_pcs=args.max_pcs, random_state=args.seed)
+    if args.debug:
+        print(
+            "[run_all] PCA complete:",
+            f"pcs_80pct={pca_results.pcs_80pct}",
+            f"pcs_90pct={pca_results.pcs_90pct}",
+            f"explained_var={np.round(pca_results.explained_variance_ratio_, 4)}",
+        )
     importance_df = compute_time_importance(pca_results, prepared.time_columns)
     write_time_importance(run_dir / "timepoint_importance.csv", importance_df)
 
@@ -83,6 +110,8 @@ def main() -> None:
     base_metrics = _collect_base_metrics(prepared, pca_results)
 
     # Simple model: PCA + KMeans
+    if args.debug:
+        print("[run_all] Running PCA+k-means model...")
     simple_outputs = pca_kmeans.run_model(pca_results, dataset_labels=labels_true, seed=args.seed)
     embedding_simple = pca_results.scores[:, : max(2, pca_results.pcs_80pct or 2)]
     plot_embedding(
@@ -100,6 +129,8 @@ def main() -> None:
     write_clusters(artifacts.cluster_path("simple"), prepared.metadata, simple_outputs.labels)
 
     # Flexible model: PCA + GMM
+    if args.debug:
+        print("[run_all] Running PCA+GMM model...")
     flexible_outputs = pca_gmm.run_model(pca_results, dataset_labels=labels_true, seed=args.seed)
     embedding_flexible = pca_results.scores[:, : max(2, pca_results.pcs_80pct or 2)]
     plot_embedding(
@@ -117,12 +148,23 @@ def main() -> None:
     write_clusters(artifacts.cluster_path("flexible"), prepared.metadata, flexible_outputs.labels)
 
     # Noise-robust model: PCA + HDBSCAN/DBSCAN
+    if args.debug:
+        print("[run_all] Running PCA+HDBSCAN/DBSCAN model...")
     noise_outputs = pca_hdbscan.run_model(
         pca_results,
         dataset_labels=labels_true,
         min_cluster_size=args.min_cluster_size,
         seed=args.seed,
     )
+    if args.debug:
+        print(
+            "[run_all] Model metrics summary:",
+            {
+                "simple": simple_outputs.metrics,
+                "flexible": flexible_outputs.metrics,
+                "noise_robust": noise_outputs.metrics,
+            },
+        )
     embedding_noise = pca_results.scores[:, : max(2, pca_results.pcs_80pct or 2)]
     plot_embedding(
         embedding_noise[:, :2],
