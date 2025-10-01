@@ -50,7 +50,6 @@ def _to_python_scalar(value: object) -> object:
         return value.item()
     return value
 
-
 def _normalize_mapping(mapping: object) -> dict:
     """Return a dictionary with Python-native keys for mapping operations."""
 
@@ -64,6 +63,10 @@ def _normalize_mapping(mapping: object) -> dict:
     normalized: dict = {}
     for key, value in items:  # type: ignore[misc]
         normalized[_to_python_scalar(key)] = value
+        if isinstance(key, np.generic):
+            normalized[key.item()] = value
+        else:
+            normalized[key] = value
     return normalized
 
 
@@ -175,6 +178,24 @@ def _canonicalize_dataset_name(name: str) -> str:
         return "EB"
 
     return str(name)
+        mapped = df[column].map(mapping)
+        df[column] = mapped.where(mapped.notna(), df[column])
+    return df
+
+
+def _identify_time_columns(columns: Sequence[str]) -> List[str]:
+    matches = [col for col in columns if TIME_COLUMN_PATTERN.match(col)]
+    matches.sort(key=lambda x: int(TIME_COLUMN_PATTERN.match(x).group(1)))
+    return matches
+
+
+def _canonicalize_dataset_name(name: str) -> str:
+    normalized = name.strip().lower().replace(" ", "-")
+    if "3" in normalized and "oct" in normalized:
+        return "3-octonol"
+    if normalized in {"eb", "ethyl-butyrate", "ethylbutyrate"}:
+        return "EB"
+    return name
 
 
 def prepare_data(
@@ -183,6 +204,7 @@ def prepare_data(
     *,
     target_datasets: Sequence[str] | None = None,
     debug: bool = False,
+
 ) -> PreparedData:
     """Load, filter, and z-score trials for clustering.
 
@@ -192,8 +214,7 @@ def prepare_data(
         Path to the trial matrix stored as a NumPy array.
     meta_path: Path
         Path to JSON metadata describing column order and categorical maps.
-    target_datasets: Sequence[str] | None, optional keyword-only
-        Dataset names to retain. Defaults to {"EB", "3-octonol"}.
+
 
     Returns
     -------
@@ -209,6 +230,7 @@ def prepare_data(
             f"matrix_shape={matrix.shape}",
             f"n_columns_meta={len(meta.get('column_order', []))}",
         )
+
 
     column_order: Sequence[str] = meta["column_order"]
     code_maps: dict = meta.get("code_maps", {})
@@ -339,6 +361,22 @@ def prepare_data(
             f"Dataset column used: {dataset_column or 'not found'}. "
             f"Trial type column used: {trial_type_column or 'not found'}"
         )
+        raise ValueError("No time-series columns found matching pattern 'dir_val_\\d+'.")
+
+    # Canonicalize dataset names to expected values.
+    if "dataset_name" in df.columns:
+        df["dataset_name"] = df["dataset_name"].astype(str).map(_canonicalize_dataset_name)
+
+    # Filter for testing trials and targeted datasets.
+    trial_type_series = df.get("trial_type_name", pd.Series("", index=df.index)).astype(str)
+    dataset_series = df.get("dataset_name", pd.Series("", index=df.index)).astype(str)
+    filters = trial_type_series.str.lower() == "testing"
+    dataset_mask = dataset_series.isin({"EB", "3-octonol"})
+    combined_mask = filters & dataset_mask
+    filtered = df.loc[combined_mask].reset_index(drop=True)
+
+    if filtered.empty:
+        raise ValueError("No trials remaining after filtering for testing EB/3-octonol datasets.")
 
     traces = filtered[time_columns].to_numpy(dtype=float)
 
