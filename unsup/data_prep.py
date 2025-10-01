@@ -79,6 +79,43 @@ def _decode_categorical_columns(df: pd.DataFrame, code_maps: dict) -> pd.DataFra
     return df
 
 
+def _normalize_column_key(name: str) -> str:
+    """Return a simplified key for fuzzy column matching."""
+
+    return re.sub(r"[^a-z0-9]+", "", name.lower())
+
+
+def _stringify(value: object) -> str:
+    if pd.isna(value):  # type: ignore[arg-type]
+        return ""
+    return str(_to_python_scalar(value))
+
+
+def _extract_string_series(
+    df: pd.DataFrame,
+    candidate_names: Sequence[str],
+    *,
+    default_value: str = "",
+) -> Tuple[pd.Series, str | None]:
+    """Return the first matching column converted to strings."""
+
+    matched_name: str | None = None
+    for candidate in candidate_names:
+        candidate_key = _normalize_column_key(candidate)
+        for column in df.columns:
+            if _normalize_column_key(column) == candidate_key:
+                matched_name = column
+                break
+        if matched_name is not None:
+            break
+
+    if matched_name is None:
+        return pd.Series(default_value, index=df.index, dtype=str), None
+
+    series = df[matched_name].apply(_stringify)
+    return series.astype(str), matched_name
+
+
 def _identify_time_columns(columns: Sequence[str]) -> List[str]:
     extracted: List[Tuple[str, int]] = []
     for column in columns:
@@ -164,14 +201,35 @@ def prepare_data(
             f"First columns: [{sample_columns}]"
         )
 
-    # Canonicalize dataset names to expected values.
-    if "dataset_name" in df.columns:
-        df["dataset_name"] = df["dataset_name"].astype(str).map(_canonicalize_dataset_name)
+    dataset_series_raw, dataset_column = _extract_string_series(
+        df,
+        (
+            "dataset_name",
+            "dataset",
+            "dataset_label",
+            "dataset_full",
+            "dataset_id",
+            "datasetname",
+        ),
+    )
+    dataset_series = dataset_series_raw.map(_canonicalize_dataset_name)
+    df["dataset_name"] = dataset_series
+
+    trial_type_series, trial_type_column = _extract_string_series(
+        df,
+        (
+            "trial_type_name",
+            "trial_type",
+            "trialtype",
+            "trial_type_label",
+            "trial_label",
+        ),
+    )
+    df["trial_type_name"] = trial_type_series
 
     # Filter for testing trials and targeted datasets.
-    trial_type_series = df.get("trial_type_name", pd.Series("", index=df.index)).astype(str)
-    dataset_series = df.get("dataset_name", pd.Series("", index=df.index)).astype(str)
-    filters = trial_type_series.str.lower() == "testing"
+    trial_type_lower = trial_type_series.str.strip().str.lower()
+    filters = trial_type_lower == "testing"
     if target_datasets is None:
         dataset_candidates = {"EB", "3-octonol"}
     else:
@@ -191,7 +249,9 @@ def prepare_data(
             "No trials remaining after filtering for testing trials in datasets: "
             f"{sorted(dataset_candidates)}. "
             f"Available dataset_name values after canonicalization: {available_datasets}. "
-            f"Available trial_type_name values: {available_trial_types}"
+            f"Available trial_type_name values: {available_trial_types}. "
+            f"Dataset column used: {dataset_column or 'not found'}. "
+            f"Trial type column used: {trial_type_column or 'not found'}"
         )
 
     traces = filtered[time_columns].to_numpy(dtype=float)
