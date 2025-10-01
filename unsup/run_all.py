@@ -5,6 +5,7 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 from typing import Dict
+import warnings
 
 import numpy as np
 
@@ -64,6 +65,18 @@ def main() -> None:
     run_dir = args.out / timestamp
     artifacts = ensure_output_dir(run_dir)
 
+    # Suppress the scikit-learn deprecation warning that advises renaming the
+    # ``force_all_finite`` keyword argument to ``ensure_all_finite``. The
+    # warning originates from internal cross-validation helpers invoked by the
+    # clustering models we use, so filtering it here keeps the CLI output
+    # focused on actionable diagnostics for end users.
+    warnings.filterwarnings(
+        "ignore",
+        message="'force_all_finite' was renamed to 'ensure_all_finite'",
+        category=FutureWarning,
+        module=r"sklearn\..*",
+    )
+
     if args.debug:
         print(f"[run_all] Writing artifacts to: {run_dir}")
 
@@ -86,7 +99,7 @@ def main() -> None:
             "[run_all] PCA complete:",
             f"pcs_80pct={pca_results.pcs_80pct}",
             f"pcs_90pct={pca_results.pcs_90pct}",
-            f"explained_var={np.round(pca_results.explained_variance_ratio_, 4)}",
+            f"explained_var={np.round(pca_results.explained_variance_ratio, 4)}",
         )
     importance_df = compute_time_importance(pca_results, prepared.time_columns)
     write_time_importance(run_dir / "timepoint_importance.csv", importance_df)
