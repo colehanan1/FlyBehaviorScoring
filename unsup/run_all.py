@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 import warnings
 
 import numpy as np
@@ -448,14 +448,116 @@ def main() -> None:
                     ward_k=args.subcluster_ward_k,
                     outdir=subcluster_dir,
                 )
+                augmented_path = result_paths.get("augmented_csv")
+                if isinstance(augmented_path, str):
+                    augmented_path = Path(augmented_path)
+                metrics_path = result_paths.get("metrics_csv")
+                if isinstance(metrics_path, str):
+                    metrics_path = Path(metrics_path)
+
                 if args.debug:
-                    augmented = result_paths.get("augmented_csv")
-                    metrics = result_paths.get("metrics_csv")
                     print(
                         "[run_all] Subclustering outputs (model=", model_name, "):",
-                        "augmented=", augmented,
-                        "metrics=", metrics,
+                        "augmented=", augmented_path,
+                        "metrics=", metrics_path,
                     )
+
+                if augmented_path is not None and augmented_path.exists():
+                    augmented_df = pd.read_csv(augmented_path)
+                    trial_subcluster_path = (
+                        subcluster_dir / f"trial_clusters_{model_name}_subclusters.csv"
+                    )
+                    augmented_df.to_csv(trial_subcluster_path, index=False)
+
+                    summary_records: List[Dict[str, object]] = []
+
+                    if "source_row_index" not in augmented_df.columns:
+                        if args.debug:
+                            print(
+                                "[run_all] Subcluster outputs missing source_row_index;"
+                                " skipping average trace plots."
+                            )
+                    else:
+                        for parent in args.subcluster_targets:
+                            parent_mask = (
+                                augmented_df["cluster_label"].astype(str).str.strip()
+                                == str(parent)
+                            )
+                            if not parent_mask.any():
+                                continue
+
+                            parent_df = augmented_df.loc[parent_mask].copy()
+                            parent_df.sort_values("source_row_index", inplace=True)
+
+                            for algo in args.subcluster_algos:
+                                if algo == "gmm":
+                                    label_column = f"sub_gmm_label_parent{parent}"
+                                elif algo == "hdbscan":
+                                    label_column = f"sub_hdbscan_label_parent{parent}"
+                                elif algo == "ward":
+                                    label_column = f"sub_ward_label_parent{parent}"
+                                else:
+                                    continue
+
+                                if label_column not in parent_df.columns:
+                                    continue
+
+                                labels_series = parent_df[label_column].dropna()
+                                if labels_series.empty:
+                                    continue
+
+                                valid_indices = labels_series.index
+                                labels = labels_series.to_numpy()
+                                try:
+                                    labels = labels.astype(int, copy=False)
+                                except (ValueError, TypeError):
+                                    labels = labels.astype(object)
+
+                                plot_indices = (
+                                    parent_df.loc[valid_indices, "source_row_index"]
+                                    .astype(int)
+                                    .to_numpy()
+                                )
+                                plot_traces = prepared.traces[plot_indices]
+
+                                plot_path = (
+                                    subcluster_dir
+                                    / f"cluster_average_trace_{model_name}_parent{parent}_{algo}.png"
+                                )
+                                plot_cluster_traces(
+                                    time_points,
+                                    plot_traces,
+                                    labels,
+                                    str(plot_path),
+                                )
+
+                                try:
+                                    counts_series = labels_series.astype(int)
+                                except (ValueError, TypeError):
+                                    counts_series = labels_series
+                                counts = counts_series.value_counts()
+                                for sub_label, count in counts.items():
+                                    summary_records.append(
+                                        {
+                                            "parent_cluster": parent,
+                                            "algorithm": algo,
+                                            "subcluster_label": sub_label,
+                                            "n_trials": int(count),
+                                        }
+                                    )
+
+                    if summary_records:
+                        summary_df = pd.DataFrame(summary_records)
+                        summary_df["parent_cluster"] = summary_df["parent_cluster"].astype(str)
+                        summary_df["subcluster_label"] = summary_df["subcluster_label"].astype(str)
+                        summary_path = (
+                            subcluster_dir / f"subcluster_membership_{model_name}.csv"
+                        )
+                        summary_df.sort_values(
+                            ["algorithm", "parent_cluster", "subcluster_label"],
+                            inplace=True,
+                        )
+                        summary_df.to_csv(summary_path, index=False)
             except Exception as exc:  # pragma: no cover - defensive guard
                 warnings.warn(f"Subclustering step failed for {model_name}: {exc}")
                 if args.debug:

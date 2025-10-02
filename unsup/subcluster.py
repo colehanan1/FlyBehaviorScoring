@@ -432,6 +432,13 @@ def run_subclustering(
     for result in results:
         subset = df.loc[result.used_index].copy()
 
+        index_values = subset.index
+        try:
+            index_values = index_values.astype(int, copy=False)  # type: ignore[assignment]
+        except TypeError:
+            index_values = index_values.astype(object)
+        subset.insert(0, "source_row_index", index_values)
+
         if result.gmm_k is not None and result.gmm_labels is not None:
             subset[f"sub_gmm_k_parent{result.parent_value}"] = result.gmm_k
             subset[f"sub_gmm_label_parent{result.parent_value}"] = result.gmm_labels
@@ -491,6 +498,7 @@ def run_subclustering(
         "augmented_csv": augmented_path,
         "metrics_csv": metrics_path,
         "meta_files": meta_files,
+        "results": results,
     }
 
 
