@@ -4,10 +4,11 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 import warnings
 
 import numpy as np
+import pandas as pd
 
 from .data_prep import prepare_data
 from .io_utils import (
@@ -26,6 +27,7 @@ from .plots import (
     plot_cluster_traces,
 )
 from .models import pca_gmm, pca_hdbscan, pca_kmeans, reaction_profiles
+from .subcluster import run_subclustering
 
 
 def _parse_args() -> argparse.Namespace:
@@ -59,6 +61,44 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print verbose diagnostics during data preparation and modeling.",
     )
+    parser.add_argument(
+        "--skip-subclustering",
+        action="store_true",
+        help="Disable the automated second-stage subclustering step.",
+    )
+    parser.add_argument(
+        "--subcluster-targets",
+        nargs="+",
+        default=("0", "1"),
+        help="Parent cluster labels to pass into the subclustering workflow.",
+    )
+    parser.add_argument(
+        "--subcluster-algos",
+        nargs="+",
+        default=("gmm", "hdbscan", "ward"),
+        choices=("gmm", "hdbscan", "ward"),
+        help=(
+            "Algorithms to execute during subclustering (default: gmm hdbscan ward)."
+        ),
+    )
+    parser.add_argument(
+        "--subcluster-k-min",
+        type=int,
+        default=2,
+        help="Minimum number of GMM components to evaluate for subclustering.",
+    )
+    parser.add_argument(
+        "--subcluster-k-max",
+        type=int,
+        default=8,
+        help="Maximum number of GMM components to evaluate for subclustering.",
+    )
+    parser.add_argument(
+        "--subcluster-ward-k",
+        type=int,
+        default=4,
+        help="Number of Ward linkage clusters to compute during subclustering.",
+    )
     return parser.parse_args()
 
 
@@ -89,6 +129,12 @@ def main() -> None:
         raise ValueError("--min-clusters must be at least 1.")
     if args.max_clusters < args.min_clusters:
         raise ValueError("--max-clusters must be greater than or equal to --min-clusters.")
+    if args.subcluster_k_min < 2:
+        raise ValueError("--subcluster-k-min must be at least 2 for GMM.")
+    if args.subcluster_k_max < args.subcluster_k_min:
+        raise ValueError("--subcluster-k-max must be >= --subcluster-k-min.")
+    if args.subcluster_ward_k < 2:
+        raise ValueError("--subcluster-ward-k must be at least 2.")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = args.out / timestamp
@@ -133,7 +179,16 @@ def main() -> None:
     importance_df = compute_time_importance(pca_results, prepared.time_columns)
     write_time_importance(run_dir / "timepoint_importance.csv", importance_df)
 
+    pc_columns = [f"PC{i+1}" for i in range(pca_results.scores.shape[1])]
+    pca_features = pd.DataFrame(
+        pca_results.scores,
+        index=prepared.metadata.index,
+        columns=pc_columns,
+    )
+
     time_points = np.arange(1, prepared.n_timepoints + 1)
+
+    cluster_outputs: Dict[str, Path] = {}
 
     for model_name in (
         "simple",
@@ -182,7 +237,14 @@ def main() -> None:
         **simple_outputs.metrics,
     }
     write_report(artifacts.report_path("simple"), metrics_simple)
-    write_clusters(artifacts.cluster_path("simple"), prepared.metadata, simple_outputs.labels)
+    simple_cluster_path = artifacts.cluster_path("simple")
+    write_clusters(
+        simple_cluster_path,
+        prepared.metadata,
+        simple_outputs.labels,
+        features=pca_features,
+    )
+    cluster_outputs["simple"] = simple_cluster_path
     model_metrics["simple"] = simple_outputs.metrics
 
     # Flexible model: PCA + GMM
@@ -214,7 +276,14 @@ def main() -> None:
         **flexible_outputs.metrics,
     }
     write_report(artifacts.report_path("flexible"), metrics_flexible)
-    write_clusters(artifacts.cluster_path("flexible"), prepared.metadata, flexible_outputs.labels)
+    flexible_cluster_path = artifacts.cluster_path("flexible")
+    write_clusters(
+        flexible_cluster_path,
+        prepared.metadata,
+        flexible_outputs.labels,
+        features=pca_features,
+    )
+    cluster_outputs["flexible"] = flexible_cluster_path
     model_metrics["flexible"] = flexible_outputs.metrics
 
     # Noise-robust model: PCA + HDBSCAN/DBSCAN
@@ -250,7 +319,14 @@ def main() -> None:
         **noise_outputs.metrics,
     }
     write_report(artifacts.report_path("noise_robust"), metrics_noise)
-    write_clusters(artifacts.cluster_path("noise_robust"), prepared.metadata, noise_outputs.labels)
+    noise_cluster_path = artifacts.cluster_path("noise_robust")
+    write_clusters(
+        noise_cluster_path,
+        prepared.metadata,
+        noise_outputs.labels,
+        features=pca_features,
+    )
+    cluster_outputs["noise_robust"] = noise_cluster_path
     model_metrics["noise_robust"] = noise_outputs.metrics
 
     # Odor reaction motif model
@@ -280,11 +356,14 @@ def main() -> None:
         **reaction_motif_outputs.metrics,
     }
     write_report(artifacts.report_path("reaction_motifs"), metrics_motifs)
+    motifs_cluster_path = artifacts.cluster_path("reaction_motifs")
     write_clusters(
-        artifacts.cluster_path("reaction_motifs"),
+        motifs_cluster_path,
         prepared.metadata,
         reaction_motif_outputs.labels,
+        features=pca_features,
     )
+    cluster_outputs["reaction_motifs"] = motifs_cluster_path
     model_metrics["reaction_motifs"] = reaction_motif_outputs.metrics
     if (
         reaction_motif_outputs.components is not None
@@ -328,12 +407,161 @@ def main() -> None:
         **reaction_cluster_outputs.metrics,
     }
     write_report(artifacts.report_path("reaction_clusters"), metrics_reaction)
+    reaction_cluster_path = artifacts.cluster_path("reaction_clusters")
     write_clusters(
-        artifacts.cluster_path("reaction_clusters"),
+        reaction_cluster_path,
         prepared.metadata,
         reaction_cluster_outputs.labels,
+        features=pca_features,
     )
+    cluster_outputs["reaction_clusters"] = reaction_cluster_path
     model_metrics["reaction_clusters"] = reaction_cluster_outputs.metrics
+
+    if not args.skip_subclustering:
+        for model_name, cluster_csv in cluster_outputs.items():
+            if not cluster_csv.exists():
+                if args.debug:
+                    print(
+                        "[run_all] Skipping subclustering because cluster CSV is missing:",
+                        model_name,
+                        cluster_csv,
+                    )
+                continue
+
+            subcluster_dir = run_dir / f"subclusters_{model_name}"
+            if args.debug:
+                print(
+                    "[run_all] Running subclustering workflow on:",
+                    cluster_csv,
+                    "->",
+                    subcluster_dir,
+                )
+
+            try:
+                result_paths = run_subclustering(
+                    cluster_csv,
+                    cluster_col="cluster_label",
+                    parent_targets=args.subcluster_targets,
+                    algos=args.subcluster_algos,
+                    k_min=args.subcluster_k_min,
+                    k_max=args.subcluster_k_max,
+                    ward_k=args.subcluster_ward_k,
+                    outdir=subcluster_dir,
+                )
+                augmented_path = result_paths.get("augmented_csv")
+                if isinstance(augmented_path, str):
+                    augmented_path = Path(augmented_path)
+                metrics_path = result_paths.get("metrics_csv")
+                if isinstance(metrics_path, str):
+                    metrics_path = Path(metrics_path)
+
+                if args.debug:
+                    print(
+                        "[run_all] Subclustering outputs (model=", model_name, "):",
+                        "augmented=", augmented_path,
+                        "metrics=", metrics_path,
+                    )
+
+                if augmented_path is not None and augmented_path.exists():
+                    augmented_df = pd.read_csv(augmented_path)
+                    trial_subcluster_path = (
+                        subcluster_dir / f"trial_clusters_{model_name}_subclusters.csv"
+                    )
+                    augmented_df.to_csv(trial_subcluster_path, index=False)
+
+                    summary_records: List[Dict[str, object]] = []
+
+                    if "source_row_index" not in augmented_df.columns:
+                        if args.debug:
+                            print(
+                                "[run_all] Subcluster outputs missing source_row_index;"
+                                " skipping average trace plots."
+                            )
+                    else:
+                        for parent in args.subcluster_targets:
+                            parent_mask = (
+                                augmented_df["cluster_label"].astype(str).str.strip()
+                                == str(parent)
+                            )
+                            if not parent_mask.any():
+                                continue
+
+                            parent_df = augmented_df.loc[parent_mask].copy()
+                            parent_df.sort_values("source_row_index", inplace=True)
+
+                            for algo in args.subcluster_algos:
+                                if algo == "gmm":
+                                    label_column = f"sub_gmm_label_parent{parent}"
+                                elif algo == "hdbscan":
+                                    label_column = f"sub_hdbscan_label_parent{parent}"
+                                elif algo == "ward":
+                                    label_column = f"sub_ward_label_parent{parent}"
+                                else:
+                                    continue
+
+                                if label_column not in parent_df.columns:
+                                    continue
+
+                                labels_series = parent_df[label_column].dropna()
+                                if labels_series.empty:
+                                    continue
+
+                                valid_indices = labels_series.index
+                                labels = labels_series.to_numpy()
+                                try:
+                                    labels = labels.astype(int, copy=False)
+                                except (ValueError, TypeError):
+                                    labels = labels.astype(object)
+
+                                plot_indices = (
+                                    parent_df.loc[valid_indices, "source_row_index"]
+                                    .astype(int)
+                                    .to_numpy()
+                                )
+                                plot_traces = prepared.traces[plot_indices]
+
+                                plot_path = (
+                                    subcluster_dir
+                                    / f"cluster_average_trace_{model_name}_parent{parent}_{algo}.png"
+                                )
+                                plot_cluster_traces(
+                                    time_points,
+                                    plot_traces,
+                                    labels,
+                                    str(plot_path),
+                                )
+
+                                try:
+                                    counts_series = labels_series.astype(int)
+                                except (ValueError, TypeError):
+                                    counts_series = labels_series
+                                counts = counts_series.value_counts()
+                                for sub_label, count in counts.items():
+                                    summary_records.append(
+                                        {
+                                            "parent_cluster": parent,
+                                            "algorithm": algo,
+                                            "subcluster_label": sub_label,
+                                            "n_trials": int(count),
+                                        }
+                                    )
+
+                    if summary_records:
+                        summary_df = pd.DataFrame(summary_records)
+                        summary_df["parent_cluster"] = summary_df["parent_cluster"].astype(str)
+                        summary_df["subcluster_label"] = summary_df["subcluster_label"].astype(str)
+                        summary_path = (
+                            subcluster_dir / f"subcluster_membership_{model_name}.csv"
+                        )
+                        summary_df.sort_values(
+                            ["algorithm", "parent_cluster", "subcluster_label"],
+                            inplace=True,
+                        )
+                        summary_df.to_csv(summary_path, index=False)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                warnings.warn(f"Subclustering step failed for {model_name}: {exc}")
+                if args.debug:
+                    print("[run_all] Subclustering error (model=", model_name, "):", exc)
 
     if args.debug:
         print("[run_all] Model metrics summary:", model_metrics)
