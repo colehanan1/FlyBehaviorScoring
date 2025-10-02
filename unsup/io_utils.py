@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable
 
+import numpy as np
 import pandas as pd
 
 
@@ -26,6 +27,12 @@ class ArtifactPaths:
 
     def embedding_plot(self, model_name: str) -> Path:
         return self.base_dir / f"embedding_{model_name}.png"
+
+    def component_csv(self, model_name: str) -> Path:
+        return self.base_dir / f"motifs_{model_name}.csv"
+
+    def component_plot(self, model_name: str) -> Path:
+        return self.base_dir / f"motifs_{model_name}.png"
 
 
 def ensure_output_dir(base: Path) -> ArtifactPaths:
@@ -49,10 +56,22 @@ def write_time_importance(path: Path, importance_df: pd.DataFrame) -> None:
     importance_df.to_csv(path, index=False)
 
 
+def write_components(path: Path, time_points: Iterable[float], components: np.ndarray) -> None:
+    """Persist temporal motifs to CSV."""
+
+    df = pd.DataFrame(
+        components.T,
+        columns=[f"component_{idx}" for idx in range(1, components.shape[0] + 1)],
+    )
+    df.insert(0, "time_index", list(time_points))
+    df.to_csv(path, index=False)
+
+
 __all__ = [
     "ArtifactPaths",
     "ensure_output_dir",
     "write_report",
     "write_clusters",
     "write_time_importance",
+    "write_components",
 ]

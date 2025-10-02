@@ -15,7 +15,7 @@ pip install -r requirements.txt
 
 ## Unsupervised trace-only clustering
 
-Run the three unsupervised models (PCA+k-means, PCA+GMM, PCA+HDBSCAN/DBSCAN fallback) on trace data via:
+Run the unsupervised models on trace data via:
 
 ```bash
 python unsup/run_all.py \
@@ -33,16 +33,25 @@ Optional arguments:
 - `--datasets`: space-separated dataset names to retain (default `EB 3-octonol`).
 - `--debug`: print verbose filtering/PCA/clustering diagnostics to stdout.
 
-The k-means backend chooses the cluster count that maximizes the silhouette score within the provided bounds, and the Gaussian mixture backend picks the component count that minimizes the Bayesian Information Criterion (BIC).
+The k-means backend chooses the cluster count that maximizes the silhouette score within the provided bounds, and the Gaussian mixture backend picks the component count that minimizes the Bayesian Information Criterion (BIC). In addition to the PCA-driven models, the run now includes odor-aligned reaction profiling backends that look specifically at frames 1,230–2,430 (odor on) plus the surrounding baseline/recovery windows.
+
+Models executed per run:
+
+1. **`simple`** – PCA + k-means on the 80 % variance PCs (adaptive cluster count).
+2. **`flexible`** – PCA + Gaussian mixture with BIC-based component selection.
+3. **`noise_robust`** – PCA + HDBSCAN (DBSCAN fallback) with noise labeling.
+4. **`reaction_motifs`** – odor-window feature extraction + NMF motifs + k-means clustering.
+5. **`reaction_clusters`** – the same odor-window feature extraction clustered without motif decomposition.
 
 Each invocation creates `outputs/unsup/YYYYMMDD_HHMMSS/` containing:
 
 - `timepoint_importance.csv`: average absolute PCA loadings over the most informative PCs.
-- `report_<model>.csv`: one-row metric summary per model (`simple`, `flexible`, `noise_robust`).
+- `report_<model>.csv`: one-row metric summary per model (`simple`, `flexible`, `noise_robust`, `reaction_motifs`, `reaction_clusters`).
 - `trial_clusters_<model>.csv`: filtered metadata with an added `cluster_label` column (noise marked `-1`).
 - `pca_variance_<model>.png`: explained-variance bar chart with cumulative curve.
 - `time_importance_<model>.png`: timepoint importance line plot.
-- `embedding_<model>.png`: PC1 vs PC2 scatter colored by cluster labels (noise appears as grey crosses).
+- `embedding_<model>.png`: 2-D embedding scatter colored by cluster labels (noise appears as grey crosses).
+- `motifs_reaction_motifs.csv` / `motifs_reaction_motifs.png`: odor-aligned temporal motifs recovered by the NMF-based model.
 
 Input arrays/metadata are consumed at runtime and are not committed to the repository.
 

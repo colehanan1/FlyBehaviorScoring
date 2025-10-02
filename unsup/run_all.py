@@ -10,10 +10,16 @@ import warnings
 import numpy as np
 
 from .data_prep import prepare_data
-from .io_utils import ensure_output_dir, write_clusters, write_report, write_time_importance
+from .io_utils import (
+    ensure_output_dir,
+    write_clusters,
+    write_report,
+    write_time_importance,
+    write_components,
+)
 from .pca_core import compute_pca, compute_time_importance
-from .plots import plot_embedding, plot_time_importance, plot_variance
-from .models import pca_gmm, pca_hdbscan, pca_kmeans
+from .plots import plot_embedding, plot_time_importance, plot_variance, plot_components
+from .models import pca_gmm, pca_hdbscan, pca_kmeans, reaction_profiles
 
 
 def _parse_args() -> argparse.Namespace:
@@ -121,23 +127,23 @@ def main() -> None:
     importance_df = compute_time_importance(pca_results, prepared.time_columns)
     write_time_importance(run_dir / "timepoint_importance.csv", importance_df)
 
-    plot_variance(pca_results, str(artifacts.variance_plot("simple")))
-    plot_variance(pca_results, str(artifacts.variance_plot("flexible")))
-    plot_variance(pca_results, str(artifacts.variance_plot("noise_robust")))
-
-    plot_time_importance(
-        importance_df, str(artifacts.time_importance_plot("simple"))
-    )
-    plot_time_importance(
-        importance_df, str(artifacts.time_importance_plot("flexible"))
-    )
-    plot_time_importance(
-        importance_df, str(artifacts.time_importance_plot("noise_robust"))
-    )
+    for model_name in (
+        "simple",
+        "flexible",
+        "noise_robust",
+        "reaction_motifs",
+        "reaction_clusters",
+    ):
+        plot_variance(pca_results, str(artifacts.variance_plot(model_name)))
+        plot_time_importance(
+            importance_df, str(artifacts.time_importance_plot(model_name))
+        )
 
     labels_true = _extract_labels(prepared.metadata)
 
     base_metrics = _collect_base_metrics(prepared, pca_results)
+
+    model_metrics: Dict[str, Dict[str, float | int | None]] = {}
 
     # Simple model: PCA + KMeans
     if args.debug:
@@ -163,6 +169,7 @@ def main() -> None:
     }
     write_report(artifacts.report_path("simple"), metrics_simple)
     write_clusters(artifacts.cluster_path("simple"), prepared.metadata, simple_outputs.labels)
+    model_metrics["simple"] = simple_outputs.metrics
 
     # Flexible model: PCA + GMM
     if args.debug:
@@ -188,6 +195,7 @@ def main() -> None:
     }
     write_report(artifacts.report_path("flexible"), metrics_flexible)
     write_clusters(artifacts.cluster_path("flexible"), prepared.metadata, flexible_outputs.labels)
+    model_metrics["flexible"] = flexible_outputs.metrics
 
     # Noise-robust model: PCA + HDBSCAN/DBSCAN
     if args.debug:
@@ -198,15 +206,6 @@ def main() -> None:
         min_cluster_size=args.min_cluster_size,
         seed=args.seed,
     )
-    if args.debug:
-        print(
-            "[run_all] Model metrics summary:",
-            {
-                "simple": simple_outputs.metrics,
-                "flexible": flexible_outputs.metrics,
-                "noise_robust": noise_outputs.metrics,
-            },
-        )
     embedding_noise = pca_results.scores[:, : max(2, pca_results.pcs_80pct or 2)]
     plot_embedding(
         embedding_noise[:, :2],
@@ -226,6 +225,80 @@ def main() -> None:
     }
     write_report(artifacts.report_path("noise_robust"), metrics_noise)
     write_clusters(artifacts.cluster_path("noise_robust"), prepared.metadata, noise_outputs.labels)
+    model_metrics["noise_robust"] = noise_outputs.metrics
+
+    # Odor reaction motif model
+    if args.debug:
+        print("[run_all] Running odor reaction motif model...")
+    reaction_motif_outputs = reaction_profiles.run_model_with_motifs(
+        prepared.traces,
+        dataset_labels=labels_true,
+        seed=args.seed,
+        min_clusters=args.min_clusters,
+        max_clusters=args.max_clusters,
+    )
+    plot_embedding(
+        reaction_motif_outputs.embedding,
+        reaction_motif_outputs.labels,
+        str(artifacts.embedding_plot("reaction_motifs")),
+    )
+    metrics_motifs = {
+        **base_metrics,
+        "algo": "Odor reaction motifs (NMF+k-means)",
+        **reaction_motif_outputs.metrics,
+    }
+    write_report(artifacts.report_path("reaction_motifs"), metrics_motifs)
+    write_clusters(
+        artifacts.cluster_path("reaction_motifs"),
+        prepared.metadata,
+        reaction_motif_outputs.labels,
+    )
+    model_metrics["reaction_motifs"] = reaction_motif_outputs.metrics
+    if (
+        reaction_motif_outputs.components is not None
+        and reaction_motif_outputs.component_time is not None
+    ):
+        write_components(
+            artifacts.component_csv("reaction_motifs"),
+            reaction_motif_outputs.component_time,
+            reaction_motif_outputs.components,
+        )
+        plot_components(
+            reaction_motif_outputs.component_time,
+            reaction_motif_outputs.components,
+            str(artifacts.component_plot("reaction_motifs")),
+        )
+
+    # Odor reaction cluster-only model
+    if args.debug:
+        print("[run_all] Running odor reaction cluster model...")
+    reaction_cluster_outputs = reaction_profiles.run_model_clusters_only(
+        prepared.traces,
+        dataset_labels=labels_true,
+        seed=args.seed,
+        min_clusters=args.min_clusters,
+        max_clusters=args.max_clusters,
+    )
+    plot_embedding(
+        reaction_cluster_outputs.embedding,
+        reaction_cluster_outputs.labels,
+        str(artifacts.embedding_plot("reaction_clusters")),
+    )
+    metrics_reaction = {
+        **base_metrics,
+        "algo": "Odor reaction features (k-means)",
+        **reaction_cluster_outputs.metrics,
+    }
+    write_report(artifacts.report_path("reaction_clusters"), metrics_reaction)
+    write_clusters(
+        artifacts.cluster_path("reaction_clusters"),
+        prepared.metadata,
+        reaction_cluster_outputs.labels,
+    )
+    model_metrics["reaction_clusters"] = reaction_cluster_outputs.metrics
+
+    if args.debug:
+        print("[run_all] Model metrics summary:", model_metrics)
 
 
 if __name__ == "__main__":
