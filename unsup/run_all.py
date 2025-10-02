@@ -8,6 +8,7 @@ from typing import Dict
 import warnings
 
 import numpy as np
+import pandas as pd
 
 from .data_prep import prepare_data
 from .io_utils import (
@@ -178,7 +179,16 @@ def main() -> None:
     importance_df = compute_time_importance(pca_results, prepared.time_columns)
     write_time_importance(run_dir / "timepoint_importance.csv", importance_df)
 
+    pc_columns = [f"PC{i+1}" for i in range(pca_results.scores.shape[1])]
+    pca_features = pd.DataFrame(
+        pca_results.scores,
+        index=prepared.metadata.index,
+        columns=pc_columns,
+    )
+
     time_points = np.arange(1, prepared.n_timepoints + 1)
+
+    cluster_outputs: Dict[str, Path] = {}
 
     for model_name in (
         "simple",
@@ -227,7 +237,14 @@ def main() -> None:
         **simple_outputs.metrics,
     }
     write_report(artifacts.report_path("simple"), metrics_simple)
-    write_clusters(artifacts.cluster_path("simple"), prepared.metadata, simple_outputs.labels)
+    simple_cluster_path = artifacts.cluster_path("simple")
+    write_clusters(
+        simple_cluster_path,
+        prepared.metadata,
+        simple_outputs.labels,
+        features=pca_features,
+    )
+    cluster_outputs["simple"] = simple_cluster_path
     model_metrics["simple"] = simple_outputs.metrics
 
     # Flexible model: PCA + GMM
@@ -259,7 +276,14 @@ def main() -> None:
         **flexible_outputs.metrics,
     }
     write_report(artifacts.report_path("flexible"), metrics_flexible)
-    write_clusters(artifacts.cluster_path("flexible"), prepared.metadata, flexible_outputs.labels)
+    flexible_cluster_path = artifacts.cluster_path("flexible")
+    write_clusters(
+        flexible_cluster_path,
+        prepared.metadata,
+        flexible_outputs.labels,
+        features=pca_features,
+    )
+    cluster_outputs["flexible"] = flexible_cluster_path
     model_metrics["flexible"] = flexible_outputs.metrics
 
     # Noise-robust model: PCA + HDBSCAN/DBSCAN
@@ -295,7 +319,14 @@ def main() -> None:
         **noise_outputs.metrics,
     }
     write_report(artifacts.report_path("noise_robust"), metrics_noise)
-    write_clusters(artifacts.cluster_path("noise_robust"), prepared.metadata, noise_outputs.labels)
+    noise_cluster_path = artifacts.cluster_path("noise_robust")
+    write_clusters(
+        noise_cluster_path,
+        prepared.metadata,
+        noise_outputs.labels,
+        features=pca_features,
+    )
+    cluster_outputs["noise_robust"] = noise_cluster_path
     model_metrics["noise_robust"] = noise_outputs.metrics
 
     # Odor reaction motif model
@@ -325,11 +356,14 @@ def main() -> None:
         **reaction_motif_outputs.metrics,
     }
     write_report(artifacts.report_path("reaction_motifs"), metrics_motifs)
+    motifs_cluster_path = artifacts.cluster_path("reaction_motifs")
     write_clusters(
-        artifacts.cluster_path("reaction_motifs"),
+        motifs_cluster_path,
         prepared.metadata,
         reaction_motif_outputs.labels,
+        features=pca_features,
     )
+    cluster_outputs["reaction_motifs"] = motifs_cluster_path
     model_metrics["reaction_motifs"] = reaction_motif_outputs.metrics
     if (
         reaction_motif_outputs.components is not None
@@ -373,17 +407,28 @@ def main() -> None:
         **reaction_cluster_outputs.metrics,
     }
     write_report(artifacts.report_path("reaction_clusters"), metrics_reaction)
+    reaction_cluster_path = artifacts.cluster_path("reaction_clusters")
     write_clusters(
-        artifacts.cluster_path("reaction_clusters"),
+        reaction_cluster_path,
         prepared.metadata,
         reaction_cluster_outputs.labels,
+        features=pca_features,
     )
+    cluster_outputs["reaction_clusters"] = reaction_cluster_path
     model_metrics["reaction_clusters"] = reaction_cluster_outputs.metrics
 
     if not args.skip_subclustering:
-        cluster_csv = artifacts.cluster_path("flexible")
-        if cluster_csv.exists():
-            subcluster_dir = run_dir / "subclusters_flexible"
+        for model_name, cluster_csv in cluster_outputs.items():
+            if not cluster_csv.exists():
+                if args.debug:
+                    print(
+                        "[run_all] Skipping subclustering because cluster CSV is missing:",
+                        model_name,
+                        cluster_csv,
+                    )
+                continue
+
+            subcluster_dir = run_dir / f"subclusters_{model_name}"
             if args.debug:
                 print(
                     "[run_all] Running subclustering workflow on:",
@@ -391,6 +436,7 @@ def main() -> None:
                     "->",
                     subcluster_dir,
                 )
+
             try:
                 result_paths = run_subclustering(
                     cluster_csv,
@@ -406,19 +452,14 @@ def main() -> None:
                     augmented = result_paths.get("augmented_csv")
                     metrics = result_paths.get("metrics_csv")
                     print(
-                        "[run_all] Subclustering outputs:",
+                        "[run_all] Subclustering outputs (model=", model_name, "):",
                         "augmented=", augmented,
                         "metrics=", metrics,
                     )
             except Exception as exc:  # pragma: no cover - defensive guard
-                warnings.warn(f"Subclustering step failed: {exc}")
+                warnings.warn(f"Subclustering step failed for {model_name}: {exc}")
                 if args.debug:
-                    print("[run_all] Subclustering error:", exc)
-        elif args.debug:
-            print(
-                "[run_all] Skipping subclustering because flexible cluster CSV is missing:",
-                cluster_csv,
-            )
+                    print("[run_all] Subclustering error (model=", model_name, "):", exc)
 
     if args.debug:
         print("[run_all] Model metrics summary:", model_metrics)

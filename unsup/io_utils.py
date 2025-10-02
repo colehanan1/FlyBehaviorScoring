@@ -48,9 +48,23 @@ def write_report(path: Path, metrics: Dict[str, object]) -> None:
     df.to_csv(path, index=False)
 
 
-def write_clusters(path: Path, metadata: pd.DataFrame, labels: Iterable[int]) -> None:
+def write_clusters(
+    path: Path,
+    metadata: pd.DataFrame,
+    labels: Iterable[int],
+    *,
+    features: pd.DataFrame | None = None,
+) -> None:
     out_df = metadata.copy()
     out_df["cluster_label"] = list(labels)
+
+    if features is not None:
+        # Align on index to avoid accidental row reordering and only keep
+        # the overlapping entries to preserve downstream joins.
+        aligned = features.reindex(out_df.index)
+        for column in aligned.columns:
+            out_df[column] = aligned[column]
+
     out_df.to_csv(path, index=False)
 
 
