@@ -18,7 +18,13 @@ from .io_utils import (
     write_components,
 )
 from .pca_core import compute_pca, compute_time_importance
-from .plots import plot_embedding, plot_time_importance, plot_variance, plot_components
+from .plots import (
+    plot_embedding,
+    plot_time_importance,
+    plot_variance,
+    plot_components,
+    plot_cluster_traces,
+)
 from .models import pca_gmm, pca_hdbscan, pca_kmeans, reaction_profiles
 
 
@@ -127,6 +133,8 @@ def main() -> None:
     importance_df = compute_time_importance(pca_results, prepared.time_columns)
     write_time_importance(run_dir / "timepoint_importance.csv", importance_df)
 
+    time_points = np.arange(1, prepared.n_timepoints + 1)
+
     for model_name in (
         "simple",
         "flexible",
@@ -161,6 +169,12 @@ def main() -> None:
         simple_outputs.labels,
         str(artifacts.embedding_plot("simple")),
     )
+    plot_cluster_traces(
+        time_points,
+        prepared.traces,
+        simple_outputs.labels,
+        str(artifacts.average_trace_plot("simple")),
+    )
 
     metrics_simple = {
         **base_metrics,
@@ -187,6 +201,12 @@ def main() -> None:
         flexible_outputs.labels,
         str(artifacts.embedding_plot("flexible")),
     )
+    plot_cluster_traces(
+        time_points,
+        prepared.traces,
+        flexible_outputs.labels,
+        str(artifacts.average_trace_plot("flexible")),
+    )
 
     metrics_flexible = {
         **base_metrics,
@@ -211,6 +231,12 @@ def main() -> None:
         embedding_noise[:, :2],
         noise_outputs.labels,
         str(artifacts.embedding_plot("noise_robust")),
+    )
+    plot_cluster_traces(
+        time_points,
+        prepared.traces,
+        noise_outputs.labels,
+        str(artifacts.average_trace_plot("noise_robust")),
     )
 
     algo_name = (
@@ -241,6 +267,12 @@ def main() -> None:
         reaction_motif_outputs.embedding,
         reaction_motif_outputs.labels,
         str(artifacts.embedding_plot("reaction_motifs")),
+    )
+    plot_cluster_traces(
+        time_points,
+        prepared.traces,
+        reaction_motif_outputs.labels,
+        str(artifacts.average_trace_plot("reaction_motifs")),
     )
     metrics_motifs = {
         **base_metrics,
@@ -283,6 +315,12 @@ def main() -> None:
         reaction_cluster_outputs.embedding,
         reaction_cluster_outputs.labels,
         str(artifacts.embedding_plot("reaction_clusters")),
+    )
+    plot_cluster_traces(
+        time_points,
+        prepared.traces,
+        reaction_cluster_outputs.labels,
+        str(artifacts.average_trace_plot("reaction_clusters")),
     )
     metrics_reaction = {
         **base_metrics,
