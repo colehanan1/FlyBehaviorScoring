@@ -13,6 +13,36 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Unsupervised trace-only clustering
+
+Run the three unsupervised models (PCA+k-means, PCA+GMM, PCA+HDBSCAN/DBSCAN fallback) on trace data via:
+
+```bash
+python unsup/run_all.py \
+  --npy path/to/envelope_matrix_float16.npy \
+  --meta path/to/code_maps.json \
+  --out outputs/unsup
+```
+
+Optional arguments:
+
+- `--min-cluster-size`: minimum cluster size for the density-based model (default `5`).
+- `--seed`: random seed used for PCA and clustering (default `0`).
+- `--max-pcs`: cap on retained principal components (default `10`).
+- `--datasets`: space-separated dataset names to retain (default `EB 3-octonol`).
+- `--debug`: print verbose filtering/PCA/clustering diagnostics to stdout.
+
+Each invocation creates `outputs/unsup/YYYYMMDD_HHMMSS/` containing:
+
+- `timepoint_importance.csv`: average absolute PCA loadings over the most informative PCs.
+- `report_<model>.csv`: one-row metric summary per model (`simple`, `flexible`, `noise_robust`).
+- `trial_clusters_<model>.csv`: filtered metadata with an added `cluster_label` column (noise marked `-1`).
+- `pca_variance_<model>.png`: explained-variance bar chart with cumulative curve.
+- `time_importance_<model>.png`: timepoint importance line plot.
+- `embedding_<model>.png`: PC1 vs PC2 scatter colored by cluster labels (noise appears as grey crosses).
+
+Input arrays/metadata are consumed at runtime and are not committed to the repository.
+
 ### 1) Label / score videos
 
 ```bash
