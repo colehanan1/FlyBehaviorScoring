@@ -92,23 +92,4 @@ def plot_embedding(
     plt.close(fig)
 
 
-def plot_components(time_points: np.ndarray, components: np.ndarray, path: str) -> None:
-    fig, ax = plt.subplots(figsize=(6, 4))
-    for idx, pattern in enumerate(components):
-        ax.plot(time_points, pattern, label=f"Component {idx+1}")
-    ax.set_xlabel("Frame index")
-    ax.set_ylabel("Component magnitude")
-    ax.set_title("Odor-aligned motifs")
-    if components.shape[0] > 1:
-        ax.legend(loc="best")
-    fig.tight_layout()
-    fig.savefig(path, dpi=200)
-    plt.close(fig)
-
-
-__all__ = [
-    "plot_variance",
-    "plot_time_importance",
-    "plot_embedding",
-    "plot_components",
-]
+__all__ = ["plot_variance", "plot_time_importance", "plot_embedding"]
