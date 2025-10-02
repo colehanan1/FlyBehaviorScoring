@@ -44,18 +44,25 @@ def _safe_stat(segment: np.ndarray, reducer) -> np.ndarray:
 
 
 def _segment_statistics(traces: np.ndarray, odor_on: int, odor_off: int) -> dict[str, np.ndarray]:
-    baseline = _slice(traces, 0, odor_on)
+    """Summarize only the odor-on and odor-off windows.
+
+    The caller has already aligned traces so that ``odor_on``/``odor_off``
+    encapsulate the stimulus presentation. We intentionally avoid calculating
+    any baseline statistics so that the model focuses exclusively on how the
+    flies behave during the odor presentation and the subsequent recovery
+    period.
+    """
+
     response = _slice(traces, odor_on, odor_off)
     recovery = _slice(traces, odor_off, traces.shape[1])
 
     stats: dict[str, np.ndarray] = {}
 
-    stats["baseline_mean"] = _safe_stat(baseline, lambda arr: arr.mean(axis=1))
-    stats["baseline_std"] = _safe_stat(baseline, lambda arr: arr.std(axis=1))
-
     stats["odor_mean"] = _safe_stat(response, lambda arr: arr.mean(axis=1))
     stats["odor_std"] = _safe_stat(response, lambda arr: arr.std(axis=1))
     stats["odor_max"] = _safe_stat(response, lambda arr: arr.max(axis=1))
+    stats["odor_min"] = _safe_stat(response, lambda arr: arr.min(axis=1))
+    stats["odor_duration"] = np.full(traces.shape[0], response.shape[1], dtype=float)
     if response.size:
         peak_indices = np.argmax(response, axis=1)
         stats["odor_peak_latency"] = peak_indices.astype(float) / max(response.shape[1], 1)
@@ -67,14 +74,13 @@ def _segment_statistics(traces: np.ndarray, odor_on: int, odor_off: int) -> dict
     stats["post_mean"] = _safe_stat(recovery, lambda arr: arr.mean(axis=1))
     stats["post_std"] = _safe_stat(recovery, lambda arr: arr.std(axis=1))
     stats["post_min"] = _safe_stat(recovery, lambda arr: arr.min(axis=1))
+    stats["post_max"] = _safe_stat(recovery, lambda arr: arr.max(axis=1))
     stats["post_auc"] = (
         np.trapz(recovery, axis=1) if recovery.size else np.zeros(traces.shape[0])
     )
+    stats["post_duration"] = np.full(traces.shape[0], recovery.shape[1], dtype=float)
 
-    stats["response_delta"] = stats["odor_mean"] - stats["baseline_mean"]
-    stats["peak_delta"] = stats["odor_max"] - stats["baseline_mean"]
-    stats["recovery_delta"] = stats["post_mean"] - stats["baseline_mean"]
-    stats["post_vs_odor"] = stats["post_mean"] - stats["odor_mean"]
+    stats["post_vs_odor_mean"] = stats["post_mean"] - stats["odor_mean"]
     stats["post_auc_delta"] = stats["post_auc"] - stats["odor_auc"]
 
     return stats
@@ -178,7 +184,7 @@ def _cluster_reactions(
         features=scaled,
     )
 
-    motif_start = max(0, odor_on - 300)
+    motif_start = odor_on
     motif_end = min(traces.shape[1], odor_off + 600)
     aggregated, centers = _aggregate_window(traces, motif_start, motif_end, MOTIF_BIN_SIZE)
 

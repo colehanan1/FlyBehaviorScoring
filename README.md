@@ -33,7 +33,7 @@ Optional arguments:
 - `--datasets`: space-separated dataset names to retain (default `EB 3-octonol`).
 - `--debug`: print verbose filtering/PCA/clustering diagnostics to stdout.
 
-The k-means backend chooses the cluster count that maximizes the silhouette score within the provided bounds, and the Gaussian mixture backend picks the component count that minimizes the Bayesian Information Criterion (BIC). In addition to the PCA-driven models, the run now includes odor-aligned reaction profiling backends that look specifically at frames 1,230–2,430 (odor on) plus the surrounding baseline/recovery windows.
+The k-means backend chooses the cluster count that maximizes the silhouette score within the provided bounds, and the Gaussian mixture backend picks the component count that minimizes the Bayesian Information Criterion (BIC). In addition to the PCA-driven models, the run now includes odor-aligned reaction profiling backends that focus on the odor-on window (frames 1,230–2,430) and the subsequent odor-off recovery period.
 
 Models executed per run:
 
