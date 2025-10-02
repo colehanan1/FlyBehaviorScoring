@@ -12,6 +12,7 @@ import pandas as pd
 
 
 TIME_COLUMN_PATTERN = re.compile(r"dir[\W_]*val[\W_]*(\d+)", re.IGNORECASE)
+MAX_TIME_COLUMNS = 3600
 
 
 @dataclass
@@ -197,7 +198,6 @@ def _canonicalize_dataset_name(name: str) -> str:
         return "EB"
     return name
 
-
 def prepare_data(
     npy_path: Path,
     meta_path: Path,
@@ -214,6 +214,8 @@ def prepare_data(
         Path to the trial matrix stored as a NumPy array.
     meta_path: Path
         Path to JSON metadata describing column order and categorical maps.
+    target_datasets: Sequence[str] | None, optional keyword-only
+        Dataset names to retain. Defaults to {"EB", "3-octonol"}.
 
 
     Returns
@@ -254,6 +256,17 @@ def prepare_data(
             "No time-series columns found matching pattern similar to 'dir_val_#'. "
             f"First columns: [{sample_columns}]"
         )
+
+    if len(time_columns) > MAX_TIME_COLUMNS:
+        extra_time_columns = time_columns[MAX_TIME_COLUMNS:]
+        df = df.drop(columns=extra_time_columns)
+        time_columns = time_columns[:MAX_TIME_COLUMNS]
+        if debug:
+            print(
+                "[prepare_data] Truncating time-series columns to first",
+                MAX_TIME_COLUMNS,
+                "entries",
+            )
 
     dataset_series_raw, dataset_column = _extract_string_series(
         df,
@@ -361,6 +374,7 @@ def prepare_data(
             f"Dataset column used: {dataset_column or 'not found'}. "
             f"Trial type column used: {trial_type_column or 'not found'}"
         )
+
         raise ValueError("No time-series columns found matching pattern 'dir_val_\\d+'.")
 
     # Canonicalize dataset names to expected values.
