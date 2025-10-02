@@ -4,3 +4,5 @@ opencv-python
 Pillow
 torch
 scikit-learn
+matplotlib
+hdbscan
