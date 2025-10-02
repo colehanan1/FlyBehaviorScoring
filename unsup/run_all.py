@@ -35,6 +35,7 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print verbose diagnostics during data preparation and modeling.",
     )
+
     return parser.parse_args()
 
 
@@ -101,6 +102,8 @@ def main() -> None:
             f"pcs_90pct={pca_results.pcs_90pct}",
             f"explained_var={np.round(pca_results.explained_variance_ratio, 4)}",
         )
+    prepared = prepare_data(args.npy, args.meta)
+    pca_results = compute_pca(prepared.traces, max_pcs=args.max_pcs, random_state=args.seed)
     importance_df = compute_time_importance(pca_results, prepared.time_columns)
     write_time_importance(run_dir / "timepoint_importance.csv", importance_df)
 
@@ -125,6 +128,7 @@ def main() -> None:
     # Simple model: PCA + KMeans
     if args.debug:
         print("[run_all] Running PCA+k-means model...")
+
     simple_outputs = pca_kmeans.run_model(pca_results, dataset_labels=labels_true, seed=args.seed)
     embedding_simple = pca_results.scores[:, : max(2, pca_results.pcs_80pct or 2)]
     plot_embedding(
