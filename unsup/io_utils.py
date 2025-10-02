@@ -34,6 +34,9 @@ class ArtifactPaths:
     def component_plot(self, model_name: str) -> Path:
         return self.base_dir / f"motifs_{model_name}.png"
 
+    def average_trace_plot(self, model_name: str) -> Path:
+        return self.base_dir / f"cluster_average_trace_{model_name}.png"
+
 
 def ensure_output_dir(base: Path) -> ArtifactPaths:
     base.mkdir(parents=True, exist_ok=True)

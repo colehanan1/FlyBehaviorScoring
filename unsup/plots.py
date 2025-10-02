@@ -10,6 +10,10 @@ import pandas as pd
 from .pca_core import PCAResults
 
 
+ODOR_ON_FRAME = 1230
+ODOR_OFF_FRAME = 2430
+
+
 def plot_variance(pca_results: PCAResults, path: str) -> None:
     indices = np.arange(1, len(pca_results.explained_variance_ratio) + 1)
 
@@ -106,9 +110,68 @@ def plot_components(time_points: np.ndarray, components: np.ndarray, path: str) 
     plt.close(fig)
 
 
+def plot_cluster_traces(
+    time_points: Sequence[float],
+    traces: np.ndarray,
+    labels: Sequence[int],
+    path: str,
+    odor_on: int = ODOR_ON_FRAME,
+    odor_off: int = ODOR_OFF_FRAME,
+) -> None:
+    time_points = np.asarray(time_points)
+    labels = np.asarray(labels)
+    if traces.ndim != 2:
+        raise ValueError("traces must be a 2D array of shape (n_trials, n_timepoints)")
+    if traces.shape[0] != labels.shape[0]:
+        raise ValueError("labels length must match number of trials")
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    unique_labels = np.unique(labels)
+    plotted = False
+    cluster_labels = [label for label in unique_labels if label != -1]
+
+    for label in sorted(cluster_labels):
+        mask = labels == label
+        if not np.any(mask):
+            continue
+        mean_trace = traces[mask].mean(axis=0)
+        ax.plot(time_points, mean_trace, linewidth=1.8, label=f"Cluster {label}")
+        plotted = True
+
+    if np.any(labels == -1):
+        noise_mean = traces[labels == -1].mean(axis=0)
+        ax.plot(
+            time_points,
+            noise_mean,
+            color="grey",
+            linewidth=1.5,
+            linestyle="--",
+            label="Noise",
+        )
+        plotted = True
+
+    if not plotted:
+        overall_mean = traces.mean(axis=0)
+        ax.plot(time_points, overall_mean, color="black", linewidth=1.8, label="All trials")
+
+    for frame in (odor_on, odor_off):
+        if time_points.size and time_points.min() <= frame <= time_points.max():
+            ax.axvline(frame, color="red", linestyle="--", linewidth=1.2)
+
+    ax.set_xlabel("Frame index")
+    ax.set_ylabel("Mean z-scored dir_val")
+    ax.set_title("Average cluster traces")
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
 __all__ = [
     "plot_variance",
     "plot_time_importance",
     "plot_embedding",
     "plot_components",
+    "plot_cluster_traces",
 ]
