@@ -7,7 +7,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Dict, Iterable, List, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,6 +35,8 @@ PC_PATTERNS: Sequence[re.Pattern[str]] = (
     re.compile(r"^pc(\d+)$", re.IGNORECASE),
 )
 
+ALLOWED_ALGOS = ("gmm", "hdbscan", "ward")
+
 
 @dataclass
 class SubclusterResult:
@@ -55,6 +57,19 @@ def _normalize_parent_values(values: Iterable[str | int | float]) -> List[str]:
     for value in values:
         normalized.append(str(value).strip())
     return normalized
+
+
+def _sanitize_algorithms(algorithms: Sequence[str]) -> List[str]:
+    sanitized: List[str] = []
+    for algo in algorithms:
+        normalized = str(algo).strip().lower()
+        if normalized not in ALLOWED_ALGOS:
+            raise ValueError(
+                f"Unsupported algorithm {algo!r}. Expected one of: {ALLOWED_ALGOS}"
+            )
+        if normalized not in sanitized:
+            sanitized.append(normalized)
+    return sanitized
 
 
 def detect_pca_columns(columns: Sequence[str]) -> List[str]:
@@ -354,33 +369,48 @@ def process_parent_cluster(
     )
 
 
-def run(args: argparse.Namespace) -> None:
-    input_path = Path(args.input_csv)
+def run_subclustering(
+    input_csv: Path | str,
+    *,
+    cluster_col: str,
+    parent_targets: Sequence[str | int | float] = ("0", "1"),
+    algos: Sequence[str] = ("gmm",),
+    k_min: int = 2,
+    k_max: int = 8,
+    ward_k: int = 4,
+    outdir: Path | str = "outputs/unsup/subclusters_c01",
+) -> Dict[str, Path | List[Path] | None]:
+    """Execute the subclustering workflow for the provided parent clusters."""
+
+    input_path = Path(input_csv)
     if not input_path.exists():
         raise FileNotFoundError(f"Input CSV not found: {input_path}")
 
-    output_dir = Path(args.outdir)
+    output_dir = Path(outdir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(input_path)
-    if args.cluster_col not in df.columns:
+    if cluster_col not in df.columns:
         raise ValueError(
-            f"Cluster column {args.cluster_col!r} not present in input file."
+            f"Cluster column {cluster_col!r} not present in input file."
         )
 
-    parent_targets = _normalize_parent_values(args.parent_targets)
-    results: List[SubclusterResult] = []
+    parent_values = _normalize_parent_values(parent_targets)
+    selected_algos = _sanitize_algorithms(algos)
 
-    for parent in parent_targets:
+    results: List[SubclusterResult] = []
+    meta_files: List[Path] = []
+
+    for parent in parent_values:
         result = process_parent_cluster(
             df,
-            args.cluster_col,
+            cluster_col,
             parent,
             outdir=output_dir,
-            algos=args.algos,
-            k_min=args.k_min,
-            k_max=args.k_max,
-            ward_k=args.ward_k,
+            algos=selected_algos,
+            k_min=k_min,
+            k_max=k_max,
+            ward_k=ward_k,
         )
         results.append(result)
 
@@ -388,12 +418,13 @@ def run(args: argparse.Namespace) -> None:
         meta_payload = {
             "parent_cluster": parent,
             "features_used": result.features_used,
-            "algorithms": args.algos,
+            "algorithms": selected_algos,
             "gmm_k": result.gmm_k,
             "hdbscan_available": result.hdbscan_labels is not None,
             "ward_available": result.ward_labels is not None,
         }
         meta_path.write_text(json.dumps(meta_payload, indent=2))
+        meta_files.append(meta_path)
 
     augmented_rows: List[pd.DataFrame] = []
     metrics_records: List[dict] = []
@@ -429,26 +460,51 @@ def run(args: argparse.Namespace) -> None:
             )
 
         if result.ward_labels is not None:
-            subset[f"sub_ward_k_parent{result.parent_value}"] = args.ward_k
+            subset[f"sub_ward_k_parent{result.parent_value}"] = ward_k
             subset[f"sub_ward_label_parent{result.parent_value}"] = result.ward_labels
             metrics_records.append(
                 {
                     "parent": result.parent_value,
                     "algorithm": "ward",
-                    "k": args.ward_k,
+                    "k": ward_k,
                     "features": result.features_used,
                 }
             )
 
         augmented_rows.append(subset)
 
+    augmented_path: Path | None = None
+    metrics_path: Path | None = None
+
     if augmented_rows:
         augmented = pd.concat(augmented_rows, axis=0).sort_index()
-        augmented.to_csv(output_dir / "subclusters_parent_c01.csv", index=False)
+        augmented_path = output_dir / "subclusters_parent_c01.csv"
+        augmented.to_csv(augmented_path, index=False)
 
     if metrics_records:
         metrics = pd.DataFrame.from_records(metrics_records)
-        metrics.to_csv(output_dir / "subclusters_metrics_summary.csv", index=False)
+        metrics_path = output_dir / "subclusters_metrics_summary.csv"
+        metrics.to_csv(metrics_path, index=False)
+
+    return {
+        "output_dir": output_dir,
+        "augmented_csv": augmented_path,
+        "metrics_csv": metrics_path,
+        "meta_files": meta_files,
+    }
+
+
+def run(args: argparse.Namespace) -> None:
+    run_subclustering(
+        args.input_csv,
+        cluster_col=args.cluster_col,
+        parent_targets=args.parent_targets,
+        algos=args.algos,
+        k_min=args.k_min,
+        k_max=args.k_max,
+        ward_k=args.ward_k,
+        outdir=args.outdir,
+    )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

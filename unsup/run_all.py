@@ -26,6 +26,7 @@ from .plots import (
     plot_cluster_traces,
 )
 from .models import pca_gmm, pca_hdbscan, pca_kmeans, reaction_profiles
+from .subcluster import run_subclustering
 
 
 def _parse_args() -> argparse.Namespace:
@@ -59,6 +60,44 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print verbose diagnostics during data preparation and modeling.",
     )
+    parser.add_argument(
+        "--skip-subclustering",
+        action="store_true",
+        help="Disable the automated second-stage subclustering step.",
+    )
+    parser.add_argument(
+        "--subcluster-targets",
+        nargs="+",
+        default=("0", "1"),
+        help="Parent cluster labels to pass into the subclustering workflow.",
+    )
+    parser.add_argument(
+        "--subcluster-algos",
+        nargs="+",
+        default=("gmm", "hdbscan", "ward"),
+        choices=("gmm", "hdbscan", "ward"),
+        help=(
+            "Algorithms to execute during subclustering (default: gmm hdbscan ward)."
+        ),
+    )
+    parser.add_argument(
+        "--subcluster-k-min",
+        type=int,
+        default=2,
+        help="Minimum number of GMM components to evaluate for subclustering.",
+    )
+    parser.add_argument(
+        "--subcluster-k-max",
+        type=int,
+        default=8,
+        help="Maximum number of GMM components to evaluate for subclustering.",
+    )
+    parser.add_argument(
+        "--subcluster-ward-k",
+        type=int,
+        default=4,
+        help="Number of Ward linkage clusters to compute during subclustering.",
+    )
     return parser.parse_args()
 
 
@@ -89,6 +128,12 @@ def main() -> None:
         raise ValueError("--min-clusters must be at least 1.")
     if args.max_clusters < args.min_clusters:
         raise ValueError("--max-clusters must be greater than or equal to --min-clusters.")
+    if args.subcluster_k_min < 2:
+        raise ValueError("--subcluster-k-min must be at least 2 for GMM.")
+    if args.subcluster_k_max < args.subcluster_k_min:
+        raise ValueError("--subcluster-k-max must be >= --subcluster-k-min.")
+    if args.subcluster_ward_k < 2:
+        raise ValueError("--subcluster-ward-k must be at least 2.")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = args.out / timestamp
@@ -334,6 +379,46 @@ def main() -> None:
         reaction_cluster_outputs.labels,
     )
     model_metrics["reaction_clusters"] = reaction_cluster_outputs.metrics
+
+    if not args.skip_subclustering:
+        cluster_csv = artifacts.cluster_path("flexible")
+        if cluster_csv.exists():
+            subcluster_dir = run_dir / "subclusters_flexible"
+            if args.debug:
+                print(
+                    "[run_all] Running subclustering workflow on:",
+                    cluster_csv,
+                    "->",
+                    subcluster_dir,
+                )
+            try:
+                result_paths = run_subclustering(
+                    cluster_csv,
+                    cluster_col="cluster_label",
+                    parent_targets=args.subcluster_targets,
+                    algos=args.subcluster_algos,
+                    k_min=args.subcluster_k_min,
+                    k_max=args.subcluster_k_max,
+                    ward_k=args.subcluster_ward_k,
+                    outdir=subcluster_dir,
+                )
+                if args.debug:
+                    augmented = result_paths.get("augmented_csv")
+                    metrics = result_paths.get("metrics_csv")
+                    print(
+                        "[run_all] Subclustering outputs:",
+                        "augmented=", augmented,
+                        "metrics=", metrics,
+                    )
+            except Exception as exc:  # pragma: no cover - defensive guard
+                warnings.warn(f"Subclustering step failed: {exc}")
+                if args.debug:
+                    print("[run_all] Subclustering error:", exc)
+        elif args.debug:
+            print(
+                "[run_all] Skipping subclustering because flexible cluster CSV is missing:",
+                cluster_csv,
+            )
 
     if args.debug:
         print("[run_all] Model metrics summary:", model_metrics)
