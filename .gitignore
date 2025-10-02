@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.vscode/
+.venv/
+outputs/
+# Runtime data inputs
+*.npy
+*.npz
+code_maps.json
