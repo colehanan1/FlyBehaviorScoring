@@ -180,38 +180,61 @@ def plot_embedding_by_auc(
     cluster_colors = cluster_colors or {0: "#b2182b", 1: "#2166ac"}
     unique_clusters = [label for label in sorted(np.unique(labels)) if label != -1]
 
-    vmin = np.nanmin(auc_array[finite_mask])
-    vmax = np.nanmax(auc_array[finite_mask])
-    if np.isclose(vmin, vmax):
-        vmax = vmin + 1e-6
-    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-
     fig, ax = plt.subplots(figsize=(6, 4))
     legend_handles = []
     legend_labels = []
-    colorbars = []
+    colorbars: list[tuple[int, mcolors.Colormap, mcolors.Normalize]] = []
 
     for cluster_label in unique_clusters:
         cluster_mask = labels == cluster_label
         if not np.any(cluster_mask):
             continue
         cluster_auc = auc_array[cluster_mask]
+        cluster_embedding = embedding[cluster_mask]
+        valid_cluster = np.isfinite(cluster_auc)
         cmap_name = f"cluster_{cluster_label}_auc"
-        cmap = _build_gradient_cmap(cluster_colors.get(cluster_label, "#4d4d4d"), cmap_name)
-        scatter = ax.scatter(
-            embedding[cluster_mask, 0],
-            embedding[cluster_mask, 1],
-            c=cluster_auc,
-            cmap=cmap,
-            norm=norm,
-            s=46,
-            edgecolor="white",
-            linewidth=0.4,
-            alpha=0.92,
+        cmap = _build_gradient_cmap(
+            cluster_colors.get(cluster_label, "#4d4d4d"), cmap_name
         )
-        legend_handles.append(scatter)
-        legend_labels.append(f"Cluster {cluster_label}")
-        colorbars.append((cluster_label, cmap))
+
+        scatter_handle = None
+        if valid_cluster.any():
+            valid_auc = cluster_auc[valid_cluster]
+            vmin = float(np.nanmin(valid_auc))
+            vmax = float(np.nanmax(valid_auc))
+            if np.isclose(vmin, vmax):
+                vmax = vmin + 1e-6
+            norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+            scatter_handle = ax.scatter(
+                cluster_embedding[valid_cluster, 0],
+                cluster_embedding[valid_cluster, 1],
+                c=valid_auc,
+                cmap=cmap,
+                norm=norm,
+                s=46,
+                edgecolor="white",
+                linewidth=0.4,
+                alpha=0.92,
+            )
+            colorbars.append((cluster_label, cmap, norm))
+
+        invalid_cluster = ~valid_cluster
+        if invalid_cluster.any():
+            fallback = ax.scatter(
+                cluster_embedding[invalid_cluster, 0],
+                cluster_embedding[invalid_cluster, 1],
+                color="#bdbdbd",
+                s=40,
+                edgecolor="white",
+                linewidth=0.3,
+                alpha=0.7,
+            )
+            if scatter_handle is None:
+                scatter_handle = fallback
+
+        if scatter_handle is not None:
+            legend_handles.append(scatter_handle)
+            legend_labels.append(f"Cluster {cluster_label}")
 
     noise_mask = labels == -1
     if np.any(noise_mask):
@@ -234,7 +257,7 @@ def plot_embedding_by_auc(
         ax.legend(legend_handles, legend_labels, loc="best")
 
     if colorbars:
-        for idx, (cluster_label, cmap) in enumerate(colorbars):
+        for idx, (cluster_label, cmap, norm) in enumerate(colorbars):
             cbar = fig.colorbar(
                 ScalarMappable(norm=norm, cmap=cmap),
                 ax=ax,

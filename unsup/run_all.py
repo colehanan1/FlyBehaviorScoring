@@ -299,6 +299,16 @@ def main() -> None:
         odor_results.metrics.to_csv(
             artifacts.response_auc_csv("simple"), index=False
         )
+        ranking_columns = [
+            column
+            for column in ("rank", "trial_index", "cluster_label", "auc_ratio")
+            if column in odor_results.metrics.columns
+        ]
+        if ranking_columns:
+            odor_results.metrics[ranking_columns].to_csv(
+                artifacts.response_auc_rankings_csv("simple"),
+                index=False,
+            )
         odor_results.cluster_summary.to_csv(
             artifacts.response_auc_summary_csv("simple"), index=False
         )

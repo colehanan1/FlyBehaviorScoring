@@ -61,6 +61,9 @@ class ArtifactPaths:
     def response_auc_ranking_plot(self, model_name: str) -> Path:
         return self.base_dir / f"odor_response_auc_ranking_{model_name}.png"
 
+    def response_auc_rankings_csv(self, model_name: str) -> Path:
+        return self.base_dir / f"odor_response_auc_rankings_{model_name}.csv"
+
 
 def ensure_output_dir(base: Path) -> ArtifactPaths:
     base.mkdir(parents=True, exist_ok=True)
