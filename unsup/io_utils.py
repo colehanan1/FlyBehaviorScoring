@@ -25,6 +25,9 @@ class ArtifactPaths:
     def time_importance_plot(self, model_name: str) -> Path:
         return self.base_dir / f"time_importance_{model_name}.png"
 
+    def eigenvector_plot(self, model_name: str) -> Path:
+        return self.base_dir / f"pca_eigenvectors_{model_name}.png"
+
     def embedding_plot(self, model_name: str) -> Path:
         return self.base_dir / f"embedding_{model_name}.png"
 
@@ -36,6 +39,24 @@ class ArtifactPaths:
 
     def average_trace_plot(self, model_name: str) -> Path:
         return self.base_dir / f"cluster_average_trace_{model_name}.png"
+
+    def response_auc_csv(self, model_name: str) -> Path:
+        return self.base_dir / f"odor_response_auc_{model_name}.csv"
+
+    def response_auc_summary_csv(self, model_name: str) -> Path:
+        return self.base_dir / f"odor_response_cluster_summary_{model_name}.csv"
+
+    def response_variance_plot(self, model_name: str) -> Path:
+        return self.base_dir / f"odor_response_variance_{model_name}.png"
+
+    def response_eigenvector_plot(self, model_name: str) -> Path:
+        return self.base_dir / f"odor_response_eigenvectors_{model_name}.png"
+
+    def response_embedding_plot(self, model_name: str) -> Path:
+        return self.base_dir / f"odor_response_embedding_{model_name}.png"
+
+    def response_scores_csv(self, model_name: str) -> Path:
+        return self.base_dir / f"odor_response_pca_scores_{model_name}.csv"
 
 
 def ensure_output_dir(base: Path) -> ArtifactPaths:

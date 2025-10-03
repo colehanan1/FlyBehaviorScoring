@@ -20,11 +20,15 @@ from .io_utils import (
     write_components,
 )
 from .pca_core import compute_pca, compute_time_importance
+from .odor_response import evaluate_odor_response, run_response_pca
 from .plots import (
+    ODOR_OFF_FRAME,
+    ODOR_ON_FRAME,
     plot_cluster_odor_embedding,
     plot_cluster_traces,
     plot_components,
     plot_embedding,
+    plot_pca_eigenvectors,
     plot_time_importance,
     plot_variance,
 )
@@ -236,6 +240,12 @@ def main() -> None:
         "reaction_clusters",
     ):
         plot_variance(pca_results, str(artifacts.variance_plot(model_name)))
+        plot_pca_eigenvectors(
+            pca_results,
+            time_points,
+            str(artifacts.eigenvector_plot(model_name)),
+            title=f"PCA eigenvectors ({model_name})",
+        )
         plot_time_importance(
             importance_df, str(artifacts.time_importance_plot(model_name))
         )
@@ -268,6 +278,71 @@ def main() -> None:
         simple_outputs.labels,
         str(artifacts.average_trace_plot("simple")),
     )
+
+    try:
+        odor_results = evaluate_odor_response(
+            prepared.traces,
+            simple_outputs.labels,
+            prepared.metadata.index,
+            time_points,
+            odor_on=ODOR_ON_FRAME,
+            odor_off=ODOR_OFF_FRAME,
+            target_clusters=(0, 1),
+        )
+    except ValueError as exc:
+        if args.debug:
+            print("[run_all] Odor response evaluation failed:", exc)
+        odor_results = None
+    else:
+        odor_results.metrics.to_csv(
+            artifacts.response_auc_csv("simple"), index=False
+        )
+        odor_results.cluster_summary.to_csv(
+            artifacts.response_auc_summary_csv("simple"), index=False
+        )
+
+    if odor_results and odor_results.feature_matrix is not None:
+        response_pca = run_response_pca(
+            odor_results.feature_matrix,
+            max_pcs=args.max_pcs,
+            random_state=args.seed,
+        )
+        if response_pca is not None:
+            plot_variance(
+                response_pca,
+                str(artifacts.response_variance_plot("simple")),
+            )
+            plot_pca_eigenvectors(
+                response_pca,
+                odor_results.feature_timepoints
+                if odor_results.feature_timepoints is not None
+                else np.arange(1, response_pca.components.shape[1] + 1),
+                str(artifacts.response_eigenvector_plot("simple")),
+                title="Odor response PCA eigenvectors",
+            )
+            plot_embedding(
+                response_pca.scores[:, :2],
+                odor_results.trial_labels,
+                str(artifacts.response_embedding_plot("simple")),
+            )
+
+            response_scores = pd.DataFrame(
+                response_pca.scores,
+                columns=[
+                    f"PC{idx+1}" for idx in range(response_pca.scores.shape[1])
+                ],
+            )
+            response_scores.insert(0, "cluster_label", odor_results.trial_labels)
+            response_scores.insert(0, "trial_index", odor_results.trial_ids)
+            response_scores.to_csv(
+                artifacts.response_scores_csv("simple"), index=False
+            )
+        elif args.debug:
+            print(
+                "[run_all] Skipping odor response PCA due to insufficient variance."
+            )
+    elif args.debug and odor_results is not None:
+        print("[run_all] Odor response evaluation returned no target trials.")
 
     testing_codes, testing_column = _infer_testing_codes(prepared.metadata)
     if testing_codes is not None:

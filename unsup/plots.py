@@ -48,6 +48,39 @@ def plot_time_importance(importance_df: pd.DataFrame, path: str) -> None:
     plt.close(fig)
 
 
+def plot_pca_eigenvectors(
+    pca_results: PCAResults,
+    time_points: Sequence[float],
+    path: str,
+    *,
+    max_components: int = 5,
+    title: str | None = None,
+) -> None:
+    """Visualize leading PCA eigenvectors as temporal loadings."""
+
+    components = pca_results.components
+    if components.size == 0:
+        raise ValueError("PCA results contain no components to plot.")
+
+    n_components = min(max_components, components.shape[0])
+    times = np.asarray(time_points, dtype=float)
+    if times.size != components.shape[1]:
+        times = np.arange(1, components.shape[1] + 1)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for idx in range(n_components):
+        ax.plot(times, components[idx], label=f"PC{idx+1}")
+
+    ax.set_xlabel("Frame index")
+    ax.set_ylabel("Loading weight")
+    ax.set_title(title or "PCA eigenvectors")
+    if n_components > 1:
+        ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
 def plot_embedding(
     embedding: np.ndarray,
     labels: Sequence[int],
@@ -280,6 +313,7 @@ def plot_cluster_traces(
 __all__ = [
     "plot_variance",
     "plot_time_importance",
+    "plot_pca_eigenvectors",
     "plot_embedding",
     "plot_cluster_odor_embedding",
     "plot_components",
