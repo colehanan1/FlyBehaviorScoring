@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
+from matplotlib.cm import ScalarMappable
 import numpy as np
 import pandas as pd
 
@@ -129,6 +131,124 @@ def plot_embedding(
     plt.close(fig)
 
 
+def _build_gradient_cmap(base_color: str, name: str) -> mcolors.LinearSegmentedColormap:
+    base_rgb = np.array(mcolors.to_rgb(base_color))
+    light_rgb = 1.0 - (1.0 - base_rgb) * 0.15
+    return mcolors.LinearSegmentedColormap.from_list(name, [light_rgb, base_rgb])
+
+
+def plot_embedding_by_auc(
+    embedding: np.ndarray,
+    labels: Sequence[int],
+    auc_values: Sequence[float],
+    path: str,
+    *,
+    cluster_colors: Mapping[int, str] | None = None,
+) -> None:
+    """Plot embeddings with per-cluster gradients driven by AUC ratios."""
+
+    if embedding.ndim != 2:
+        raise ValueError("embedding must be a 2D array")
+    if embedding.shape[0] == 0:
+        raise ValueError("embedding must contain at least one point")
+
+    if embedding.shape[1] < 2:
+        padding = np.zeros((embedding.shape[0], 2 - embedding.shape[1]))
+        embedding = np.hstack([embedding, padding])
+
+    labels = np.asarray(labels)
+    auc_array = np.asarray(auc_values, dtype=float)
+    if labels.shape[0] != embedding.shape[0] or auc_array.shape[0] != embedding.shape[0]:
+        raise ValueError("embedding, labels, and auc_values must share the same length")
+
+    finite_mask = np.isfinite(auc_array)
+    if not finite_mask.any():
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.text(
+            0.5,
+            0.5,
+            "No finite AUC ratios for selected trials",
+            ha="center",
+            va="center",
+        )
+        ax.set_axis_off()
+        fig.tight_layout()
+        fig.savefig(path, dpi=200)
+        plt.close(fig)
+        return
+
+    cluster_colors = cluster_colors or {0: "#b2182b", 1: "#2166ac"}
+    unique_clusters = [label for label in sorted(np.unique(labels)) if label != -1]
+
+    vmin = np.nanmin(auc_array[finite_mask])
+    vmax = np.nanmax(auc_array[finite_mask])
+    if np.isclose(vmin, vmax):
+        vmax = vmin + 1e-6
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    legend_handles = []
+    legend_labels = []
+    colorbars = []
+
+    for cluster_label in unique_clusters:
+        cluster_mask = labels == cluster_label
+        if not np.any(cluster_mask):
+            continue
+        cluster_auc = auc_array[cluster_mask]
+        cmap_name = f"cluster_{cluster_label}_auc"
+        cmap = _build_gradient_cmap(cluster_colors.get(cluster_label, "#4d4d4d"), cmap_name)
+        scatter = ax.scatter(
+            embedding[cluster_mask, 0],
+            embedding[cluster_mask, 1],
+            c=cluster_auc,
+            cmap=cmap,
+            norm=norm,
+            s=46,
+            edgecolor="white",
+            linewidth=0.4,
+            alpha=0.92,
+        )
+        legend_handles.append(scatter)
+        legend_labels.append(f"Cluster {cluster_label}")
+        colorbars.append((cluster_label, cmap))
+
+    noise_mask = labels == -1
+    if np.any(noise_mask):
+        noise_scatter = ax.scatter(
+            embedding[noise_mask, 0],
+            embedding[noise_mask, 1],
+            color="#bdbdbd",
+            s=32,
+            alpha=0.6,
+            marker="x",
+            label="Noise",
+        )
+        legend_handles.append(noise_scatter)
+        legend_labels.append("Noise")
+
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.set_title("Odor response embedding (AUC-weighted)")
+    if legend_handles:
+        ax.legend(legend_handles, legend_labels, loc="best")
+
+    if colorbars:
+        for idx, (cluster_label, cmap) in enumerate(colorbars):
+            cbar = fig.colorbar(
+                ScalarMappable(norm=norm, cmap=cmap),
+                ax=ax,
+                fraction=0.046,
+                pad=0.04 + idx * 0.08,
+            )
+            cbar.ax.set_ylabel(f"Cluster {cluster_label} AUC ratio", rotation=270, labelpad=12)
+
+    ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.4)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
 def plot_cluster_odor_embedding(
     pc_scores: pd.DataFrame,
     labels: Sequence[int],
@@ -238,6 +358,48 @@ def plot_cluster_odor_embedding(
     plt.close(fig)
 
 
+def plot_auc_ranking(metrics: pd.DataFrame, path: str) -> None:
+    """Visualize ranked AUC ratios for key clusters."""
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    if metrics.empty or "rank" not in metrics.columns:
+        ax.text(0.5, 0.5, "No odor-response trials for target clusters", ha="center", va="center")
+        ax.set_axis_off()
+        fig.tight_layout()
+        fig.savefig(path, dpi=200)
+        plt.close(fig)
+        return
+
+    palette = {0: "#b2182b", 1: "#2166ac"}
+    max_rank = int(metrics["rank"].max())
+    for cluster_label, group in metrics.groupby("cluster_label"):
+        color = palette.get(int(cluster_label), "#4d4d4d")
+        ax.plot(
+            group["rank"],
+            group["auc_ratio"],
+            marker="o",
+            linestyle="-",
+            linewidth=1.4,
+            markersize=5,
+            color=color,
+            alpha=0.9,
+            label=f"Cluster {int(cluster_label)}",
+        )
+
+    ax.set_xlim(0.5, max_rank + 0.5)
+    ax.set_xlabel("Rank (descending AUC ratio)")
+    ax.set_ylabel("AUC ratio")
+    ax.set_title("Odor-response AUC ranking")
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.4)
+    if metrics["cluster_label"].nunique() > 0:
+        ax.legend(loc="best")
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
 def plot_components(time_points: np.ndarray, components: np.ndarray, path: str) -> None:
     fig, ax = plt.subplots(figsize=(6, 4))
     for idx, pattern in enumerate(components):
@@ -315,7 +477,9 @@ __all__ = [
     "plot_time_importance",
     "plot_pca_eigenvectors",
     "plot_embedding",
+    "plot_embedding_by_auc",
     "plot_cluster_odor_embedding",
+    "plot_auc_ranking",
     "plot_components",
     "plot_cluster_traces",
 ]

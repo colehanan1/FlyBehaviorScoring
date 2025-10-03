@@ -21,6 +21,7 @@ class OdorResponseResults:
     trial_indices: np.ndarray
     trial_labels: np.ndarray
     trial_ids: np.ndarray
+    auc_ratios: np.ndarray
 
 
 def _validate_time_windows(
@@ -99,6 +100,7 @@ def evaluate_odor_response(
     selected_rows: list[int] = []
     selected_labels: list[int] = []
     selected_ids: list[object] = []
+    selected_auc_ratios: list[float] = []
     index_list = list(metadata_index)
 
     target_set = {int(label) for label in target_clusters}
@@ -120,6 +122,7 @@ def evaluate_odor_response(
         selected_rows.append(row_idx)
         selected_labels.append(int(cluster_label))
         selected_ids.append(index_list[row_idx])
+        selected_auc_ratios.append(float(auc_ratio[row_idx]))
 
     metrics_df = pd.DataFrame(records)
     if metrics_df.empty:
@@ -175,6 +178,7 @@ def evaluate_odor_response(
         trial_indices=np.asarray(selected_rows, dtype=int),
         trial_labels=np.asarray(selected_labels, dtype=int),
         trial_ids=np.asarray(selected_ids, dtype=object),
+        auc_ratios=np.asarray(selected_auc_ratios, dtype=float),
     )
 
 

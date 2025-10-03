@@ -24,10 +24,12 @@ from .odor_response import evaluate_odor_response, run_response_pca
 from .plots import (
     ODOR_OFF_FRAME,
     ODOR_ON_FRAME,
+    plot_auc_ranking,
     plot_cluster_odor_embedding,
     plot_cluster_traces,
     plot_components,
     plot_embedding,
+    plot_embedding_by_auc,
     plot_pca_eigenvectors,
     plot_time_importance,
     plot_variance,
@@ -300,6 +302,12 @@ def main() -> None:
         odor_results.cluster_summary.to_csv(
             artifacts.response_auc_summary_csv("simple"), index=False
         )
+        plot_auc_ranking(
+            odor_results.metrics,
+            str(artifacts.response_auc_ranking_plot("simple")),
+        )
+
+    response_embedding_data: np.ndarray | None = None
 
     if odor_results and odor_results.feature_matrix is not None:
         response_pca = run_response_pca(
@@ -320,11 +328,7 @@ def main() -> None:
                 str(artifacts.response_eigenvector_plot("simple")),
                 title="Odor response PCA eigenvectors",
             )
-            plot_embedding(
-                response_pca.scores[:, :2],
-                odor_results.trial_labels,
-                str(artifacts.response_embedding_plot("simple")),
-            )
+            response_embedding_data = response_pca.scores[:, :2]
 
             response_scores = pd.DataFrame(
                 response_pca.scores,
@@ -343,6 +347,22 @@ def main() -> None:
             )
     elif args.debug and odor_results is not None:
         print("[run_all] Odor response evaluation returned no target trials.")
+
+    if (
+        odor_results
+        and odor_results.auc_ratios.size > 0
+        and odor_results.trial_labels.size == odor_results.auc_ratios.size
+    ):
+        if response_embedding_data is None:
+            response_embedding_data = pca_results.scores[odor_results.trial_indices][:, :2]
+
+        plot_embedding_by_auc(
+            response_embedding_data,
+            odor_results.trial_labels,
+            odor_results.auc_ratios,
+            str(artifacts.response_embedding_plot("simple")),
+            cluster_colors={0: "#b2182b", 1: "#2166ac"},
+        )
 
     testing_codes, testing_column = _infer_testing_codes(prepared.metadata)
     if testing_codes is not None:
