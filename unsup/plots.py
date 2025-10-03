@@ -1,7 +1,7 @@
 """Plotting utilities for unsupervised analysis."""
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -96,6 +96,115 @@ def plot_embedding(
     plt.close(fig)
 
 
+def plot_cluster_odor_embedding(
+    pc_scores: pd.DataFrame,
+    labels: Sequence[int],
+    odor_codes: pd.Series,
+    cluster_label: int,
+    path: str,
+    *,
+    color_map: Mapping[int, str],
+    default_color: str = "lightgrey",
+) -> None:
+    """Plot PC1/PC2 for a specific cluster colored by tested odor codes."""
+
+    if "PC1" not in pc_scores.columns:
+        raise ValueError("pc_scores must contain a 'PC1' column")
+
+    if "PC2" in pc_scores.columns:
+        pc_subset = pc_scores[["PC1", "PC2"]].copy()
+    else:
+        pc_subset = pc_scores[["PC1"]].copy()
+        pc_subset["PC2"] = 0.0
+
+    labels = np.asarray(labels)
+    if labels.shape[0] != pc_subset.shape[0]:
+        raise ValueError("labels length must match number of PCA rows")
+
+    odor_aligned = odor_codes.reindex(pc_subset.index)
+
+    cluster_mask = labels == cluster_label
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    if not np.any(cluster_mask):
+        ax.text(
+            0.5,
+            0.5,
+            f"No trials assigned to cluster {cluster_label}",
+            ha="center",
+            va="center",
+            fontsize=11,
+        )
+        ax.set_axis_off()
+        fig.tight_layout()
+        fig.savefig(path, dpi=200)
+        plt.close(fig)
+        return
+
+    cluster_scores = pc_subset.loc[cluster_mask]
+    cluster_odors = odor_aligned.loc[cluster_mask]
+
+    pc1 = cluster_scores["PC1"].to_numpy(dtype=float, copy=True)
+    pc2 = cluster_scores["PC2"].to_numpy(dtype=float, copy=True)
+
+    codes_array = cluster_odors.to_numpy()
+    valid_mask = np.array([not pd.isna(value) for value in codes_array])
+    unique_codes = sorted(
+        {int(value) for value in codes_array if not pd.isna(value)}
+    )
+
+    legend_labels: dict[str, object] = {}
+
+    for code in unique_codes:
+        code_mask = np.array(
+            [
+                (not pd.isna(value)) and int(value) == code
+                for value in codes_array
+            ]
+        )
+        if not code_mask.any():
+            continue
+        color = color_map.get(code, default_color)
+        label = f"Testing {code}"
+        scatter = ax.scatter(
+            pc1[code_mask],
+            pc2[code_mask],
+            s=36,
+            color=color,
+            alpha=0.85,
+            label=label,
+            edgecolor="white",
+            linewidth=0.3,
+        )
+        legend_labels[label] = scatter
+
+    missing_mask = ~valid_mask
+    if missing_mask.any():
+        scatter = ax.scatter(
+            pc1[missing_mask],
+            pc2[missing_mask],
+            s=36,
+            color=default_color,
+            alpha=0.6,
+            label="Unknown",
+            edgecolor="white",
+            linewidth=0.3,
+        )
+        legend_labels.setdefault("Unknown", scatter)
+
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.set_title(f"Cluster {cluster_label} PC1 vs PC2 by tested odor")
+    if legend_labels:
+        ax.legend(legend_labels.values(), legend_labels.keys(), loc="best")
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.4)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
 def plot_components(time_points: np.ndarray, components: np.ndarray, path: str) -> None:
     fig, ax = plt.subplots(figsize=(6, 4))
     for idx, pattern in enumerate(components):
@@ -172,6 +281,7 @@ __all__ = [
     "plot_variance",
     "plot_time_importance",
     "plot_embedding",
+    "plot_cluster_odor_embedding",
     "plot_components",
     "plot_cluster_traces",
 ]

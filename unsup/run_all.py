@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, List
+import re
 import warnings
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -20,11 +21,12 @@ from .io_utils import (
 )
 from .pca_core import compute_pca, compute_time_importance
 from .plots import (
+    plot_cluster_odor_embedding,
+    plot_cluster_traces,
+    plot_components,
     plot_embedding,
     plot_time_importance,
     plot_variance,
-    plot_components,
-    plot_cluster_traces,
 )
 from .models import pca_gmm, pca_hdbscan, pca_kmeans, reaction_profiles
 from .subcluster import run_subclustering
@@ -120,6 +122,42 @@ def _extract_labels(metadata) -> np.ndarray | None:
         return None
     mapping = {name: idx for idx, name in enumerate(sorted(unique))}
     return np.vectorize(mapping.get)(labels)
+
+
+def _infer_testing_codes(metadata: pd.DataFrame) -> Tuple[pd.Series | None, str | None]:
+    """Extract testing odor codes (1-10) from metadata if present."""
+
+    pattern = re.compile(r"(?:^|\b)test(?:ing)?[^0-9]*([0-9]+)", re.IGNORECASE)
+
+    for column in metadata.columns:
+        series = metadata[column]
+        if not pd.api.types.is_string_dtype(series) and not pd.api.types.is_object_dtype(series):
+            continue
+        str_series = series.astype(str)
+        extracted = str_series.str.extract(pattern, expand=False)
+        if extracted.notna().any():
+            codes = pd.to_numeric(extracted, errors="coerce").astype("Int64")
+            if codes.notna().any():
+                return codes, column
+
+    for column in metadata.columns:
+        normalized = column.lower()
+        if not any(keyword in normalized for keyword in ("test", "odor", "stim")):
+            continue
+        series = metadata[column]
+        if not pd.api.types.is_numeric_dtype(series):
+            continue
+        numeric = pd.to_numeric(series, errors="coerce")
+        valid = numeric.dropna()
+        if valid.empty:
+            continue
+        unique_values = {int(value) for value in valid.unique() if float(value).is_integer()}
+        if not unique_values:
+            continue
+        if max(unique_values) <= 15 and min(unique_values) >= 0 and len(unique_values) >= 2:
+            return numeric.astype("Int64"), column
+
+    return None, None
 
 
 def main() -> None:
@@ -230,6 +268,46 @@ def main() -> None:
         simple_outputs.labels,
         str(artifacts.average_trace_plot("simple")),
     )
+
+    testing_codes, testing_column = _infer_testing_codes(prepared.metadata)
+    if testing_codes is not None:
+        odor_color_map = {
+            2: "red",
+            4: "red",
+            5: "red",
+            1: "pink",
+            3: "pink",
+            6: "green",
+            7: "blue",
+            8: "black",
+            9: "gray",
+            10: "brown",
+        }
+        if args.debug:
+            print(
+                "[run_all] Using metadata column for tested odor:",
+                testing_column,
+            )
+        aligned_codes = testing_codes.reindex(prepared.metadata.index)
+        for cluster_label in (1, 0):
+            plot_path = artifacts.base_dir / (
+                f"embedding_simple_cluster{cluster_label}_tested_odor.png"
+            )
+            plot_cluster_odor_embedding(
+                pca_features,
+                simple_outputs.labels,
+                aligned_codes,
+                cluster_label,
+                str(plot_path),
+                color_map=odor_color_map,
+                default_color="lightgrey",
+            )
+    elif args.debug:
+        print(
+            "[run_all] Unable to infer testing odor column for color-coded cluster plots.",
+            "Available columns:",
+            list(prepared.metadata.columns),
+        )
 
     metrics_simple = {
         **base_metrics,
