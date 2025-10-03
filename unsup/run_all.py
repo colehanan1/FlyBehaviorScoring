@@ -285,7 +285,7 @@ def main() -> None:
         odor_results = evaluate_odor_response(
             prepared.traces,
             simple_outputs.labels,
-            prepared.metadata.index,
+            prepared.metadata,
             time_points,
             odor_on=ODOR_ON_FRAME,
             odor_off=ODOR_OFF_FRAME,
@@ -301,7 +301,15 @@ def main() -> None:
         )
         ranking_columns = [
             column
-            for column in ("rank", "trial_index", "cluster_label", "auc_ratio")
+            for column in (
+                "rank",
+                "dataset",
+                "fly",
+                "trial_type",
+                "trial_label",
+                "cluster_label",
+                "auc_ratio",
+            )
             if column in odor_results.metrics.columns
         ]
         if ranking_columns:
@@ -347,7 +355,7 @@ def main() -> None:
                 ],
             )
             response_scores.insert(0, "cluster_label", odor_results.trial_labels)
-            response_scores.insert(0, "trial_index", odor_results.trial_ids)
+            response_scores.insert(0, "trial_descriptor", odor_results.trial_ids)
             response_scores.to_csv(
                 artifacts.response_scores_csv("simple"), index=False
             )

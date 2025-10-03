@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence, Tuple
+from typing import Mapping, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,91 @@ class OdorResponseResults:
     trial_labels: np.ndarray
     trial_ids: np.ndarray
     auc_ratios: np.ndarray
+
+
+def _match_metadata_columns(
+    metadata: pd.DataFrame | None,
+) -> Mapping[str, str | None]:
+    """Identify canonical metadata columns for dataset context."""
+
+    resolved: dict[str, str | None] = {
+        "dataset": None,
+        "fly": None,
+        "trial_type": None,
+        "trial_label": None,
+    }
+
+    if metadata is None or metadata.empty:
+        return resolved
+
+    lower_columns = {column.lower(): column for column in metadata.columns}
+
+    candidates: Mapping[str, Tuple[str, ...]] = {
+        "dataset": (
+            "dataset",
+            "dataset_name",
+            "dataset_label",
+            "dataset_full",
+        ),
+        "fly": (
+            "fly",
+            "fly_id",
+            "fly_name",
+            "fly_label",
+        ),
+        "trial_type": (
+            "trial_type",
+            "trial_type_name",
+            "trialtype",
+        ),
+        "trial_label": (
+            "trial_label",
+            "trial_label_name",
+            "trialname",
+        ),
+    }
+
+    for key, options in candidates.items():
+        for option in options:
+            column = lower_columns.get(option.lower())
+            if column is not None:
+                resolved[key] = column
+                break
+
+    return resolved
+
+
+def _extract_metadata_values(
+    metadata: pd.DataFrame | None,
+    column_map: Mapping[str, str | None],
+    row_idx: int,
+) -> Mapping[str, str]:
+    """Return stringified metadata context for a given trial."""
+
+    defaults = {
+        "dataset": "",
+        "fly": "",
+        "trial_type": "",
+        "trial_label": "",
+    }
+
+    if metadata is None or metadata.empty:
+        return defaults
+
+    values: dict[str, str] = {}
+    row = metadata.iloc[row_idx]
+
+    for key, column in column_map.items():
+        if column is None:
+            values[key] = ""
+            continue
+        raw_value = row.get(column, "")
+        if pd.isna(raw_value):  # type: ignore[arg-type]
+            values[key] = ""
+        else:
+            values[key] = str(raw_value)
+
+    return {**defaults, **values}
 
 
 def _validate_time_windows(
@@ -63,7 +148,7 @@ def _compute_frame_durations(time_values: np.ndarray) -> np.ndarray:
 def evaluate_odor_response(
     traces: np.ndarray,
     labels: Sequence[int],
-    metadata_index: Iterable[object],
+    metadata: pd.DataFrame | None,
     time_points: Sequence[float],
     *,
     odor_on: float,
@@ -101,27 +186,41 @@ def evaluate_odor_response(
     selected_labels: list[int] = []
     selected_ids: list[object] = []
     selected_auc_ratios: list[float] = []
-    index_list = list(metadata_index)
+    metadata = metadata if metadata is not None else pd.DataFrame()
+    index_list = list(metadata.index)
+    column_map = _match_metadata_columns(metadata)
 
     target_set = {int(label) for label in target_clusters}
 
     for row_idx, cluster_label in enumerate(labels_array):
         if int(cluster_label) not in target_set:
             continue
-        records.append(
-            {
-                "trial_index": index_list[row_idx],
-                "cluster_label": int(cluster_label),
-                "baseline_mean": float(baseline_mean[row_idx]),
-                "baseline_std": float(baseline_std[row_idx]),
-                "threshold": float(threshold[row_idx]),
-                "auc_above_threshold": float(auc_values[row_idx]),
-                "auc_ratio": float(auc_ratio[row_idx]),
-            }
-        )
+        context = _extract_metadata_values(metadata, column_map, row_idx)
+        record = {
+            "cluster_label": int(cluster_label),
+            "baseline_mean": float(baseline_mean[row_idx]),
+            "baseline_std": float(baseline_std[row_idx]),
+            "threshold": float(threshold[row_idx]),
+            "auc_above_threshold": float(auc_values[row_idx]),
+            "auc_ratio": float(auc_ratio[row_idx]),
+        }
+        record.update(context)
+        records.append(record)
         selected_rows.append(row_idx)
         selected_labels.append(int(cluster_label))
-        selected_ids.append(index_list[row_idx])
+        descriptor_parts = [
+            context.get("dataset", ""),
+            context.get("fly", ""),
+            context.get("trial_type", ""),
+            context.get("trial_label", ""),
+        ]
+        descriptor = " | ".join(part for part in descriptor_parts if part)
+        fallback_identifier = (
+            index_list[row_idx] if row_idx < len(index_list) else row_idx
+        )
+        if not descriptor:
+            descriptor = str(fallback_identifier)
+        selected_ids.append(descriptor)
         selected_auc_ratios.append(float(auc_ratio[row_idx]))
 
     metrics_df = pd.DataFrame(records)
@@ -129,7 +228,10 @@ def evaluate_odor_response(
         metrics_df = pd.DataFrame(
             columns=[
                 "rank",
-                "trial_index",
+                "dataset",
+                "fly",
+                "trial_type",
+                "trial_label",
                 "cluster_label",
                 "baseline_mean",
                 "baseline_std",
@@ -141,6 +243,30 @@ def evaluate_odor_response(
     else:
         metrics_df.sort_values("auc_ratio", ascending=False, inplace=True)
         metrics_df.insert(0, "rank", np.arange(1, len(metrics_df) + 1))
+        desired_order = [
+            "rank",
+            "dataset",
+            "fly",
+            "trial_type",
+            "trial_label",
+            "cluster_label",
+            "baseline_mean",
+            "baseline_std",
+            "threshold",
+            "auc_above_threshold",
+            "auc_ratio",
+        ]
+        existing_order = [
+            column
+            for column in desired_order
+            if column in metrics_df.columns
+        ]
+        remaining = [
+            column
+            for column in metrics_df.columns
+            if column not in existing_order
+        ]
+        metrics_df = metrics_df[existing_order + remaining]
 
     summary_columns = [
         "cluster_label",
