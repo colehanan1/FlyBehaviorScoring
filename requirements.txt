@@ -9,3 +9,4 @@ hdbscan
 scipy
 statsmodels
 lifelines
+patsy
