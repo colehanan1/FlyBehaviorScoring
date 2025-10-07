@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import patsy
 from statsmodels.regression.mixed_linear_model import MixedLM
+from scipy.stats import chi2
 
 from . import plotting
 from .utils import stack_mean_traces
@@ -83,11 +84,27 @@ def fit_gam(
     for row_idx, name in enumerate(interaction_names):
         col_idx = fe_params.index.get_loc(name)
         R[row_idx, col_idx] = 1.0
-    wald = result.wald_test(R)
     summary_text = result.summary().as_text()
-    wald_stat = float(np.asarray(wald.statistic).ravel()[0])
-    wald_df = float(np.asarray(getattr(wald, "df_denom", getattr(wald, "df_num", np.nan))))
-    wald_p = float(np.asarray(wald.pvalue).ravel()[0])
+    wald_df = float(np.linalg.matrix_rank(R))
+    if wald_df == 0:
+        wald_stat = 0.0
+        wald_p = 1.0
+    else:
+        fe_vector = fe_params.loc[fe_params.index].to_numpy()
+        cov_matrix = cov.loc[fe_params.index, fe_params.index].to_numpy()
+        Rb = R @ fe_vector
+        RCovRT = R @ cov_matrix @ R.T
+        if np.allclose(Rb, 0.0) or np.allclose(RCovRT, 0.0):
+            wald_stat = 0.0
+            wald_p = 1.0
+        else:
+            try:
+                RCovRT_inv = np.linalg.pinv(RCovRT, hermitian=True)
+            except TypeError:
+                # hermitian flag added in newer numpy; fall back for compatibility
+                RCovRT_inv = np.linalg.pinv(RCovRT)
+            wald_stat = float(Rb.T @ RCovRT_inv @ Rb)
+            wald_p = float(chi2.sf(wald_stat, df=wald_df))
     basis = patsy.dmatrix(
         f"bs(time, df={knots}, include_intercept=False)",
         {"time": time_s},
