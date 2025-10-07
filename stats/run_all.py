@@ -40,6 +40,8 @@ from statsmodels.stats.proportion import binom_test as sm_binom_test
 
 LOG = logging.getLogger("stats.run_all")
 
+GROUP_A_LABEL = "Trained odor testing trials (2, 4, 5)"
+GROUP_B_LABEL = "Other odor testing trials"
 
 TIME_COLUMN_PATTERN = re.compile(r"(dir|frame|time)[^0-9]*([0-9]+)", re.IGNORECASE)
 TRIAL_NUMBER_PATTERN = re.compile(r"(\d+)")
@@ -769,10 +771,10 @@ def plot_series(time_s: np.ndarray, series: Dict[str, np.ndarray], title: str, y
 
 def plot_effect(time_s: np.ndarray, effect: np.ndarray, title: str, out_path: str) -> None:
     fig, ax = plt.subplots(figsize=(10, 4), dpi=150)
-    ax.plot(time_s, effect, label="Effect: A - B")
+    ax.plot(time_s, effect, label=f"Effect: {GROUP_A_LABEL} - {GROUP_B_LABEL}")
     ax.axhline(0.0, color="black", linewidth=0.8, linestyle=":")
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Amplitude (A - B)")
+    ax.set_ylabel(f"Amplitude ({GROUP_A_LABEL} - {GROUP_B_LABEL})")
     ax.set_title(title)
     ax.legend()
     ax.grid(True, linestyle="--", alpha=0.3)
@@ -789,8 +791,8 @@ def plot_km_curves(
     evt_b: np.ndarray,
     out_path: str,
 ) -> Tuple[float, float]:
-    km_a = KaplanMeierFitter(label="Group A (target trials)")
-    km_b = KaplanMeierFitter(label="Group B (other trials)")
+    km_a = KaplanMeierFitter(label=GROUP_A_LABEL)
+    km_b = KaplanMeierFitter(label=GROUP_B_LABEL)
     km_a.fit(lat_a_sec, event_observed=evt_a)
     km_b.fit(lat_b_sec, event_observed=evt_b)
     fig, ax = plt.subplots(figsize=(7, 5), dpi=150)
@@ -798,7 +800,7 @@ def plot_km_curves(
     km_b.plot_survival_function(ax=ax)
     ax.set_xlabel("Time to threshold crossing (s)")
     ax.set_ylabel("Survival probability")
-    ax.set_title("Kaplan–Meier survival curves")
+    ax.set_title(f"Kaplan–Meier survival: {GROUP_A_LABEL} vs {GROUP_B_LABEL}")
     ax.grid(True, linestyle="--", alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_path)
@@ -974,21 +976,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     plot_series(
         time_axis,
         {"p-value": primary_p, "BH q-value": primary_q},
-        "Primary test p-values over time",
+        f"Primary test p-values: {GROUP_A_LABEL} vs {GROUP_B_LABEL}",
         "p",
         os.path.join(args.out, f"{t_label}_plot.png"),
     )
     plot_series(
         time_axis,
         {"p-value": secondary_p, "BH q-value": secondary_q},
-        "Secondary test p-values over time",
+        f"Secondary test p-values: {GROUP_A_LABEL} vs {GROUP_B_LABEL}",
         "p",
         os.path.join(args.out, f"{w_label}_plot.png"),
     )
     plot_effect(
         time_axis,
         effect_mean,
-        "Effect size (mean across subjects)",
+        f"Effect size: {GROUP_A_LABEL} minus {GROUP_B_LABEL}",
         os.path.join(args.out, "effect_mean_plot.png"),
     )
 
@@ -1010,13 +1012,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         plot_series(
             time_axis,
             {"p-value": mcnemar_p, "BH q-value": mcnemar_q},
-            "McNemar sign-test p-values over time",
+            f"McNemar sign-test p-values: {GROUP_A_LABEL} vs {GROUP_B_LABEL}",
             "p",
             os.path.join(args.out, "mcnemar_plot.png"),
         )
         plot_series(
             time_axis,
-            {"A>B": b_counts, "B>A": c_counts},
+            {
+                f"{GROUP_A_LABEL} > {GROUP_B_LABEL}": b_counts,
+                f"{GROUP_B_LABEL} > {GROUP_A_LABEL}": c_counts,
+            },
             "Discordant counts per timepoint",
             "count (flies)",
             os.path.join(args.out, "mcnemar_bc_plot.png"),
@@ -1041,7 +1046,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         LOG.info("Log-rank test statistic=%.4f, p=%.6g", lr.test_statistic, lr.p_value)
         km_df = pd.DataFrame(
             {
-                "group": ["A", "B"],
+                "group": [GROUP_A_LABEL, GROUP_B_LABEL],
                 "n_trials": [lat_a_sec.size, lat_b_sec.size],
                 "median_latency_s": [median_a, median_b],
                 "logrank_test_stat": [float(lr.test_statistic)] * 2,
