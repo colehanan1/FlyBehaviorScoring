@@ -24,12 +24,14 @@ import json
 import logging
 import math
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_numeric_dtype
 from lifelines import KaplanMeierFitter
 from lifelines.statistics import logrank_test
 from scipy.stats import mannwhitneyu, ttest_ind, ttest_rel, wilcoxon
@@ -37,6 +39,26 @@ from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.proportion import binom_test as sm_binom_test
 
 LOG = logging.getLogger("stats.run_all")
+
+
+TIME_COLUMN_PATTERN = re.compile(r"(dir|frame|time)[^0-9]*([0-9]+)", re.IGNORECASE)
+LIKELY_METADATA_NAMES = {
+    "fps",
+    "frame_rate",
+    "trial_type",
+    "trial_label",
+    "trialtype",
+    "trial_name",
+    "trialcategory",
+    "odor",
+    "odor_name",
+    "odor_label",
+    "odor_conc",
+    "odor_concentration",
+    "odorconc",
+    "stimulus",
+    "stimulus_name",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +88,16 @@ class FlyGroups:
     @property
     def has_both(self) -> bool:
         return self.group_a.trials.size > 0 and self.group_b.trials.size > 0
+
+
+@dataclass
+class LoadedMetadata:
+    """Structured view of metadata JSON contents."""
+
+    rows: Optional[List[dict]]
+    column_order: Optional[Sequence[str]]
+    code_maps: Dict[str, Any]
+    raw: Any
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +131,12 @@ def load_matrix(path: str) -> np.ndarray:
         LOG.warning("Matrix dtype %s is not float; casting to float32 for safety.", mat.dtype)
         mat = mat.astype(np.float32, copy=False)
     return np.asarray(mat)
+
+
+def _to_python_scalar(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def _flatten_code_map(mapping: Any) -> Dict[Any, Any]:
@@ -147,31 +185,130 @@ def _flatten_code_map(mapping: Any) -> Dict[Any, Any]:
     return {}
 
 
-def _decode_with_map(column: str, value: Any, code_maps: Optional[Dict[str, Any]]) -> Any:
-    if code_maps is None:
-        return value
-    mapping = code_maps.get(column)
-    flat = _flatten_code_map(mapping)
+def _decode_value_with_flat_map(value: Any, flat: Dict[Any, Any]) -> Any:
+    scalar = _to_python_scalar(value)
     if not flat:
-        return value
-    candidates = [value]
-    if isinstance(value, str) and value.isdigit():
-        candidates.append(int(value))
+        return scalar
+    candidates: List[Any] = [scalar]
+    if isinstance(scalar, str) and scalar.isdigit():
+        candidates.append(int(scalar))
     else:
         try:
-            candidates.append(int(value))
+            candidates.append(int(scalar))
         except (TypeError, ValueError):
             pass
-    candidates.append(str(value))
+    candidates.append(str(scalar))
     for cand in candidates:
         if cand in flat:
             return flat[cand]
-    # If we did not match on keys, attempt to match on values (rare but observed)
     inverse = {v: k for k, v in flat.items() if isinstance(v, (str, int, float, bool))}
     for cand in candidates:
         if cand in inverse:
             return inverse[cand]
-    return value
+    return scalar
+
+
+def _decode_with_map(column: str, value: Any, code_maps: Optional[Dict[str, Any]]) -> Any:
+    if code_maps is None:
+        return _to_python_scalar(value)
+    mapping = code_maps.get(column)
+    flat = _flatten_code_map(mapping)
+    return _decode_value_with_flat_map(value, flat)
+
+
+def _apply_code_maps_to_dataframe(df: pd.DataFrame, code_maps: Dict[str, Any]) -> pd.DataFrame:
+    if not code_maps:
+        return df
+    for column, mapping in code_maps.items():
+        if column not in df.columns:
+            continue
+        flat = _flatten_code_map(mapping)
+        if not flat:
+            continue
+        df[column] = df[column].map(lambda value: _decode_value_with_flat_map(value, flat))
+    return df
+
+
+def _identify_time_columns(
+    df: pd.DataFrame,
+    required_fields: Sequence[str],
+) -> List[str]:
+    required = {str(field) for field in required_fields}
+    matches: List[Tuple[str, int]] = []
+    for column in df.columns:
+        if str(column) in required:
+            continue
+        match = TIME_COLUMN_PATTERN.search(str(column))
+        if match:
+            try:
+                idx = int(match.group(2))
+            except ValueError:
+                continue
+            matches.append((column, idx))
+    if matches:
+        matches.sort(key=lambda item: (item[1], str(item[0])))
+        return [name for name, _ in matches]
+
+    excluded = {str(field) for field in required_fields}
+    excluded.update(name for name in df.columns if str(name).strip().lower() in LIKELY_METADATA_NAMES)
+    fallback = [
+        column
+        for column in df.columns
+        if column not in excluded and is_numeric_dtype(df[column])
+    ]
+    return fallback
+
+
+def dataframe_from_columnar_matrix(
+    matrix: np.ndarray,
+    column_order: Sequence[str],
+    code_maps: Dict[str, Any],
+    fly_field: str,
+    dataset_field: str,
+    trial_field: str,
+) -> Tuple[np.ndarray, pd.DataFrame, List[str]]:
+    if matrix.shape[1] != len(column_order):
+        raise ValueError(
+            "Mismatch between matrix column count and metadata column_order length: "
+            f"matrix has {matrix.shape[1]} columns, metadata lists {len(column_order)} entries."
+        )
+    df = pd.DataFrame(matrix, columns=column_order)
+    df = _apply_code_maps_to_dataframe(df, code_maps or {})
+
+    time_columns = _identify_time_columns(df, (fly_field, dataset_field, trial_field))
+    if not time_columns:
+        sample = ", ".join(list(df.columns[:10]))
+        raise ValueError(
+            "Unable to identify time-series columns from metadata column_order. "
+            "Expect names resembling 'dir_val_#' or numeric indices. "
+            f"Sample columns: [{sample}]"
+        )
+
+    time_df = df[time_columns].apply(pd.to_numeric, errors="coerce")
+    if time_df.isnull().values.any():
+        LOG.warning("Non-numeric entries detected in time-series columns; coerced to NaN.")
+    traces = time_df.to_numpy(dtype=float)
+
+    meta_columns = [column for column in df.columns if column not in time_columns]
+    meta_df = df[meta_columns].copy()
+    meta_df.insert(0, "row", np.arange(len(meta_df), dtype=int))
+
+    missing = [field for field in (fly_field, dataset_field, trial_field) if field not in meta_df.columns]
+    if missing:
+        raise KeyError(
+            "Metadata columns missing after decoding column_order/np matrix: "
+            + ", ".join(missing)
+            + ". Available columns: "
+            + ", ".join(sorted(map(str, meta_df.columns.tolist())))
+        )
+
+    LOG.info(
+        "Decoded columnar metadata: %d trials, %d timepoints inferred from %d time columns.",
+        traces.shape[0],
+        traces.shape[1],
+        len(time_columns),
+    )
+    return traces, meta_df, list(time_columns)
 
 
 def _rows_from_table(
@@ -272,18 +409,27 @@ def _extract_rows(meta: Any) -> Optional[List[dict]]:
     return None
 
 
-def load_metadata(path: str) -> List[dict]:
+def load_metadata(path: str) -> LoadedMetadata:
     LOG.debug("Loading metadata from %s", path)
     with open(path, "r", encoding="utf-8") as handle:
         meta = json.load(handle)
     rows = _extract_rows(meta)
-    if rows is None:
+    column_order: Optional[Sequence[str]] = None
+    code_maps: Dict[str, Any] = {}
+    if isinstance(meta, dict):
+        raw_columns = meta.get("column_order") or meta.get("columns")
+        if isinstance(raw_columns, list):
+            column_order = raw_columns
+        raw_code_maps = meta.get("code_maps")
+        if isinstance(raw_code_maps, dict):
+            code_maps = raw_code_maps
+    if rows is None and column_order is None:
         raise ValueError(
-            "Unsupported metadata structure. Expected a list of row dicts or an export "
-            "containing `rows`/`data` alongside `column_order`. Top-level keys: "
+            "Unsupported metadata structure. Expected row-aligned records or a "
+            "`column_order` list accompanied by `code_maps`. Top-level keys: "
             f"{sorted(meta.keys()) if isinstance(meta, dict) else type(meta)}"
         )
-    return rows
+    return LoadedMetadata(rows=rows, column_order=column_order, code_maps=code_maps, raw=meta)
 
 
 def rows_to_dataframe(rows: Sequence[dict], fly_field: str, dataset_field: str, trial_field: str) -> pd.DataFrame:
@@ -697,21 +843,46 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     ensure_out_dir(args.out)
     matrix = load_matrix(args.npy)
-    rows = load_metadata(args.meta)
-    LOG.info("Loaded %d metadata rows.", len(rows))
-    if rows:
-        LOG.debug("Metadata sample keys: %s", sorted(rows[0].keys()))
-    df = rows_to_dataframe(rows, args.fly_field, args.dataset_field, args.trial_field)
+    metadata = load_metadata(args.meta)
+
+    if metadata.rows is not None:
+        LOG.info("Loaded %d metadata rows from JSON export.", len(metadata.rows))
+        if metadata.rows:
+            LOG.debug("Metadata sample keys: %s", sorted(metadata.rows[0].keys()))
+        df = rows_to_dataframe(metadata.rows, args.fly_field, args.dataset_field, args.trial_field)
+        time_matrix = matrix
+        time_columns = list(range(matrix.shape[1]))
+    else:
+        if metadata.column_order is None:
+            raise ValueError(
+                "Metadata file did not contain row records or column order information."
+            )
+        LOG.info(
+            "Metadata provides column_order only; decoding required fields from matrix via code maps."
+        )
+        time_matrix, df, time_columns = dataframe_from_columnar_matrix(
+            matrix,
+            metadata.column_order,
+            metadata.code_maps,
+            args.fly_field,
+            args.dataset_field,
+            args.trial_field,
+        )
+        LOG.debug(
+            "Identified %d time columns (%s ...).",
+            len(time_columns),
+            ", ".join(map(str, time_columns[:5])) if time_columns else "",
+        )
     datasets = parse_datasets(args.datasets)
     target_trials = parse_trial_list(args.target_trials)
     LOG.debug("Target datasets=%s, target trials=%s", datasets, target_trials)
 
     df = select_datasets(df, datasets, args.dataset_field)
-    groups = build_groups(matrix, df, args.fly_field, args.trial_field, target_trials)
+    groups = build_groups(time_matrix, df, args.fly_field, args.trial_field, target_trials)
     LOG.info("Retained %d flies for paired analyses.", len(groups))
 
     primary_p, secondary_p, effect_mean, effect_median, paired = paired_or_unpaired_tests(groups)
-    timepoints = matrix.shape[1]
+    timepoints = time_matrix.shape[1]
     time_axis = np.arange(timepoints, dtype=float) / float(args.time_hz)
     primary_q = bh_correction(primary_p)
     secondary_q = bh_correction(secondary_p)
@@ -790,7 +961,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     else:
         LOG.warning("McNemar analysis skipped due to insufficient flies for pairing.")
 
-    threshold = parse_threshold(args.km_threshold, matrix)
+    threshold = parse_threshold(args.km_threshold, time_matrix)
     if threshold is None:
         LOG.info("Kaplan–Meier analysis skipped (no threshold provided).")
     else:
