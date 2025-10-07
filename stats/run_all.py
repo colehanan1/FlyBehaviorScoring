@@ -25,7 +25,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -101,22 +101,189 @@ def load_matrix(path: str) -> np.ndarray:
     return np.asarray(mat)
 
 
+def _flatten_code_map(mapping: Any) -> Dict[Any, Any]:
+    """Attempt to produce a simple lookup dictionary from various mapping schemas."""
+
+    if mapping is None:
+        return {}
+    if isinstance(mapping, dict):
+        # Direct mapping
+        direct: Dict[Any, Any] = {}
+        if mapping and all(isinstance(k, str) and k.isdigit() for k in mapping.keys()):
+            direct = {int(k): v for k, v in mapping.items()}
+        elif mapping and all(isinstance(v, (str, int, float, bool)) for v in mapping.values()):
+            direct = dict(mapping)
+        if direct:
+            return direct
+        # Nested dictionary options commonly produced by export utilities
+        for key in (
+            "index_to_value",
+            "index_to_label",
+            "codes_to_values",
+            "map",
+            "mapping",
+            "lookup",
+        ):
+            nested = mapping.get(key) if isinstance(mapping, dict) else None
+            if isinstance(nested, dict):
+                nested_map = _flatten_code_map(nested)
+                if nested_map:
+                    return nested_map
+        # value + code arrays
+        for value_key in ("values", "labels"):
+            values = mapping.get(value_key)
+            if isinstance(values, list):
+                keys = mapping.get("keys") or mapping.get("codes") or mapping.get("indices")
+                if isinstance(keys, list) and len(keys) == len(values):
+                    return {k: v for k, v in zip(keys, values)}
+                return {idx: val for idx, val in enumerate(values)}
+        # If the dict looks like value->code, invert it cautiously
+        if mapping and all(isinstance(v, (int, float)) for v in mapping.values()):
+            inverted = {v: k for k, v in mapping.items()}
+            if len(inverted) == len(mapping):
+                return inverted
+    if isinstance(mapping, list):
+        return {idx: value for idx, value in enumerate(mapping)}
+    return {}
+
+
+def _decode_with_map(column: str, value: Any, code_maps: Optional[Dict[str, Any]]) -> Any:
+    if code_maps is None:
+        return value
+    mapping = code_maps.get(column)
+    flat = _flatten_code_map(mapping)
+    if not flat:
+        return value
+    candidates = [value]
+    if isinstance(value, str) and value.isdigit():
+        candidates.append(int(value))
+    else:
+        try:
+            candidates.append(int(value))
+        except (TypeError, ValueError):
+            pass
+    candidates.append(str(value))
+    for cand in candidates:
+        if cand in flat:
+            return flat[cand]
+    # If we did not match on keys, attempt to match on values (rare but observed)
+    inverse = {v: k for k, v in flat.items() if isinstance(v, (str, int, float, bool))}
+    for cand in candidates:
+        if cand in inverse:
+            return inverse[cand]
+    return value
+
+
+def _rows_from_table(
+    table: Any,
+    columns: Sequence[str],
+    code_maps: Optional[Dict[str, Any]],
+) -> Optional[List[dict]]:
+    if not isinstance(table, list):
+        return None
+    if not table:
+        return []
+    first = table[0]
+    if isinstance(first, dict):
+        rows: List[dict] = []
+        for row in table:
+            if not isinstance(row, dict):
+                return None
+            decoded = {
+                key: _decode_with_map(key, row.get(key), code_maps) for key in row.keys()
+            }
+            rows.append(decoded)
+        return rows
+    if isinstance(first, (list, tuple)):
+        rows_list: List[dict] = []
+        for raw_row in table:
+            if not isinstance(raw_row, (list, tuple)):
+                return None
+            decoded_row = {}
+            limit = min(len(columns), len(raw_row))
+            for idx in range(limit):
+                col = columns[idx]
+                decoded_row[col] = _decode_with_map(col, raw_row[idx], code_maps)
+            rows_list.append(decoded_row)
+        return rows_list
+    return None
+
+
+def _extract_rows(meta: Any) -> Optional[List[dict]]:
+    if isinstance(meta, list):
+        if all(isinstance(item, dict) for item in meta):
+            return list(meta)
+        return None
+    if not isinstance(meta, dict):
+        return None
+
+    if "rows" in meta and isinstance(meta["rows"], list):
+        rows = meta["rows"]
+        if all(isinstance(item, dict) for item in rows):
+            return rows
+        columns = meta.get("columns") or meta.get("column_order")
+        if isinstance(columns, list):
+            decoded = _rows_from_table(rows, columns, meta.get("code_maps"))
+            if decoded is not None:
+                return decoded
+
+    if "row_index_to_meta" in meta and isinstance(meta["row_index_to_meta"], dict):
+        ordered = sorted(meta["row_index_to_meta"].items(), key=lambda kv: int(kv[0]))
+        return [entry for _, entry in ordered]
+
+    # Pandas split orient
+    if "columns" in meta and "data" in meta and isinstance(meta["data"], list):
+        decoded = _rows_from_table(meta["data"], meta["columns"], meta.get("code_maps"))
+        if decoded is not None:
+            return decoded
+
+    # Column order with arbitrary table key
+    columns = meta.get("column_order") or meta.get("columns")
+    if isinstance(columns, list):
+        candidate_keys = [
+            "data",
+            "table",
+            "values",
+            "records",
+            "items",
+            "rows_data",
+            "rows_table",
+            "matrix",
+            "meta_matrix",
+        ]
+        for key in candidate_keys:
+            if key in meta:
+                decoded = _rows_from_table(meta[key], columns, meta.get("code_maps"))
+                if decoded is not None:
+                    return decoded
+        for key, value in meta.items():
+            if key in {"column_order", "code_maps", "columns"}:
+                continue
+            decoded = _rows_from_table(value, columns, meta.get("code_maps"))
+            if decoded is not None:
+                return decoded
+
+    # Dict of equal-length lists
+    if meta and all(isinstance(v, list) for v in meta.values()):
+        lengths = {len(v) for v in meta.values()}
+        if len(lengths) == 1:
+            df = pd.DataFrame(meta)
+            return df.to_dict("records")
+    return None
+
+
 def load_metadata(path: str) -> List[dict]:
     LOG.debug("Loading metadata from %s", path)
     with open(path, "r", encoding="utf-8") as handle:
         meta = json.load(handle)
-    if isinstance(meta, dict):
-        if "rows" in meta and isinstance(meta["rows"], list):
-            return meta["rows"]
-        if "row_index_to_meta" in meta and isinstance(meta["row_index_to_meta"], dict):
-            ordered = sorted(meta["row_index_to_meta"].items(), key=lambda kv: int(kv[0]))
-            return [entry for _, entry in ordered]
-    if isinstance(meta, list):
-        return meta
-    raise ValueError(
-        "Metadata JSON must contain either a `rows` list, a `row_index_to_meta` "
-        "mapping, or be a list aligned to the matrix rows."
-    )
+    rows = _extract_rows(meta)
+    if rows is None:
+        raise ValueError(
+            "Unsupported metadata structure. Expected a list of row dicts or an export "
+            "containing `rows`/`data` alongside `column_order`. Top-level keys: "
+            f"{sorted(meta.keys()) if isinstance(meta, dict) else type(meta)}"
+        )
+    return rows
 
 
 def rows_to_dataframe(rows: Sequence[dict], fly_field: str, dataset_field: str, trial_field: str) -> pd.DataFrame:
@@ -442,7 +609,14 @@ def plot_km_curves(
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run time-series statistical comparisons between trial groups.")
     parser.add_argument("--npy", required=True, help="Path to numpy matrix [rows, time].")
-    parser.add_argument("--meta", required=True, help="Metadata JSON with a `rows` list aligned to the matrix.")
+    parser.add_argument(
+        "--meta",
+        required=True,
+        help=(
+            "Metadata JSON describing each matrix row. Supports `rows` lists, pandas "
+            "split exports, or tables accompanied by `column_order`/`code_maps`."
+        ),
+    )
     parser.add_argument("--out", required=True, help="Directory to write outputs.")
     parser.add_argument(
         "--datasets",
@@ -524,6 +698,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ensure_out_dir(args.out)
     matrix = load_matrix(args.npy)
     rows = load_metadata(args.meta)
+    LOG.info("Loaded %d metadata rows.", len(rows))
+    if rows:
+        LOG.debug("Metadata sample keys: %s", sorted(rows[0].keys()))
     df = rows_to_dataframe(rows, args.fly_field, args.dataset_field, args.trial_field)
     datasets = parse_datasets(args.datasets)
     target_trials = parse_trial_list(args.target_trials)
