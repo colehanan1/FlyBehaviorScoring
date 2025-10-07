@@ -6,3 +6,6 @@ torch
 scikit-learn
 matplotlib
 hdbscan
+scipy
+statsmodels
+lifelines
