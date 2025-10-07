@@ -113,16 +113,17 @@ def fit_gam(
     diff = np.full(time_s.shape[0], np.nan, dtype=float)
     ci_low = np.full_like(diff, np.nan)
     ci_high = np.full_like(diff, np.nan)
+    cov_matrix = cov.loc[fe_params.index, fe_params.index].to_numpy()
     for idx in range(time_s.size):
-        design = np.zeros(len(fe_params))
+        design = np.zeros(len(fe_params), dtype=float)
         if "condition" in fe_params.index:
             design[fe_params.index.get_loc("condition")] = 1.0
         for col_idx, name in enumerate(basis.columns):
             param_name = f"condition:{name}"
             if param_name in fe_params.index:
                 design[fe_params.index.get_loc(param_name)] = float(basis.iloc[idx, col_idx])
-        diff[idx] = float(design @ fe_params.values)
-        var = float(design @ cov @ design)
+        diff[idx] = float(design @ fe_params.to_numpy())
+        var = float(design @ cov_matrix @ design)
         se = np.sqrt(max(var, 0.0))
         ci_low[idx] = diff[idx] - 1.96 * se
         ci_high[idx] = diff[idx] + 1.96 * se
