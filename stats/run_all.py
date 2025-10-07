@@ -8,6 +8,8 @@ import json
 import logging
 import math
 import os
+import sys
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -16,7 +18,14 @@ from lifelines.statistics import logrank_test
 from scipy.stats import mannwhitneyu, ttest_ind, ttest_rel, wilcoxon
 from statsmodels.stats.proportion import binom_test as sm_binom_test
 
-from stats import cluster_perm, equivalence, gam_mixed, plotting, randomization, survival, utils
+if __package__ in (None, ""):
+    PACKAGE_ROOT = Path(__file__).resolve().parent
+    REPO_ROOT = PACKAGE_ROOT.parent
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from stats import cluster_perm, equivalence, gam_mixed, plotting, randomization, survival, utils
+else:  # pragma: no cover - exercised when imported as a package module
+    from . import cluster_perm, equivalence, gam_mixed, plotting, randomization, survival, utils
 
 LOG = logging.getLogger("stats.run_all")
 
@@ -53,10 +62,11 @@ def paired_or_unpaired_tests(
             except Exception as exc:  # pragma: no cover - defensive logging
                 LOG.debug("Paired t-test failed at idx=%d: %s", idx, exc)
             diffs = a - b
-            if np.allclose(diffs, 0.0):
+            nonzero = np.abs(diffs) > np.finfo(diffs.dtype).eps
+            if not np.any(nonzero):
                 continue
             try:
-                _, p_w = wilcoxon(a, b, zero_method="wilcox", alternative="two-sided", correction=True)
+                _, p_w = wilcoxon(a, b, zero_method="pratt", alternative="two-sided", correction=True)
                 w_p[idx] = p_w
             except ValueError as exc:
                 LOG.debug("Wilcoxon skipped at idx=%d: %s", idx, exc)
