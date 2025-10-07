@@ -42,6 +42,7 @@ LOG = logging.getLogger("stats.run_all")
 
 
 TIME_COLUMN_PATTERN = re.compile(r"(dir|frame|time)[^0-9]*([0-9]+)", re.IGNORECASE)
+TRIAL_NUMBER_PATTERN = re.compile(r"(\d+)")
 LIKELY_METADATA_NAMES = {
     "fps",
     "frame_rate",
@@ -293,14 +294,76 @@ def dataframe_from_columnar_matrix(
     meta_df = df[meta_columns].copy()
     meta_df.insert(0, "row", np.arange(len(meta_df), dtype=int))
 
-    missing = [field for field in (fly_field, dataset_field, trial_field) if field not in meta_df.columns]
-    if missing:
+    missing_core = [field for field in (fly_field, dataset_field) if field not in meta_df.columns]
+    if missing_core:
         raise KeyError(
             "Metadata columns missing after decoding column_order/np matrix: "
-            + ", ".join(missing)
+            + ", ".join(missing_core)
             + ". Available columns: "
             + ", ".join(sorted(map(str, meta_df.columns.tolist())))
         )
+
+    if trial_field not in meta_df.columns:
+        LOG.warning(
+            "Metadata missing trial field '%s'; attempting to infer from other columns.",
+            trial_field,
+        )
+        inferred = False
+        candidate_cols = [
+            column
+            for column in meta_df.columns
+            if column not in {trial_field, "row"} and "trial" in str(column).lower()
+        ]
+        for column in candidate_cols:
+            numeric_series = pd.to_numeric(meta_df[column], errors="coerce")
+            if numeric_series.notna().all():
+                meta_df[trial_field] = numeric_series.astype(int)
+                LOG.info(
+                    "Inferred trial numbers from column '%s' after numeric coercion.",
+                    column,
+                )
+                inferred = True
+                break
+            extracted = (
+                meta_df[column]
+                .astype(str)
+                .str.extract(TRIAL_NUMBER_PATTERN, expand=False)
+            )
+            if extracted.notna().all():
+                meta_df[trial_field] = extracted.astype(int)
+                LOG.info(
+                    "Inferred trial numbers from digit pattern in column '%s'.",
+                    column,
+                )
+                inferred = True
+                break
+        if not inferred:
+            LOG.warning(
+                "Falling back to sequential trial numbering within each fly/dataset pair."
+            )
+            meta_df[trial_field] = (
+                meta_df.groupby([dataset_field, fly_field]).cumcount() + 1
+            )
+            meta_df[trial_field] = meta_df[trial_field].astype(int)
+
+    missing_after = [
+        field for field in (fly_field, dataset_field, trial_field) if field not in meta_df.columns
+    ]
+    if missing_after:
+        raise KeyError(
+            "Metadata columns missing after column_order decoding even after inference attempts: "
+            + ", ".join(missing_after)
+            + ". Available columns: "
+            + ", ".join(sorted(map(str, meta_df.columns.tolist())))
+        )
+
+    # Ensure trial identifiers are numeric for downstream filtering
+    try:
+        meta_df[trial_field] = pd.to_numeric(meta_df[trial_field], errors="raise").astype(int)
+    except Exception as exc:  # pragma: no cover - defensive conversion
+        raise ValueError(
+            f"Unable to coerce inferred trial field '{trial_field}' to integers."
+        ) from exc
 
     LOG.info(
         "Decoded columnar metadata: %d trials, %d timepoints inferred from %d time columns.",
