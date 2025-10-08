@@ -80,6 +80,68 @@ Edit these at the top of `label_videos.py`:
 - `THRESHOLD`: the reaction threshold in your signal units.
 - `METRIC_WEIGHTS`: relative weights for metrics (e.g., make `time_fraction` or `auc` dominate).
 
+## Summarise trained vs. untrained odor responses
+
+Use the `stats/odor_response_contingency.py` utility to extract the four-cell
+contingency table described in the project brief (``a`` through ``d``) from a
+behavioural CSV export. The script focuses on the `during_hit` column and lets
+you specify which trial numbers correspond to the trained and untrained odours.
+
+```bash
+python -m stats.odor_response_contingency \
+  data/odor_trials.csv \
+  "EB 3-octonol" \
+  --trained-trials 2 4 5 \
+  --untrained-trials 1 3 6 \
+  --output outputs/odor_summary.eps
+```
+
+- Provide the dataset name exactly as it appears in the `dataset` column.
+- The trained trial list defaults to `2 4 5`; override it if your protocol
+  differs.
+- Pass whichever untrained trial numbers you want to include, omitting any you
+  wish to exclude (e.g., skip 7–10 entirely as shown above).
+- When `--output` is supplied, the script renders an EPS file mirroring the 2×2
+  contingency table; omit the flag to skip figure generation. Ensure the path
+  ends with `.eps`.
+- Supply `--style path/to/style.json` alongside `--output` to restyle the
+  figure without editing the Python source. The JSON file can override labels,
+  colours, font sizes, spacing, and even the title template. When `--style` is
+  given without `--output`, the CLI opens a preview window so you can iterate on
+  styling interactively.
+
+The command prints the counts for the four cases (`a` through `d`) along with
+the total number of flies that match the configured trials.
+
+Example styling payload (`style.json`) that renames the table headers, swaps the
+palette, enlarges the figure, and tweaks the title formatting:
+
+```json
+{
+  "figure_size": [7, 4],
+  "row_labels": ["Learnt", "Not learnt", "Totals"],
+  "column_labels": ["Novel +", "Novel -", "Totals"],
+  "title_template": "Odor summary — {dataset}",
+  "title_kwargs": {"fontsize": 16, "pad": 12},
+  "scale": [1.3, 1.6],
+  "font_size": 14,
+  "cell_text_color": "#1f1f1f",
+  "header_text_color": "white",
+  "row_label_text_color": "#1f1f1f",
+  "column_label_facecolor": "#1b9e77",
+  "row_label_facecolor": "#d9d9d9",
+  "totals_facecolor": "#fce5cd",
+  "cell_facecolors": [
+    ["#fddbc7", "#fddbc7", "#fce5cd"],
+    ["#d1e5f0", "#d1e5f0", "#fce5cd"],
+    ["#fce5cd", "#fce5cd", "#fce5cd"]
+  ],
+  "edge_color": "#404040"
+}
+```
+
+Every entry is optional—omit keys to retain the defaults used by the CLI.
+
 ## File associations
 
 Videos and CSVs are matched by **base filename**. Example:
