@@ -8,4 +8,5 @@ __all__ = [
     "equivalence",
     "utils",
     "plotting",
+    "summarize_results",
 ]

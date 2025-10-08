@@ -1,0 +1,28 @@
+# Trained vs. Untrained Odor — Statistical Summary (alpha={alpha})
+
+## Primary inference (cluster-based permutation)
+Significant clusters: {cl_perm_n}
+{cl_perm_clusters}
+
+Interpretation: sustained A>B epochs indicate the trained odor evokes stronger movement over non-trained odors, controlling for autocorrelation.
+
+## Time-resolved checks (pointwise, BH-FDR)
+- Wilcoxon: earliest onset {wil_onset} s; clusters {wil_ncl}; total significant duration {wil_totdur} s.
+- Paired t: earliest onset {t_onset} s; clusters {t_ncl}; total duration {t_totdur} s.
+- Randomization (empirical null): earliest onset {rz_onset} s; clusters {rz_ncl}; total duration {rz_totdur} s.
+- Robust Yuen (trimmed mean): earliest onset {yuen_onset} s; clusters {yuen_ncl}; total duration {yuen_totdur} s.
+- McNemar (direction-only): earliest onset {mcn_onset} s; clusters {mcn_ncl}; total duration {mcn_totdur} s.
+
+## Survival / Latency (KM + Cox)
+{survival_block}
+
+Interpretation: HR>1 favors trained odor (A): earlier threshold crossings. Medians “∞” indicate <50% crossed within the window.
+
+## Time-varying regression (GAMM)
+- Joint Condition×s(Time) p-value: {gam_p}
+- Peak predicted difference (A−B): {gam_peak} at {gam_peakt} s
+
+Interpretation: significant interaction indicates a time-dependent A>B effect; peak aligns with cluster-perm windows.
+
+## Notes
+This report is generated deterministically from CSV/TXT outputs; missing files lead to “None” entries above.
