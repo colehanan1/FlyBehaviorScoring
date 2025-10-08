@@ -80,6 +80,33 @@ Edit these at the top of `label_videos.py`:
 - `THRESHOLD`: the reaction threshold in your signal units.
 - `METRIC_WEIGHTS`: relative weights for metrics (e.g., make `time_fraction` or `auc` dominate).
 
+## Summarise trained vs. untrained odor responses
+
+Use the `stats/odor_response_contingency.py` utility to extract the four-cell
+contingency table described in the project brief (``a`` through ``d``) from a
+behavioural CSV export. The script focuses on the `during_hit` column and lets
+you specify which trial numbers correspond to the trained and untrained odours.
+
+```bash
+python -m stats.odor_response_contingency \
+  data/odor_trials.csv \
+  "EB 3-octonol" \
+  --trained-trials 2 4 5 \
+  --untrained-trials 1 3 6 \
+  --output outputs/odor_summary.png
+```
+
+- Provide the dataset name exactly as it appears in the `dataset` column.
+- The trained trial list defaults to `2 4 5`; override it if your protocol
+  differs.
+- Pass whichever untrained trial numbers you want to include, omitting any you
+  wish to exclude (e.g., skip 7–10 entirely as shown above).
+- When `--output` is supplied, the script renders a PNG mirroring the 2×2
+  contingency table; omit the flag to skip figure generation.
+
+The command prints the counts for the four cases (`a` through `d`) along with
+the total number of flies that match the configured trials.
+
 ## File associations
 
 Videos and CSVs are matched by **base filename**. Example:
