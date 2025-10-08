@@ -48,12 +48,16 @@ def randomization_test(
         raise ValueError("Randomization test requires at least two flies for pairing.")
     observed = _compute_statistic(diff, method)
     extreme = np.zeros_like(observed, dtype=float)
+    mask = np.isfinite(observed)
+
     for perm in range(n_perm):
         signs = rng.choice([-1, 1], size=flies)
         perm_diff = diff * signs[:, None]
         perm_stat = _compute_statistic(perm_diff, method)
-        extreme += np.abs(perm_stat) >= np.abs(observed)
-    pvals = (1.0 + extreme) / (1.0 + n_perm)
+        extreme[mask] += np.abs(perm_stat[mask]) >= np.abs(observed[mask])
+
+    pvals = np.full_like(observed, np.nan, dtype=float)
+    pvals[mask] = (1.0 + extreme[mask]) / (1.0 + n_perm)
     qvals = bh_fdr(pvals)
     LOG.info("Randomization test completed (%d permutations, method=%s).", n_perm, method)
     return RandomizationResult(statistic=observed, p_value=pvals, q_value=qvals)
