@@ -386,7 +386,9 @@ def main() -> None:
     alpha = args.alpha
     LOG.info("Summarizing outputs in %s (alpha=%.3f)", input_dir, alpha)
 
-    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
+    out_dir = os.path.dirname(args.output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
     wilcoxon = summarize_timewise(os.path.join(input_dir, "wilcoxon.csv"), alpha)
     paired_t = summarize_timewise(os.path.join(input_dir, "paired_t.csv"), alpha)
