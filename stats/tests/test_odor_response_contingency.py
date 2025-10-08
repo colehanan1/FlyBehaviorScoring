@@ -1,8 +1,10 @@
 import pandas as pd
+import pytest
 
 from ..odor_response_contingency import (
     OdorResponseSummary,
     build_contingency_table,
+    plot_contingency_table,
     summarize_odor_responses,
 )
 
@@ -68,3 +70,35 @@ def test_build_contingency_table_structure():
     assert table.loc["Trained +", "Row total"] == 5
     assert table.loc["Column total", "Untrained -"] == 6
     assert table.loc["Column total", "Row total"] == 10
+
+
+def test_plot_contingency_table_writes_eps(tmp_path):
+    summary = OdorResponseSummary(1, 2, 3, 4)
+    table = build_contingency_table(summary)
+
+    output = tmp_path / "contingency.eps"
+
+    plot_contingency_table(
+        table,
+        dataset="sessionA",
+        trained_trials=[2, 4, 5],
+        untrained_trials=[1, 3, 6],
+        output=output,
+    )
+
+    assert output.exists()
+    assert output.stat().st_size > 0
+
+
+def test_plot_contingency_table_rejects_non_eps(tmp_path):
+    summary = OdorResponseSummary(1, 0, 0, 1)
+    table = build_contingency_table(summary)
+
+    with pytest.raises(ValueError, match=r"\.eps"):
+        plot_contingency_table(
+            table,
+            dataset="sessionA",
+            trained_trials=[2],
+            untrained_trials=[1],
+            output=tmp_path / "contingency.png",
+        )

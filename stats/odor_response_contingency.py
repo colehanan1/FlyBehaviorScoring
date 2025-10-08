@@ -223,7 +223,10 @@ def plot_contingency_table(
     untrained_trials: Sequence[int],
     output: Path,
 ) -> None:
-    """Render the contingency table to ``output`` as an image."""
+    """Render the contingency table to ``output`` as an EPS figure."""
+
+    if output.suffix.lower() != ".eps":
+        raise ValueError("Output path must end with '.eps' for EPS export")
 
     fig, ax = plt.subplots(figsize=(6, 3.5))
     ax.axis("off")
@@ -248,7 +251,7 @@ def plot_contingency_table(
 
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=300)
+    fig.savefig(output, format="eps", dpi=300)
     plt.close(fig)
 
 
@@ -291,7 +294,7 @@ def _create_argument_parser():
     parser.add_argument(
         "--output",
         type=Path,
-        help="Optional path for saving a contingency-table figure",
+        help="Optional path for saving a contingency-table EPS figure (*.eps)",
     )
     return parser
 

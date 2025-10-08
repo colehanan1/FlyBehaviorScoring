@@ -93,7 +93,7 @@ python -m stats.odor_response_contingency \
   "EB 3-octonol" \
   --trained-trials 2 4 5 \
   --untrained-trials 1 3 6 \
-  --output outputs/odor_summary.png
+  --output outputs/odor_summary.eps
 ```
 
 - Provide the dataset name exactly as it appears in the `dataset` column.
@@ -101,8 +101,9 @@ python -m stats.odor_response_contingency \
   differs.
 - Pass whichever untrained trial numbers you want to include, omitting any you
   wish to exclude (e.g., skip 7–10 entirely as shown above).
-- When `--output` is supplied, the script renders a PNG mirroring the 2×2
-  contingency table; omit the flag to skip figure generation.
+- When `--output` is supplied, the script renders an EPS file mirroring the 2×2
+  contingency table; omit the flag to skip figure generation. Ensure the path
+  ends with `.eps`.
 
 The command prints the counts for the four cases (`a` through `d`) along with
 the total number of flies that match the configured trials.
