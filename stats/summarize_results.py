@@ -332,9 +332,12 @@ def summarize_gam(predicted_csv: str, summary_txt: str) -> GAMSummary:
         dcol = col(df, ["diff", "pred_diff", "predicted_difference"])
         if tcol and dcol and len(df):
             diff_values = np.asarray(df[dcol].values, dtype=float)
-            idx = int(np.nanargmax(np.abs(diff_values)))
-            peak_diff = float(diff_values[idx])
-            peak_time = float(df[tcol].values[idx])
+            finite_mask = np.isfinite(diff_values)
+            if np.any(finite_mask):
+                idx = int(np.nanargmax(np.abs(diff_values[finite_mask])))
+                finite_times = np.asarray(df[tcol].values, dtype=float)[finite_mask]
+                peak_diff = float(np.abs(diff_values[finite_mask])[idx])
+                peak_time = float(finite_times[idx])
     return GAMSummary(interaction_p=interaction_p, peak_diff=peak_diff, peak_time_s=peak_time)
 
 
