@@ -104,9 +104,43 @@ python -m stats.odor_response_contingency \
 - When `--output` is supplied, the script renders an EPS file mirroring the 2×2
   contingency table; omit the flag to skip figure generation. Ensure the path
   ends with `.eps`.
+- Supply `--style path/to/style.json` alongside `--output` to restyle the
+  figure without editing the Python source. The JSON file can override labels,
+  colours, font sizes, spacing, and even the title template. When `--style` is
+  given without `--output`, the CLI opens a preview window so you can iterate on
+  styling interactively.
 
 The command prints the counts for the four cases (`a` through `d`) along with
 the total number of flies that match the configured trials.
+
+Example styling payload (`style.json`) that renames the table headers, swaps the
+palette, enlarges the figure, and tweaks the title formatting:
+
+```json
+{
+  "figure_size": [7, 4],
+  "row_labels": ["Learnt", "Not learnt", "Totals"],
+  "column_labels": ["Novel +", "Novel -", "Totals"],
+  "title_template": "Odor summary — {dataset}",
+  "title_kwargs": {"fontsize": 16, "pad": 12},
+  "scale": [1.3, 1.6],
+  "font_size": 14,
+  "cell_text_color": "#1f1f1f",
+  "header_text_color": "white",
+  "row_label_text_color": "#1f1f1f",
+  "column_label_facecolor": "#1b9e77",
+  "row_label_facecolor": "#d9d9d9",
+  "totals_facecolor": "#fce5cd",
+  "cell_facecolors": [
+    ["#fddbc7", "#fddbc7", "#fce5cd"],
+    ["#d1e5f0", "#d1e5f0", "#fce5cd"],
+    ["#fce5cd", "#fce5cd", "#fce5cd"]
+  ],
+  "edge_color": "#404040"
+}
+```
+
+Every entry is optional—omit keys to retain the defaults used by the CLI.
 
 ## File associations
 

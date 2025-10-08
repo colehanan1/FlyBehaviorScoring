@@ -17,9 +17,9 @@ counts and can optionally export a figure mirroring the 2×2 table.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Mapping, MutableMapping, Sequence
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -215,6 +215,56 @@ def build_contingency_table(summary: OdorResponseSummary) -> pd.DataFrame:
     return table
 
 
+def create_contingency_figure(
+    table: pd.DataFrame,
+    *,
+    dataset: str,
+    trained_trials: Sequence[int],
+    untrained_trials: Sequence[int],
+    style: ContingencyTableStyle | None = None,
+):
+    """Create a Matplotlib figure representing the contingency table."""
+
+    style = style or ContingencyTableStyle()
+
+    fig_kwargs = {}
+    if style.figure_size is not None:
+        fig_kwargs["figsize"] = style.figure_size
+    else:
+        fig_kwargs["figsize"] = (6, 3.5)
+
+    fig, ax = plt.subplots(**fig_kwargs)
+    ax.axis("off")
+
+    row_labels = style.resolve_row_labels(table.index.tolist())
+    column_labels = style.resolve_column_labels(table.columns.tolist())
+
+    table_kwargs = dict(style.table_kwargs)
+    table_kwargs.setdefault("cellLoc", "center")
+
+    table_artist = ax.table(
+        cellText=table.astype(int).values,
+        rowLabels=row_labels,
+        colLabels=column_labels,
+        loc="center",
+        **table_kwargs,
+    )
+
+    style.apply_to_table(table_artist, table)
+
+    title, title_kwargs = style.render_title(
+        dataset=dataset, trained_trials=trained_trials, untrained_trials=untrained_trials
+    )
+    if "fontsize" not in title_kwargs:
+        title_kwargs["fontsize"] = 12
+    if "pad" not in title_kwargs:
+        title_kwargs["pad"] = 16
+    ax.set_title(title, **title_kwargs)
+
+    fig.tight_layout()
+    return fig, ax, table_artist
+
+
 def plot_contingency_table(
     table: pd.DataFrame,
     *,
@@ -222,34 +272,21 @@ def plot_contingency_table(
     trained_trials: Sequence[int],
     untrained_trials: Sequence[int],
     output: Path,
+    style: ContingencyTableStyle | None = None,
 ) -> None:
     """Render the contingency table to ``output`` as an EPS figure."""
 
     if output.suffix.lower() != ".eps":
         raise ValueError("Output path must end with '.eps' for EPS export")
 
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    ax.axis("off")
-
-    table_artist = ax.table(
-        cellText=table.astype(int).values,
-        rowLabels=table.index,
-        colLabels=table.columns,
-        loc="center",
-        cellLoc="center",
+    fig, _, _ = create_contingency_figure(
+        table,
+        dataset=dataset,
+        trained_trials=trained_trials,
+        untrained_trials=untrained_trials,
+        style=style,
     )
-    table_artist.auto_set_font_size(False)
-    table_artist.set_fontsize(12)
-    table_artist.scale(1.2, 1.4)
 
-    title = (
-        f"Dataset: {dataset}\n"
-        f"Trained trials: {', '.join(map(str, trained_trials))} | "
-        f"Untrained trials: {', '.join(map(str, untrained_trials))}"
-    )
-    ax.set_title(title, fontsize=12, pad=16)
-
-    fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, format="eps", dpi=300)
     plt.close(fig)
@@ -296,6 +333,14 @@ def _create_argument_parser():
         type=Path,
         help="Optional path for saving a contingency-table EPS figure (*.eps)",
     )
+    parser.add_argument(
+        "--style",
+        type=Path,
+        help=(
+            "Optional JSON file defining styling overrides for the contingency "
+            "figure"
+        ),
+    )
     return parser
 
 
@@ -322,6 +367,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("Trained - / Untrained - (d):", d)
     print("Total flies:", summary.grand_total)
 
+    style = None
+    if args.style is not None:
+        style = ContingencyTableStyle.from_json(args.style)
+
     if args.output is not None:
         table = build_contingency_table(summary)
         plot_contingency_table(
@@ -330,11 +379,228 @@ def main(argv: Sequence[str] | None = None) -> int:
             trained_trials=trained_trials,
             untrained_trials=untrained_trials,
             output=args.output,
+            style=style,
         )
+    elif style is not None:
+        # Allow previewing the styled figure interactively when running via CLI.
+        table = build_contingency_table(summary)
+        fig, _, _ = create_contingency_figure(
+            table,
+            dataset=args.dataset,
+            trained_trials=trained_trials,
+            untrained_trials=untrained_trials,
+            style=style,
+        )
+        plt.show()
+        plt.close(fig)
 
     return 0
 
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+# ---------------------------------------------------------------------------
+# Styling helpers
+
+
+@dataclass
+class ContingencyTableStyle:
+    """Styling controls for :func:`plot_contingency_table`."""
+
+    figure_size: tuple[float, float] | None = None
+    row_labels: Sequence[str] | None = None
+    column_labels: Sequence[str] | None = None
+    title_template: str | None = None
+    title_kwargs: Mapping[str, object] = field(default_factory=dict)
+    table_kwargs: Mapping[str, object] = field(default_factory=dict)
+    scale: tuple[float, float] | None = None
+    font_size: float | None = 12.0
+    auto_font_size: bool = False
+    cell_text_color: str | None = None
+    header_text_color: str | None = None
+    row_label_text_color: str | None = None
+    cell_facecolors: Sequence[Sequence[str | None]] | None = None
+    row_label_facecolor: str | None = None
+    column_label_facecolor: str | None = None
+    totals_facecolor: str | None = None
+    edge_color: str | None = None
+    background_color: str | None = None
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, object]) -> "ContingencyTableStyle":
+        """Create a style object from a mapping (e.g. JSON data)."""
+
+        def _maybe_tuple(value):
+            if value is None:
+                return None
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                return tuple(value)
+            raise TypeError("Expected a sequence for scale/figure_size fields")
+
+        payload = dict(payload)  # shallow copy we can mutate
+
+        figure_size = payload.pop("figure_size", None)
+        if figure_size is not None:
+            payload["figure_size"] = _maybe_tuple(figure_size)
+
+        scale = payload.pop("scale", None)
+        if scale is not None:
+            payload["scale"] = _maybe_tuple(scale)
+
+        title_kwargs = payload.pop("title_kwargs", None)
+        if title_kwargs is not None and not isinstance(title_kwargs, Mapping):
+            raise TypeError("title_kwargs must be a mapping")
+        if title_kwargs is not None:
+            payload["title_kwargs"] = dict(title_kwargs)
+
+        table_kwargs = payload.pop("table_kwargs", None)
+        if table_kwargs is not None and not isinstance(table_kwargs, Mapping):
+            raise TypeError("table_kwargs must be a mapping")
+        if table_kwargs is not None:
+            payload["table_kwargs"] = dict(table_kwargs)
+
+        return cls(**payload)
+
+    @classmethod
+    def from_json(cls, path: Path) -> "ContingencyTableStyle":
+        """Load a style from a JSON file."""
+
+        import json
+
+        with path.open("r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        if not isinstance(payload, Mapping):
+            raise TypeError("Style JSON must define an object at the top level")
+        return cls.from_mapping(payload)
+
+    def resolve_row_labels(self, default: Sequence[str]) -> Sequence[str]:
+        if self.row_labels is None:
+            return default
+        if len(self.row_labels) != len(default):
+            raise ValueError(
+                "row_labels must contain exactly "
+                f"{len(default)} entries (received {len(self.row_labels)})"
+            )
+        return self.row_labels
+
+    def resolve_column_labels(self, default: Sequence[str]) -> Sequence[str]:
+        if self.column_labels is None:
+            return default
+        if len(self.column_labels) != len(default):
+            raise ValueError(
+                "column_labels must contain exactly "
+                f"{len(default)} entries (received {len(self.column_labels)})"
+            )
+        return self.column_labels
+
+    def render_title(
+        self,
+        *,
+        dataset: str,
+        trained_trials: Sequence[int],
+        untrained_trials: Sequence[int],
+    ) -> tuple[str, MutableMapping[str, object]]:
+        if self.title_template is None:
+            title = (
+                f"Dataset: {dataset}\n"
+                f"Trained trials: {', '.join(map(str, trained_trials))} | "
+                f"Untrained trials: {', '.join(map(str, untrained_trials))}"
+            )
+        else:
+            title = self.title_template.format(
+                dataset=dataset,
+                trained_trials=trained_trials,
+                untrained_trials=untrained_trials,
+            )
+        return title, dict(self.title_kwargs)
+
+    def apply_to_table(self, table_artist, table: pd.DataFrame) -> None:
+        """Apply the style customisations to a Matplotlib table artist."""
+
+        if self.auto_font_size:
+            table_artist.auto_set_font_size(True)
+        else:
+            table_artist.auto_set_font_size(False)
+            if self.font_size is not None:
+                table_artist.set_fontsize(self.font_size)
+
+        if self.scale is not None:
+            table_artist.scale(*self.scale)
+        else:
+            table_artist.scale(1.2, 1.4)
+
+        cells = table_artist.get_celld()
+
+        def _set_text_color(indices, color):
+            if color is None:
+                return
+            for idx in indices:
+                if idx in cells:
+                    cells[idx].get_text().set_color(color)
+
+        n_rows, n_cols = table.shape
+
+        # Header row (column labels)
+        header_indices = [(0, col) for col in range(n_cols)]
+        _set_text_color(header_indices, self.header_text_color)
+        if self.column_label_facecolor is not None:
+            for idx in header_indices:
+                if idx in cells:
+                    cells[idx].set_facecolor(self.column_label_facecolor)
+
+        # Row labels (stored in column -1)
+        row_label_indices = [(row, -1) for row in range(1, n_rows + 1)]
+        _set_text_color(row_label_indices, self.row_label_text_color)
+        if self.row_label_facecolor is not None:
+            for idx in row_label_indices:
+                if idx in cells:
+                    cells[idx].set_facecolor(self.row_label_facecolor)
+
+        # Data cells (including totals)
+        body_indices = [(row, col) for row in range(1, n_rows + 1) for col in range(n_cols)]
+        _set_text_color(body_indices, self.cell_text_color)
+
+        if self.edge_color is not None:
+            for cell in cells.values():
+                cell.set_edgecolor(self.edge_color)
+
+        if self.background_color is not None:
+            table_artist.patch.set_facecolor(self.background_color)
+
+        if self.totals_facecolor is not None:
+            total_rows = [n_rows]
+            total_cols = [n_cols - 1]
+            for row in total_rows:
+                for col in range(n_cols):
+                    idx = (row, col)
+                    if idx in cells:
+                        cells[idx].set_facecolor(self.totals_facecolor)
+                idx = (row, -1)
+                if idx in cells:
+                    cells[idx].set_facecolor(self.totals_facecolor)
+            for row in range(1, n_rows + 1):
+                idx = (row, total_cols[0])
+                if idx in cells:
+                    cells[idx].set_facecolor(self.totals_facecolor)
+
+        if self.cell_facecolors is not None:
+            if len(self.cell_facecolors) != n_rows:
+                raise ValueError(
+                    "cell_facecolors must provide a colour for each row, "
+                    f"expected {n_rows} rows"
+                )
+            for row_idx, row_colors in enumerate(self.cell_facecolors, start=1):
+                if len(row_colors) != n_cols:
+                    raise ValueError(
+                        "Each row in cell_facecolors must have "
+                        f"{n_cols} entries (row {row_idx})"
+                    )
+                for col_idx, color in enumerate(row_colors):
+                    if color is None:
+                        continue
+                    idx = (row_idx, col_idx)
+                    if idx in cells:
+                        cells[idx].set_facecolor(color)
+
 
