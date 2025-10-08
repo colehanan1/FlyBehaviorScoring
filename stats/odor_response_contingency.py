@@ -397,9 +397,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
-
 # ---------------------------------------------------------------------------
 # Styling helpers
 
@@ -602,5 +599,9 @@ class ContingencyTableStyle:
                     idx = (row_idx, col_idx)
                     if idx in cells:
                         cells[idx].set_facecolor(color)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
 
 
