@@ -144,6 +144,11 @@ def summarize_odor_responses(
     if not untrained_trials:
         raise ValueError("At least one untrained trial must be provided")
 
+    overlap = set(trained_trials) & set(untrained_trials)
+    if overlap:
+        raise ValueError(
+            f"Trained and untrained trials must be disjoint; overlap: {sorted(overlap)}"
+        )
     dataset_df = data.loc[data["dataset"] == dataset].copy()
     if dataset_df.empty:
         raise ValueError(f"No rows found for dataset '{dataset}'")
