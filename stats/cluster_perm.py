@@ -188,7 +188,13 @@ def save_outputs(
 
     clusters_rows = [cluster.to_row(time_s) for cluster in result.clusters]
     clusters_csv = os.path.join(out_dir, "cluster_perm_clusters.csv")
-    pd.DataFrame(clusters_rows).to_csv(clusters_csv, index=False)
+    if clusters_rows:
+        clusters_df = pd.DataFrame(clusters_rows)
+    else:
+        clusters_df = pd.DataFrame(
+            columns=["cluster_id", "start_s", "end_s", "duration_s", "sign", "mass", "p_cluster"]
+        )
+    clusters_df.to_csv(clusters_csv, index=False)
 
     per_time = pd.DataFrame(
         {
@@ -200,7 +206,10 @@ def save_outputs(
         }
     )
     for cluster in result.clusters:
-        per_time.loc[np.isclose(per_time["cluster_id"], cluster.cluster_id), "p_cluster"] = cluster.p_cluster
+        per_time.loc[
+            np.isclose(per_time["cluster_id"], cluster.cluster_id),
+            "p_cluster"
+        ] = cluster.p_cluster
     time_csv = os.path.join(out_dir, "cluster_perm_timewise.csv")
     per_time.to_csv(time_csv, index=False)
 
