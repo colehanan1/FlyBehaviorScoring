@@ -13,6 +13,29 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Deterministic ML training on raw envelopes
+
+The end-to-end pipeline introduced in `ml/` consumes the raw trace arrays and
+associated spreadsheets to train logistic and linear models with leave-one-fly
+cross-validation.
+
+1. Place the required inputs in the exact paths expected by the pipeline:
+   - `data/envelope_matrix_float16.npy`
+   - `data/code_maps.json`
+   - `data/scoring_results_opto_new.csv`
+   - `data/trial_clusters_reaction_clusters.csv`
+   - Optional: `data/report_reaction_clusters.csv`
+   - Optional: `data/timepoint_importance.csv`
+2. Run the deterministic trainer:
+
+   ```bash
+   python -m ml.train_models
+   ```
+
+All artifacts will be written to `outputs/ml/`, including cross-validation
+predictions (`cv_predictions.csv`), model weights (`final_*.pkl`), plots, and
+metric summaries (`metrics_*.txt`).
+
 ## Unsupervised trace-only clustering
 
 Run the unsupervised models on trace data via:
