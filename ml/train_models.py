@@ -10,13 +10,13 @@ from .data_join import join_features
 from .features_from_envelope import assemble_envelope_df
 from .modeling import run_cross_validation, train_full_models
 
-DATA_DIR = Path("data")
-ENVELOPE_PATH = DATA_DIR / "envelope_matrix_float16.npy"
-CODE_MAP_PATH = DATA_DIR / "code_maps.json"
+DATA_DIR = Path("/home/ramanlab/Documents/cole/Data/Opto/Combined/matrix/")
+ENVELOPE_PATH = Path("/home/ramanlab/Documents/cole/Data/Opto/Combined/matrix/") / "envelope_matrix_float16.npy"
+CODE_MAP_PATH = Path("/home/ramanlab/Documents/cole/Data/Opto/Combined/matrix/") / "code_maps.json"
 OUTPUT_DIR = Path("outputs/ml")
-SCORE_PATH = DATA_DIR / "scoring_results_opto_new.csv"
-CLUSTER_PATH = DATA_DIR / "trial_clusters_reaction_clusters.csv"
-REPORT_PATH = DATA_DIR / "report_reaction_clusters.csv"
+SCORE_PATH = Path("/home/ramanlab/Documents/cole/model/FlyBehaviorPER/") / "scoring_results_opto_new.csv"
+CLUSTER_PATH = Path("/home/ramanlab/PycharmProjects/FlyBehaviorScoring/outputs/unsup/20251003_155149/") / "trial_clusters_reaction_clusters.csv"
+REPORT_PATH = Path("/home/ramanlab/PycharmProjects/FlyBehaviorScoring/outputs/unsup/20251003_155149/") / "report_reaction_clusters.csv"
 METRICS_BINARY_PATH = OUTPUT_DIR / "metrics_binary.txt"
 METRICS_REGRESSION_PATH = OUTPUT_DIR / "metrics_regression.txt"
 METRICS_INFERRED_PATH = OUTPUT_DIR / "metrics_inferred.txt"

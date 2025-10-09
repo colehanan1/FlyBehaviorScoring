@@ -11,9 +11,9 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-SCORE_PATH = "data/scoring_results_opto_new.csv"
-CLUSTER_PATH = "data/trial_clusters_reaction_clusters.csv"
-REPORT_PATH = "data/report_reaction_clusters.csv"
+SCORE_PATH = "/home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new.csv"
+CLUSTER_PATH = "/home/ramanlab/PycharmProjects/FlyBehaviorScoring/outputs/unsup/20251003_155149/trial_clusters_reaction_clusters.csv"
+REPORT_PATH = "/home/ramanlab/PycharmProjects/FlyBehaviorScoring/outputs/unsup/20251003_155149/report_reaction_clusters.csv"
 
 
 TRIAL_KEY_TEMPLATE = "{dataset}__{fly}__{trial_type}__{trial_label}"
