@@ -38,7 +38,7 @@ def load_envelope(npy_path: str, mmap: bool = True) -> np.ndarray:
 
 def _extract_columns(code_map: Dict) -> List[str]:
     if isinstance(code_map, dict):
-        for key in ("columns", "column_names", "col_names", "headers"):
+        for key in ("columns", "column_names", "col_names", "headers", "column_order"):
             if key in code_map and isinstance(code_map[key], Sequence):
                 return list(code_map[key])
         if "schema" in code_map and isinstance(code_map["schema"], dict):
