@@ -13,6 +13,40 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Deterministic ML training on raw envelopes
+
+The end-to-end pipeline introduced in `ml/` consumes the raw trace arrays and
+associated spreadsheets to train logistic and linear models with leave-one-fly
+cross-validation.
+
+1. Place the required inputs in the exact paths expected by the pipeline:
+   - `data/envelope_matrix_float16.npy`
+   - `data/code_maps.json`
+   - `data/scoring_results_opto_new.csv`
+   - `data/trial_clusters_reaction_clusters.csv`
+   - Optional: `data/report_reaction_clusters.csv`
+   - Optional: `data/timepoint_importance.csv`
+2. Run the deterministic trainer:
+
+   ```bash
+   python -m ml.train_models
+   ```
+
+The models train on engineered odor-window metrics (baseline mean/std, odor
+mean/peak/AUC/threshold coverage, latency, rise slope, odor duration), plus any
+cluster one-hot encodings and principal components supplied in
+`trial_clusters_reaction_clusters.csv`. Raw `dir_val_*` timepoint columns are
+excluded from the learning matrix to avoid diluting the signal with thousands of
+uninformative dimensions. Fold-specific PCA on odor windows supplies at most
+three summary components per trial, fitted inside each cross-validation split to
+prevent leakage.
+
+All artifacts will be written to `outputs/ml/`, including cross-validation
+predictions (`cv_predictions.csv`), model weights (`final_*.pkl`), plots, metric
+summaries (`metrics_*.txt`), and a sorted coefficient table
+(`feature_usage.csv`) that ranks the strongest contributors to the logistic and
+linear models by absolute weight.
+
 ## Unsupervised trace-only clustering
 
 Run the unsupervised models on trace data via:
