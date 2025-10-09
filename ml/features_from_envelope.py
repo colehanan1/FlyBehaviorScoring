@@ -89,6 +89,7 @@ def assemble_envelope_df(npy_path: str, json_path: str) -> pd.DataFrame:
 
     logger.info("Building envelope DataFrame with %d rows", matrix.shape[0])
     df = pd.DataFrame(matrix, columns=columns)
+    df["matrix_row_index"] = np.arange(len(df), dtype=int)
     df["dataset"] = df["dataset"].astype(str)
     df["fly"] = df["fly"].astype(str)
     df["trial_type"] = df["trial_type"].astype(str)

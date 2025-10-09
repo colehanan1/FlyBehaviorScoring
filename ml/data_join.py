@@ -29,24 +29,55 @@ def load_scoring(path: str = SCORE_PATH) -> pd.DataFrame:
         raise FileNotFoundError(f"Scoring CSV not found at {path_obj}")
     logger.info("Loading scoring data from %s", path_obj)
     scoring = pd.read_csv(path_obj)
-    required = {"dataset", "fly", "trial_type", "trial_label", "user_score_odor"}
-    missing = required - set(scoring.columns)
-    if missing:
-        raise ValueError(f"Scoring CSV missing columns: {sorted(missing)}")
-    scoring["dataset"] = scoring["dataset"].astype(str)
-    scoring["fly"] = scoring["fly"].astype(str)
-    scoring["trial_type"] = scoring["trial_type"].astype(str)
-    scoring["trial_label"] = scoring["trial_label"].astype(str)
-    scoring["trial_key"] = _build_trial_key(scoring)
+    if "user_score_odor" not in scoring.columns:
+        raise ValueError("Scoring CSV missing required column 'user_score_odor'")
+
+    has_id_cols = {"dataset", "fly", "trial_type", "trial_label"} <= set(scoring.columns)
+    if has_id_cols:
+        scoring["dataset"] = scoring["dataset"].astype(str)
+        scoring["fly"] = scoring["fly"].astype(str)
+        scoring["trial_type"] = scoring["trial_type"].astype(str)
+        scoring["trial_label"] = scoring["trial_label"].astype(str)
+        scoring["trial_key"] = _build_trial_key(scoring)
+    elif "matrix_row_index" not in scoring.columns:
+        raise ValueError(
+            "Scoring CSV must include either dataset/fly/trial identifiers or matrix_row_index"
+        )
+
+    if "matrix_row_index" in scoring.columns:
+        scoring["matrix_row_index"] = pd.to_numeric(
+            scoring["matrix_row_index"], errors="coerce"
+        )
+        invalid = scoring["matrix_row_index"].isna() | (scoring["matrix_row_index"] < 0)
+        if invalid.any():
+            logger.warning(
+                "Dropping %d scoring rows with invalid matrix_row_index",
+                int(invalid.sum()),
+            )
+            scoring = scoring.loc[~invalid]
+        scoring["matrix_row_index"] = scoring["matrix_row_index"].astype(int)
+
     scoring["user_score_odor"] = pd.to_numeric(scoring["user_score_odor"], errors="coerce")
     if scoring["user_score_odor"].isna().any():
         logger.warning("Found NaN user_score_odor values; they will be dropped during join")
     scoring["y_bin"] = (scoring["user_score_odor"] > 0).astype(int)
     scoring["y_reg"] = scoring["user_score_odor"].where(scoring["user_score_odor"] > 0, np.nan)
-    dup_mask = scoring["trial_key"].duplicated()
-    if dup_mask.any():
-        logger.warning("Scoring CSV has %d duplicated trials; keeping first", dup_mask.sum())
-        scoring = scoring[~dup_mask]
+    if "trial_key" in scoring.columns:
+        dup_mask = scoring["trial_key"].duplicated()
+        if dup_mask.any():
+            logger.warning(
+                "Scoring CSV has %d duplicated trials; keeping first",
+                int(dup_mask.sum()),
+            )
+            scoring = scoring.loc[~dup_mask]
+    elif "matrix_row_index" in scoring.columns:
+        dup_mask = scoring["matrix_row_index"].duplicated()
+        if dup_mask.any():
+            logger.warning(
+                "Scoring CSV has %d duplicated matrix rows; keeping first",
+                int(dup_mask.sum()),
+            )
+            scoring = scoring.loc[~dup_mask]
     logger.info("Loaded %d scoring rows", len(scoring))
     return scoring
 
@@ -125,7 +156,31 @@ def join_features(
     report = _load_optional_report(report_path)
 
     logger.info("Joining engineered features (%d rows) with scoring", len(features))
-    merged = features.merge(scoring[["trial_key", "y_bin", "y_reg"]], on="trial_key", how="left")
+    merged = features.copy()
+    if "trial_key" in scoring.columns:
+        merged = merged.merge(
+            scoring[["trial_key", "y_bin", "y_reg"]],
+            on="trial_key",
+            how="left",
+        )
+    if "matrix_row_index" in scoring.columns:
+        if "matrix_row_index" not in merged.columns:
+            raise ValueError("Features DataFrame missing matrix_row_index for scoring join")
+        index_join = scoring[["matrix_row_index", "y_bin", "y_reg"]].drop_duplicates(
+            subset="matrix_row_index"
+        )
+        merged = merged.merge(
+            index_join,
+            on="matrix_row_index",
+            how="left",
+            suffixes=("", "_by_index"),
+        )
+        if "y_bin_by_index" in merged.columns:
+            merged["y_bin"] = merged["y_bin"].fillna(merged.pop("y_bin_by_index"))
+        if "y_reg_by_index" in merged.columns:
+            merged["y_reg"] = merged["y_reg"].fillna(merged.pop("y_reg_by_index"))
+    matched = merged["y_bin"].notna().sum()
+    logger.info("Scoring provided labels for %d trials", int(matched))
     before_drop = len(merged)
     merged = merged.dropna(subset=["y_bin"])
     if len(merged) < before_drop:
