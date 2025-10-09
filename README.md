@@ -32,20 +32,27 @@ cross-validation.
    python -m ml.train_models
    ```
 
-The models train on engineered odor-window metrics (baseline mean/std, odor
-mean/peak/AUC/threshold coverage, latency, rise slope, odor duration), plus any
-cluster one-hot encodings and principal components supplied in
-`trial_clusters_reaction_clusters.csv`. Raw `dir_val_*` timepoint columns are
-excluded from the learning matrix to avoid diluting the signal with thousands of
-uninformative dimensions. Fold-specific PCA on odor windows supplies at most
-three summary components per trial, fitted inside each cross-validation split to
-prevent leakage.
+The pipeline fits three complementary models:
+
+1. **Binary reaction classifier** – Logistic regression over the raw odor-window
+   traces (`dir_val_1245`–`dir_val_2445`) scaled within each fold. This mirrors
+   the unsupervised trace clustering while leveraging the human reaction labels.
+2. **Supervised intensity regressor** – Linear regression trained on engineered
+   odor metrics (baseline mean/std, odor mean/peak/AUC/threshold coverage,
+   latency, rise slope, odor duration) augmented by fold-wise PCA summaries and
+   any cluster annotations provided in `trial_clusters_reaction_clusters.csv`.
+3. **Inferred 1–5 scorer** – K-means over positive-class engineered features to
+   assign data-driven intensity bins without referencing human scores at
+   inference.
+
+Fold-specific PCA on odor windows supplies at most three summary components per
+trial, fitted inside each cross-validation split to prevent leakage.
 
 All artifacts will be written to `outputs/ml/`, including cross-validation
 predictions (`cv_predictions.csv`), model weights (`final_*.pkl`), plots, metric
-summaries (`metrics_*.txt`), and a sorted coefficient table
-(`feature_usage.csv`) that ranks the strongest contributors to the logistic and
-linear models by absolute weight.
+summaries (`metrics_*.txt`), and per-model coefficient tables
+(`logistic_feature_usage.csv`, `linear_feature_usage.csv`) that rank the
+strongest contributors by absolute weight.
 
 ## Unsupervised trace-only clustering
 
