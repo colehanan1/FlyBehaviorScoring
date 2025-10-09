@@ -8,7 +8,7 @@ import numpy as np
 
 from .data_join import join_features
 from .features_from_envelope import assemble_envelope_df
-from .modeling import run_cross_validation, train_full_models
+from .modeling import run_cross_validation, run_train_test_splits, train_full_models
 
 DATA_DIR = Path("data")
 ENVELOPE_PATH = DATA_DIR / "envelope_matrix_float16.npy"
@@ -20,7 +20,10 @@ REPORT_PATH = DATA_DIR / "report_reaction_clusters.csv"
 METRICS_BINARY_PATH = OUTPUT_DIR / "metrics_binary.txt"
 METRICS_REGRESSION_PATH = OUTPUT_DIR / "metrics_regression.txt"
 METRICS_INFERRED_PATH = OUTPUT_DIR / "metrics_inferred.txt"
+METRICS_HOLDOUT_PATH = OUTPUT_DIR / "metrics_holdout.txt"
 TRAIN_LOG_PATH = OUTPUT_DIR / "train.log"
+HOLDOUT_EPOCHS = 5
+HOLDOUT_TEST_SIZE = 0.2
 
 
 np.random.seed(42)
@@ -80,6 +83,43 @@ def main() -> None:
     if unique_flies.size == 0:
         raise AssertionError("No flies available for cross-validation")
     logger.info("Found %d unique flies", unique_flies.size)
+
+    holdout_results = run_train_test_splits(
+        merged_df,
+        y_bin,
+        y_reg,
+        OUTPUT_DIR,
+        n_epochs=HOLDOUT_EPOCHS,
+        test_size=HOLDOUT_TEST_SIZE,
+    )
+
+    if holdout_results["epoch_metrics"].empty:
+        logger.warning("Hold-out evaluation produced no metrics")
+        holdout_lines = ["No hold-out metrics available"]
+    else:
+        mean_metrics = holdout_results["mean_metrics"]
+        std_metrics = holdout_results["std_metrics"]
+        holdout_lines = [
+            f"Epochs: {HOLDOUT_EPOCHS}",
+            f"Split: train={1 - HOLDOUT_TEST_SIZE:.1%} test={HOLDOUT_TEST_SIZE:.1%}",
+        ]
+        for metric in ["accuracy", "precision", "recall", "f1", "roc_auc"]:
+            if metric in mean_metrics:
+                holdout_lines.append(
+                    f"{metric}: {mean_metrics[metric]:.4f} ± {std_metrics.get(metric, float('nan')):.4f}"
+                )
+        agg_cm = holdout_results["aggregated_confusion"]
+        holdout_lines.append(
+            "Summed confusion matrix: "
+            f"[[{agg_cm[0,0]}, {agg_cm[0,1]}], [{agg_cm[1,0]}, {agg_cm[1,1]}]]"
+        )
+        holdout_lines.append(
+            "Hold-out metrics CSV: holdout_epoch_metrics.csv"
+        )
+        holdout_lines.append(
+            "Hold-out predictions CSV: holdout_predictions.csv"
+        )
+    _write_metrics(METRICS_HOLDOUT_PATH, holdout_lines)
 
     cv_results = run_cross_validation(merged_df, y_bin, y_reg, OUTPUT_DIR)
 

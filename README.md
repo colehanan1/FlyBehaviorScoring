@@ -17,7 +17,8 @@ pip install -r requirements.txt
 
 The end-to-end pipeline introduced in `ml/` consumes the raw trace arrays and
 associated spreadsheets to train logistic and linear models with leave-one-fly
-cross-validation.
+cross-validation **and** repeated 80/20 train/test hold-out evaluations for
+rapid feedback.
 
 1. Place the required inputs in the exact paths expected by the pipeline:
    - `data/envelope_matrix_float16.npy`
@@ -49,10 +50,15 @@ Fold-specific PCA on odor windows supplies at most three summary components per
 trial, fitted inside each cross-validation split to prevent leakage.
 
 All artifacts will be written to `outputs/ml/`, including cross-validation
-predictions (`cv_predictions.csv`), model weights (`final_*.pkl`), plots, metric
-summaries (`metrics_*.txt`), and per-model coefficient tables
-(`logistic_feature_usage.csv`, `linear_feature_usage.csv`) that rank the
-strongest contributors by absolute weight.
+predictions (`cv_predictions.csv`), per-epoch hold-out predictions
+(`holdout_predictions.csv`), model weights (`final_*.pkl`), plots (per-epoch
+confusion matrices with percentage annotations, probability histograms,
+ROC curves, aggregate metric trend lines), metric summaries (`metrics_*.txt`),
+and per-model coefficient tables (`logistic_feature_usage.csv`,
+`linear_feature_usage.csv`) that rank the strongest contributors by absolute
+weight. The hold-out metrics report (`holdout_epoch_metrics.csv`) lists
+accuracy/precision/recall/F1/ROC-AUC for every epoch so you can iterate quickly
+on labeling or feature adjustments.
 
 ## Unsupervised trace-only clustering
 
