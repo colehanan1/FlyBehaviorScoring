@@ -621,6 +621,9 @@ def main() -> None:
 
     pca_input = prepared.traces
     if measurement_matrix is not None:
+        # Measurement features are already z-scored, so concatenating them with the
+        # trace envelope preserves scale invariance while letting PCA align across
+        # both temporal and summary metrics.
         pca_input = np.hstack([pca_input, measurement_matrix])
 
     pca_results = compute_pca(pca_input, max_pcs=args.max_pcs, random_state=args.seed)
