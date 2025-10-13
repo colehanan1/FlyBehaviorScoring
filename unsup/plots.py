@@ -57,10 +57,13 @@ def plot_pca_eigenvectors(
     *,
     max_components: int = 5,
     title: str | None = None,
+    feature_indices: Sequence[int] | None = None,
 ) -> None:
     """Visualize leading PCA eigenvectors as temporal loadings."""
 
     components = pca_results.components
+    if feature_indices is not None:
+        components = components[:, feature_indices]
     if components.size == 0:
         raise ValueError("PCA results contain no components to plot.")
 

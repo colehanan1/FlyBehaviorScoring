@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -58,13 +58,23 @@ def compute_pca(
     )
 
 
-def compute_time_importance(pca_results: PCAResults, time_columns: Sequence[str]) -> pd.DataFrame:
+def compute_time_importance(
+    pca_results: PCAResults,
+    time_columns: Sequence[str],
+    *,
+    feature_indices: Iterable[int] | None = None,
+) -> pd.DataFrame:
     """Calculate mean absolute loadings across important PCs."""
 
     if pca_results.pcs_90pct == 0:
         raise ValueError("Unable to determine PCs covering 90% variance.")
 
     top_components = pca_results.components[: pca_results.pcs_90pct]
+    if feature_indices is not None:
+        feature_indices = list(feature_indices)
+        if len(feature_indices) != len(time_columns):
+            raise ValueError("feature_indices must align with provided time_columns")
+        top_components = top_components[:, feature_indices]
     importance = np.mean(np.abs(top_components), axis=0)
 
     return pd.DataFrame({
