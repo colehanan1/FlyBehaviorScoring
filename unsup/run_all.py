@@ -591,6 +591,12 @@ def main() -> None:
             raise ValueError(
                 f"Metadata column '{column}' does not contain numeric values after conversion."
             )
+        converted = converted.astype(float)
+        converted = converted.replace([np.inf, -np.inf], np.nan)
+        if converted.notna().sum() == 0:
+            raise ValueError(
+                f"Metadata column '{column}' does not contain finite values after removing infinities."
+            )
         measurement_df[column] = converted
         selected_measurements.append(column)
 
@@ -603,8 +609,17 @@ def main() -> None:
                     f"Metadata column '{column}' contains only missing values after conversion."
                 )
             mean = col_values.mean()
+            if pd.isna(mean):
+                raise ValueError(
+                    f"Metadata column '{column}' does not contain finite values for mean imputation."
+                )
             measurement_df[column] = col_values.fillna(mean)
         measurement_values = measurement_df.to_numpy(dtype=float)
+        if not np.isfinite(measurement_values).all():
+            raise ValueError(
+                "Measurement matrix contains non-finite values after preprocessing; "
+                "ensure the selected columns contain finite numeric data."
+            )
         col_means = measurement_values.mean(axis=0, keepdims=True)
         col_stds = measurement_values.std(axis=0, ddof=0, keepdims=True)
         col_stds[col_stds == 0] = 1.0
