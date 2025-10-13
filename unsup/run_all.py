@@ -95,6 +95,16 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--pca-measurement-weight",
+        type=float,
+        default=1.0,
+        help=(
+            "Scale factor applied to z-scored measurement columns before PCA. "
+            "Values >1 increase their influence relative to the trace envelope; "
+            "values between 0 and 1 de-emphasise them."
+        ),
+    )
+    parser.add_argument(
         "--skip-subclustering",
         action="store_true",
         help="Disable the automated second-stage subclustering step.",
@@ -561,6 +571,9 @@ def main() -> None:
 
     extra_columns = list(args.pca_extra_columns or [])
     exclude_columns = {column.lower() for column in (args.pca_exclude_columns or [])}
+    measurement_weight = args.pca_measurement_weight
+    if measurement_weight <= 0:
+        raise ValueError("--pca-measurement-weight must be positive.")
 
     requested_measurements: List[str] = []
     if args.pca_include_measurements:
@@ -625,12 +638,20 @@ def main() -> None:
         col_stds[col_stds == 0] = 1.0
         measurement_matrix = (measurement_values - col_means) / col_stds
 
+        if measurement_weight != 1.0:
+            measurement_matrix *= measurement_weight
+
     if args.debug:
         if selected_measurements:
             print(
                 "[run_all] Augmenting PCA with measurement columns:",
                 selected_measurements,
             )
+            if measurement_weight != 1.0:
+                print(
+                    "[run_all] Measurement columns scaled by:",
+                    measurement_weight,
+                )
         else:
             print("[run_all] PCA uses only time-series traces.")
 

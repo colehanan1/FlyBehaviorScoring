@@ -35,8 +35,9 @@ Optional arguments:
 - `--pca-include-measurements`: automatically append all numeric measurement columns exposed by the metadata (e.g., AUC-, peak-, and timing-derived values) to the PCA feature matrix.
 - `--pca-extra-columns`: explicitly list additional metadata fields to append to the PCA feature matrix; values are validated and standardised before PCA.
 - `--pca-exclude-columns`: drop specific measurement columns after inclusion so they do not influence PCA or the downstream clustering.
+- `--pca-measurement-weight`: scale the selected measurement block after z-scoring so the metrics can dominate (`>1.0`) or lightly regularise (`<1.0`) the PCA inputs.
 
-When any measurement columns are retained, they are z-scored per column and concatenated to the trace-derived feature block prior to fitting the global PCA. The dimensionality reduction therefore treats the trace envelope values and the selected summary metrics as a single feature vector, allowing you to emphasise or suppress the additional measurements on a per-run basis.
+When any measurement columns are retained, they are z-scored per column (and optionally rescaled via `--pca-measurement-weight`) before concatenation with the trace-derived feature block prior to fitting the global PCA. The dimensionality reduction therefore treats the trace envelope values and the selected summary metrics as a single feature vector, allowing you to emphasise or suppress the additional measurements on a per-run basis.
 
 The k-means backend chooses the cluster count that maximizes the silhouette score within the provided bounds, and the Gaussian mixture backend picks the component count that minimizes the Bayesian Information Criterion (BIC). In addition to the PCA-driven models, the run now includes odor-aligned reaction profiling backends that focus on the odor-on window (frames 1,230–2,430) and the subsequent odor-off recovery period.
 
