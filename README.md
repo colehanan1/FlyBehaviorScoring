@@ -29,9 +29,30 @@ make demo
 
 ## Running on Real Data
 
-1. **Assemble a manifest** describing each trial. Provide either a stacked CSV (one row per timepoint with columns `trial_id`, `fly_id`, `time`, `distance`, `odor_on_idx`, `odor_off_idx`, `fps`) or a directory of per-trial CSVs plus a manifest CSV with the schema shown below.
-2. **Verify indices**: `odor_on_idx` and `odor_off_idx` are frame indices (0-based). They must be within `[0, n_frames)` and `odor_on_idx < odor_off_idx`. Ensure the time column is strictly increasing if present.
-3. **Update configuration** (optional): copy `configs/default.yaml` and adjust `fps`, `pre_s`, `post_s`, smoothing parameters, or PCA settings to match your acquisition.
+1. **Assemble a manifest or wide CSV** describing each trial.
+   - *Stacked format*: one row per timepoint with columns `trial_id`, `fly_id`, `distance`, `odor_on_idx`, optional `odor_off_idx`, optional `time`, and optional `fps`.
+   - *Wide format*: one row per trial where the time series samples occupy columns with a consistent prefix (e.g., `dir_val_0`, `dir_val_1`, …). Provide metadata columns for trial identity, fly identity, odor indices, and fps.
+2. **Map column names in the config**. Copy `configs/default.yaml` and update the `io` section to match your data. Example for the wide file shown in the error transcript:
+
+   ```yaml
+   io:
+     format: wide
+     read_csv:
+       low_memory: false
+       dtype:
+         trial_label: str
+     wide:
+       trial_id_column: trial_label
+       fly_id_column: fly
+       odor_on_column: odor_on_frame
+       odor_off_column: odor_off_frame  # remove if not available
+       fps_column: fps
+       time_columns:
+         prefix: dir_val_
+   ```
+
+   Setting `dtype` ensures pandas does not emit mixed-type warnings. For stacked data, adjust `io.stacked.distance_column`, `io.stacked.time_column`, etc., instead.
+3. **Verify indices**: `odor_on_idx` and `odor_off_idx` are frame indices (0-based). They must be within `[0, n_frames)` and `odor_on_idx < odor_off_idx`. Ensure the time column is strictly increasing if present; for wide data the loader generates time stamps using `fps`.
 4. **Run the CLI pipeline**. The commands below fit the lag-embedded PCA model, project each trial, engineer features, cluster reactions, and generate a Markdown report with key plots.
 
 ```bash

@@ -54,6 +54,7 @@ def fit_lag_pca(
 ) -> None:
     cfg = _load_config(config)
     trials = load_trials(data, cfg)
+    logging.info("Loaded %d trials for lag PCA fitting", len(trials))
     result = fit_lag_pca_for_trials(trials, cfg, incremental=incremental, model_path=out)
     logging.info("Explained variance ratio: %s", result.explained_variance_ratio_)
 
@@ -79,6 +80,7 @@ def project(
 ) -> None:
     cfg = _load_config(config) if config else {}
     trials = load_trials(data, cfg)
+    logging.info("Loaded %d trials for projection", len(trials))
     result = _load_model(model)
     out.mkdir(parents=True, exist_ok=True)
     manifest_rows = []
@@ -100,6 +102,7 @@ def features(
 ) -> None:
     cfg = _load_config(config)
     trials = load_trials(data, cfg)
+    logging.info("Loaded %d trials for feature extraction", len(trials))
     lag_result = _load_model(model) if model else None
     projection_map = _load_projection_directory(projections) if projections else None
     table = compute_feature_table(trials, cfg, result=lag_result, projections=projection_map)
@@ -110,7 +113,7 @@ def features(
 
 @app.command("cluster")
 def cluster(
-    features_path: Path = typer.Option(..., exists=True),
+    features_path: Path = typer.Option(..., "--features-path", "--features", exists=True),
     out: Path = typer.Option(..., help="Output CSV for cluster assignments."),
     method: str = typer.Option("gmm", help="Clustering method."),
     n_components: int = typer.Option(2, help="Number of clusters for GMM."),
@@ -135,8 +138,8 @@ def cluster(
 
 @app.command("report")
 def report(
-    features_path: Path = typer.Option(..., exists=True),
-    clusters_path: Path = typer.Option(..., exists=True),
+    features_path: Path = typer.Option(..., "--features-path", "--features", exists=True),
+    clusters_path: Path = typer.Option(..., "--clusters-path", "--clusters", exists=True),
     model: Optional[Path] = typer.Option(None, exists=True),
     projections_dir: Optional[Path] = typer.Option(None, exists=True),
     out_dir: Path = typer.Option(Path("artifacts"), help="Output directory for report."),

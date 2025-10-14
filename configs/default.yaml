@@ -15,3 +15,23 @@ frequency:
 clustering:
   method: gmm
   n_components: 2
+io:
+  format: auto
+  read_csv:
+    low_memory: false
+  stacked:
+    trial_id_column: trial_id
+    fly_id_column: fly_id
+    distance_column: distance
+    time_column: time
+    odor_on_column: odor_on_idx
+    odor_off_column: odor_off_idx
+    fps_column: fps
+  wide:
+    trial_id_column: trial_id
+    fly_id_column: fly_id
+    odor_on_column: odor_on_idx
+    odor_off_column: odor_off_idx
+    fps_column: fps
+    time_columns:
+      prefix: distance_
