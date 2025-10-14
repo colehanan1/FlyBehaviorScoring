@@ -27,6 +27,47 @@ Generate a synthetic demo dataset and full report:
 make demo
 ```
 
+## Running on Real Data
+
+1. **Assemble a manifest** describing each trial. Provide either a stacked CSV (one row per timepoint with columns `trial_id`, `fly_id`, `time`, `distance`, `odor_on_idx`, `odor_off_idx`, `fps`) or a directory of per-trial CSVs plus a manifest CSV with the schema shown below.
+2. **Verify indices**: `odor_on_idx` and `odor_off_idx` are frame indices (0-based). They must be within `[0, n_frames)` and `odor_on_idx < odor_off_idx`. Ensure the time column is strictly increasing if present.
+3. **Update configuration** (optional): copy `configs/default.yaml` and adjust `fps`, `pre_s`, `post_s`, smoothing parameters, or PCA settings to match your acquisition.
+4. **Run the CLI pipeline**. The commands below fit the lag-embedded PCA model, project each trial, engineer features, cluster reactions, and generate a Markdown report with key plots.
+
+```bash
+flypca fit-lag-pca \
+  --data data/manifest.csv \
+  --config configs/default.yaml \
+  --out artifacts/models/lagpca.joblib
+
+flypca project \
+  --model artifacts/models/lagpca.joblib \
+  --data data/manifest.csv \
+  --out artifacts/projections/
+
+flypca features \
+  --data data/manifest.csv \
+  --config configs/default.yaml \
+  --model artifacts/models/lagpca.joblib \
+  --projections artifacts/projections/ \
+  --out artifacts/features.parquet
+
+flypca cluster \
+  --features artifacts/features.parquet \
+  --method gmm \
+  --out artifacts/cluster.csv \
+  --label-column reaction  # optional if ground-truth labels exist
+
+flypca report \
+  --features artifacts/features.parquet \
+  --clusters artifacts/cluster.csv \
+  --model artifacts/models/lagpca.joblib \
+  --projections artifacts/projections/ \
+  --out-dir artifacts/
+```
+
+Outputs are written under `artifacts/` by default: the trained PCA model (`models/`), projected PC trajectories (`projections/`), engineered features (`features.parquet`), clustering assignments, summary figures (`figures/`), and a Markdown report describing variance explained, cluster metrics, and representative trajectories.
+
 CLI entry points (Typer-based):
 
 ```bash
