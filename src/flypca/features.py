@@ -35,10 +35,25 @@ def _auc(time: np.ndarray, values: np.ndarray) -> float:
 
 
 def _first_crossing(time: np.ndarray, values: np.ndarray, threshold: float) -> float:
-    for t, v in zip(time, values):
-        if v >= threshold:
-            return float(t)
-    return float("nan")
+    """Return the first time the signal crosses ``threshold`` using interpolation."""
+
+    if time.size == 0 or values.size == 0:
+        return float("nan")
+    indices = np.flatnonzero(values >= threshold)
+    if indices.size == 0:
+        return float("nan")
+    idx = int(indices[0])
+    if idx == 0:
+        return float(time[0])
+    t_prev, t_curr = float(time[idx - 1]), float(time[idx])
+    v_prev, v_curr = float(values[idx - 1]), float(values[idx])
+    if not np.isfinite(v_prev) or not np.isfinite(v_curr):
+        return float(t_curr)
+    if v_curr == v_prev:
+        return float(t_curr)
+    fraction = (threshold - v_prev) / (v_curr - v_prev)
+    fraction = float(np.clip(fraction, 0.0, 1.0))
+    return float(t_prev + fraction * (t_curr - t_prev))
 
 
 def _rise_time(time: np.ndarray, values: np.ndarray, baseline: float, peak: float) -> float:
