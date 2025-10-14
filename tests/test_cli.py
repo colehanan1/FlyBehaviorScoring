@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("typer")
 
-from flypca.cli import _load_config_or_default, report
+from flypca.cli import _load_config_or_default, _load_labels_table, report
 
 
 def test_load_config_or_default_prefers_explicit(tmp_path: Path) -> None:
@@ -109,3 +109,22 @@ def test_report_drops_unclustered_rows(tmp_path: Path) -> None:
 
     scatter_path = out_dir / "figures" / "pc_scatter.png"
     assert scatter_path.exists()
+
+
+def test_load_labels_table_uses_template(tmp_path: Path) -> None:
+    labels = pd.DataFrame(
+        {
+            "dataset": ["opto_EB"],
+            "fly": ["fly_1"],
+            "trial_label": ["trialA"],
+            "user_score_odor": [1],
+        }
+    )
+    labels_path = tmp_path / "labels.csv"
+    labels.to_csv(labels_path, index=False)
+
+    cfg = {"io": {"wide": {"trial_id_template": "{fly}_{trial_label}"}}}
+    loaded = _load_labels_table(labels_path, cfg, "user_score_odor")
+
+    assert loaded.loc[0, "trial_id"] == "fly_1_trialA"
+    assert loaded.loc[0, "user_score_odor"] == 1

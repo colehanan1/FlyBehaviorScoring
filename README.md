@@ -80,7 +80,9 @@ flypca cluster \
   --projections-dir artifacts/projections/ \
   --method gmm \
   --out artifacts/cluster.csv \
-  --label-column reaction  # optional if ground-truth labels exist
+  --labels-path data/labels.csv \
+  --labels-column-name user_score_odor \
+  --label-column user_score_odor
 
 flypca report \
   --features artifacts/features.parquet \
@@ -99,6 +101,15 @@ flypca fit-lag-pca --data data/manifest.csv --config configs/default.yaml --out 
 flypca project --model artifacts/models/lagpca.joblib --data data/manifest.csv --out artifacts/projections/
 flypca features --data data/manifest.csv --config configs/default.yaml --model artifacts/models/lagpca.joblib --projections artifacts/projections/ --out artifacts/features.parquet
 flypca cluster --features artifacts/features.parquet --config configs/default.yaml --projections-dir artifacts/projections/ --method gmm --out artifacts/cluster.csv --label-column reaction
+
+# cluster with label CSV
+flypca cluster \
+  --features artifacts/features.parquet \
+  --config configs/default.yaml \
+  --projections-dir artifacts/projections/ \
+  --labels-path data/labels.csv \
+  --labels-column-name user_score_odor \
+  --out artifacts/cluster.csv
 flypca report --features artifacts/features.parquet --clusters artifacts/cluster.csv --model artifacts/models/lagpca.joblib --projections artifacts/projections/ --out-dir artifacts/
 ```
 
@@ -108,9 +119,12 @@ flypca report --features artifacts/features.parquet --clusters artifacts/cluster
 - `min_variance`: drop near-constant columns prior to clustering to prevent degeneracy.
 - `component_range`: sweep a range of Gaussian mixture sizes (inclusive) and pick the lowest-BIC model with a valid silhouette.
 - `covariance_types`: evaluate multiple covariance structures (`full`, `diag`, etc.) during the sweep.
-- `use_projections`: replace the feature table with flattened lag-PCA trajectories loaded from `--projections-dir`.
-- `combine_with_features`: concatenate features and projections to form a joint representation.
+- `use_projections`: `auto` by default; if projections are supplied they are incorporated automatically, otherwise the feature table alone is clustered. Set to `true` or `false` to force behaviour.
+- `combine_with_features`: `auto` by default; when projections are used they are concatenated with engineered features unless explicitly disabled.
 - `projection_components` / `projection_timepoints`: cap how many PCs and aligned samples are flattened from the NPZ files.
+
+Label CSVs can be merged on-the-fly using `--labels-path` and `--labels-column-name`. The helper derives `trial_id` values by
+applying the configured template (e.g. `{fly}_{trial_label}`) or, if absent, by combining `fly` and `trial_label` columns. The merged column is available for clustering diagnostics and supervised AUROC/AUPRC evaluation.
 
 When `use_projections` is enabled the CLI expects `projections/manifest.csv` (written by `flypca project`) so trial IDs can be matched automatically.
 

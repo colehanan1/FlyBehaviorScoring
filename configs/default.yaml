@@ -26,8 +26,8 @@ clustering:
   datasets:
     - opto_EB
     - opto_benz_1
-  use_projections: false
-  combine_with_features: false
+  use_projections: auto
+  combine_with_features: auto
   projection_components: 3
   projection_timepoints: 200
 io:

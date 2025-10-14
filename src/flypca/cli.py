@@ -78,6 +78,58 @@ def _load_model(path: Path) -> LagPCAResult:
     return LagPCAResult.load(path)
 
 
+def _format_trial_id_from_labels(row: pd.Series, template: Optional[str]) -> str:
+    """Derive a trial identifier for an external label row."""
+
+    if "trial_id" in row and pd.notna(row["trial_id"]):
+        return str(row["trial_id"])
+    if template:
+        try:
+            return str(template.format(**row))
+        except KeyError:
+            logging.debug(
+                "Label row missing keys for template %s; falling back to defaults.", template
+            )
+    fly_value = row.get("fly") or row.get("fly_id")
+    trial_label = row.get("trial_label") or row.get("trial") or row.get("trial_name")
+    if pd.notna(fly_value) and pd.notna(trial_label):
+        return f"{fly_value}_{trial_label}"
+    raise ValueError(
+        "Unable to derive trial_id for label row; include 'trial_id' or both 'fly' and "
+        "'trial_label'."
+    )
+
+
+def _load_labels_table(
+    labels_path: Path,
+    config: Dict[str, object],
+    label_column: str,
+) -> pd.DataFrame:
+    """Load external labels and align them by trial identifier."""
+
+    labels_df = pd.read_csv(labels_path)
+    if label_column not in labels_df.columns:
+        raise ValueError(
+            f"Label column '{label_column}' not found in {labels_path}. "
+            "Ensure the CSV includes the requested column."
+        )
+    io_cfg = config.get("io", {}) if isinstance(config, dict) else {}
+    wide_cfg = io_cfg.get("wide", {}) if isinstance(io_cfg, dict) else {}
+    template = wide_cfg.get("trial_id_template") if isinstance(wide_cfg, dict) else None
+    labels_df = labels_df.copy()
+    labels_df["trial_id"] = labels_df.apply(
+        lambda row: _format_trial_id_from_labels(row, template), axis=1
+    )
+    labels_df["trial_id"] = labels_df["trial_id"].astype(str)
+    if labels_df.duplicated("trial_id").any():
+        logging.warning(
+            "Duplicate trial_ids detected in labels file %s; keeping last occurrence.",
+            labels_path,
+        )
+        labels_df = labels_df.drop_duplicates("trial_id", keep="last")
+    return labels_df[["trial_id", label_column]].copy()
+
+
 def _load_projection_directory(path: Path) -> Dict[str, tuple[np.ndarray, np.ndarray]]:
     projections: Dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for npz_path in path.glob("*.npz"):
@@ -165,6 +217,15 @@ def cluster(
     out: Path = typer.Option(..., help="Output CSV for cluster assignments."),
     method: str = typer.Option("gmm", help="Clustering method."),
     n_components: int = typer.Option(2, help="Number of clusters for GMM."),
+    labels_path: Optional[Path] = typer.Option(
+        None,
+        exists=True,
+        help="Optional CSV containing ground-truth labels (e.g. user_score_odor).",
+    ),
+    labels_column_name: str = typer.Option(
+        "user_score_odor",
+        help="Column name in the labels CSV providing numeric annotations.",
+    ),
     label_column: Optional[str] = typer.Option(None, help="Optional label column name."),
     config: Optional[Path] = typer.Option(None, exists=True, help="Optional YAML config."),
     projections_dir: Optional[Path] = typer.Option(None, exists=True, help="Optional directory of projections."),
@@ -205,6 +266,25 @@ def cluster(
                     before,
                     len(table),
                 )
+    if labels_path is not None:
+        labels_table = _load_labels_table(labels_path, cfg, labels_column_name)
+        before_merge = len(table)
+        table = table.merge(labels_table, on="trial_id", how="left")
+        missing_mask = table[labels_column_name].isna()
+        if missing_mask.any():
+            sample_missing = ", ".join(
+                table.loc[missing_mask, "trial_id"].astype(str).head(5)
+            )
+            logging.warning(
+                "Labels missing for %d of %d trials (e.g. %s).",
+                int(missing_mask.sum()),
+                before_merge,
+                sample_missing or "n/a",
+            )
+        else:
+            logging.info("Merged labels for all %d trials.", before_merge)
+        if label_column is None:
+            label_column = labels_column_name
     feature_columns = cluster_cfg.get("feature_columns")
     min_variance = float(cluster_cfg.get("min_variance", 1e-6))
     standardize = bool(cluster_cfg.get("standardize", True))
@@ -223,14 +303,24 @@ def cluster(
     covariance_types = cluster_cfg.get("covariance_types")
     if covariance_types is not None:
         covariance_types = [str(cov) for cov in covariance_types]
-    use_projections = bool(cluster_cfg.get("use_projections", False))
-    combine_projection = bool(cluster_cfg.get("combine_with_features", False))
+    use_projections_cfg = cluster_cfg.get("use_projections", "auto")
+    if isinstance(use_projections_cfg, str) and use_projections_cfg.lower() == "auto":
+        use_projections = projections_dir is not None
+    else:
+        use_projections = bool(use_projections_cfg)
+    if projections_dir is not None:
+        use_projections = True
+    combine_cfg = cluster_cfg.get("combine_with_features", "auto")
+    if isinstance(combine_cfg, str) and combine_cfg.lower() == "auto":
+        combine_projection = use_projections
+    else:
+        combine_projection = bool(combine_cfg)
     projection_components = cluster_cfg.get("projection_components")
     projection_timepoints = cluster_cfg.get("projection_timepoints")
     projection_matrix = None
     if projections_dir is not None or use_projections:
         if projections_dir is None:
-            raise ValueError("Projections directory required when use_projections is true")
+            raise ValueError("Projections directory required when projections are enabled")
         projections = _load_projection_directory(projections_dir)
         trial_ids = table["trial_id"].astype(str).tolist()
         projection_matrix = _build_projection_matrix(
