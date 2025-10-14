@@ -298,23 +298,25 @@ def report(
     cluster_series = (
         clusters_df.set_index("trial_id")["cluster"].reindex(feature_trial_ids)
     )
-    missing_assignments = cluster_series.isna()
+    features_df = features_df.copy()
+    features_df["cluster"] = cluster_series.to_numpy()
+    missing_assignments = features_df["cluster"].isna()
     if missing_assignments.any():
-        missing_trials = feature_trial_ids[missing_assignments]
+        missing_trials = feature_trial_ids[missing_assignments.to_numpy()]
         sample = ", ".join(map(str, missing_trials[:10])) or "n/a"
         logging.warning(
             "Dropping %d feature rows without cluster assignments (e.g. %s).",
             int(missing_assignments.sum()),
             sample,
         )
-        features_df = features_df.loc[~missing_assignments].reset_index(drop=True)
-        cluster_series = cluster_series[~missing_assignments]
+        features_df = features_df.loc[~missing_assignments.to_numpy()].reset_index(drop=True)
+        cluster_series = features_df["cluster"].reset_index(drop=True)
         feature_trial_ids = features_df["trial_id"].astype(str)
         if features_df.empty:
             raise ValueError(
                 "No overlapping trials between features table and cluster assignments."
             )
-    assignments = cluster_series.to_numpy()
+    assignments = features_df.pop("cluster").to_numpy()
     projections = _load_projection_directory(projections_dir) if projections_dir else None
     result = _load_model(model) if model else None
     if result:

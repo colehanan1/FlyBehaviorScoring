@@ -27,9 +27,10 @@ def _generate_trace(
     reaction: bool,
     amplitude: float,
     latency: float,
+    rng: np.random.Generator,
 ) -> np.ndarray:
     time = np.arange(n_samples) / fps
-    noise = np.random.normal(scale=0.1, size=n_samples)
+    noise = rng.normal(scale=0.1, size=n_samples)
     baseline = noise
     if reaction:
         t = time - (odor_on_idx / fps + latency)
@@ -60,7 +61,15 @@ def generate_synthetic_trials(
             reaction = rng.random() < 0.5
             amplitude = rng.uniform(1.5, 2.5) if reaction else rng.uniform(0.2, 0.5)
             latency = rng.uniform(0.2, 0.6) if reaction else rng.uniform(0.6, 1.0)
-            trace = _generate_trace(n_samples, fps, odor_on_idx, reaction, amplitude, latency)
+            trace = _generate_trace(
+                n_samples,
+                fps,
+                odor_on_idx,
+                reaction,
+                amplitude,
+                latency,
+                rng,
+            )
             time = np.arange(n_samples) / fps
             trial = TrialTimeseries(
                 trial_id=trial_id,
