@@ -70,6 +70,41 @@ def _parse_args() -> argparse.Namespace:
         help="Print verbose diagnostics during data preparation and modeling.",
     )
     parser.add_argument(
+        "--pca-include-measurements",
+        action="store_true",
+        help=(
+            "Include numeric measurement columns from the metadata when fitting "
+            "the global PCA embedding."
+        ),
+    )
+    parser.add_argument(
+        "--pca-extra-columns",
+        nargs="*",
+        default=None,
+        help=(
+            "Additional metadata columns to append to the PCA feature matrix. "
+            "Values must be numeric after decoding."
+        ),
+    )
+    parser.add_argument(
+        "--pca-exclude-columns",
+        nargs="*",
+        default=None,
+        help=(
+            "Metadata columns to drop from the PCA feature matrix after inclusion."
+        ),
+    )
+    parser.add_argument(
+        "--pca-measurement-weight",
+        type=float,
+        default=1.0,
+        help=(
+            "Scale factor applied to z-scored measurement columns before PCA. "
+            "Values >1 increase their influence relative to the trace envelope; "
+            "values between 0 and 1 de-emphasise them."
+        ),
+    )
+    parser.add_argument(
         "--skip-subclustering",
         action="store_true",
         help="Disable the automated second-stage subclustering step.",
@@ -528,8 +563,106 @@ def main() -> None:
             f"n_trials={prepared.n_trials}",
             f"n_timepoints={prepared.n_timepoints}",
         )
+        if prepared.measurement_columns:
+            print(
+                "[run_all] Available measurement columns:",
+                prepared.measurement_columns,
+            )
 
-    pca_results = compute_pca(prepared.traces, max_pcs=args.max_pcs, random_state=args.seed)
+    extra_columns = list(args.pca_extra_columns or [])
+    exclude_columns = {column.lower() for column in (args.pca_exclude_columns or [])}
+    measurement_weight = args.pca_measurement_weight
+    if measurement_weight <= 0:
+        raise ValueError("--pca-measurement-weight must be positive.")
+
+    requested_measurements: List[str] = []
+    if args.pca_include_measurements:
+        requested_measurements.extend(prepared.measurement_columns)
+    if extra_columns:
+        requested_measurements.extend(extra_columns)
+
+    measurement_df = pd.DataFrame(index=prepared.metadata.index)
+    selected_measurements: List[str] = []
+    for column in requested_measurements:
+        normalized = column.lower()
+        if normalized in exclude_columns:
+            continue
+        if column in measurement_df.columns:
+            continue
+        if column not in prepared.metadata.columns:
+            raise ValueError(
+                f"Metadata column '{column}' not found; cannot include in PCA."
+            )
+        series = prepared.metadata[column]
+        if not pd.api.types.is_numeric_dtype(series):
+            raise ValueError(
+                f"Metadata column '{column}' is non-numeric after decoding and "
+                "cannot be used for PCA."
+            )
+        converted = pd.to_numeric(series, errors="coerce")
+        if converted.notna().sum() == 0:
+            raise ValueError(
+                f"Metadata column '{column}' does not contain numeric values after conversion."
+            )
+        converted = converted.astype(float)
+        converted = converted.replace([np.inf, -np.inf], np.nan)
+        if converted.notna().sum() == 0:
+            raise ValueError(
+                f"Metadata column '{column}' does not contain finite values after removing infinities."
+            )
+        measurement_df[column] = converted
+        selected_measurements.append(column)
+
+    measurement_matrix = None
+    if not measurement_df.empty:
+        for column in measurement_df.columns:
+            col_values = measurement_df[column]
+            if col_values.isna().all():
+                raise ValueError(
+                    f"Metadata column '{column}' contains only missing values after conversion."
+                )
+            mean = col_values.mean()
+            if pd.isna(mean):
+                raise ValueError(
+                    f"Metadata column '{column}' does not contain finite values for mean imputation."
+                )
+            measurement_df[column] = col_values.fillna(mean)
+        measurement_values = measurement_df.to_numpy(dtype=float)
+        if not np.isfinite(measurement_values).all():
+            raise ValueError(
+                "Measurement matrix contains non-finite values after preprocessing; "
+                "ensure the selected columns contain finite numeric data."
+            )
+        col_means = measurement_values.mean(axis=0, keepdims=True)
+        col_stds = measurement_values.std(axis=0, ddof=0, keepdims=True)
+        col_stds[col_stds == 0] = 1.0
+        measurement_matrix = (measurement_values - col_means) / col_stds
+
+        if measurement_weight != 1.0:
+            measurement_matrix *= measurement_weight
+
+    if args.debug:
+        if selected_measurements:
+            print(
+                "[run_all] Augmenting PCA with measurement columns:",
+                selected_measurements,
+            )
+            if measurement_weight != 1.0:
+                print(
+                    "[run_all] Measurement columns scaled by:",
+                    measurement_weight,
+                )
+        else:
+            print("[run_all] PCA uses only time-series traces.")
+
+    pca_input = prepared.traces
+    if measurement_matrix is not None:
+        # Measurement features are already z-scored, so concatenating them with the
+        # trace envelope preserves scale invariance while letting PCA align across
+        # both temporal and summary metrics.
+        pca_input = np.hstack([pca_input, measurement_matrix])
+
+    pca_results = compute_pca(pca_input, max_pcs=args.max_pcs, random_state=args.seed)
     if args.debug:
         print(
             "[run_all] PCA complete:",
@@ -537,7 +670,10 @@ def main() -> None:
             f"pcs_90pct={pca_results.pcs_90pct}",
             f"explained_var={np.round(pca_results.explained_variance_ratio, 4)}",
         )
-    importance_df = compute_time_importance(pca_results, prepared.time_columns)
+    time_feature_indices = range(prepared.n_timepoints)
+    importance_df = compute_time_importance(
+        pca_results, prepared.time_columns, feature_indices=time_feature_indices
+    )
     write_time_importance(run_dir / "timepoint_importance.csv", importance_df)
 
     pc_columns = [f"PC{i+1}" for i in range(pca_results.scores.shape[1])]
@@ -564,6 +700,7 @@ def main() -> None:
             time_points,
             str(artifacts.eigenvector_plot(model_name)),
             title=f"PCA eigenvectors ({model_name})",
+            feature_indices=time_feature_indices,
         )
         plot_time_importance(
             importance_df, str(artifacts.time_importance_plot(model_name))

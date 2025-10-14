@@ -22,6 +22,7 @@ class PreparedData:
     traces: np.ndarray
     metadata: pd.DataFrame
     time_columns: List[str]
+    measurement_columns: List[str]
 
     @property
     def n_trials(self) -> int:
@@ -363,7 +364,19 @@ def prepare_data(
     metadata_columns = [col for col in filtered.columns if col not in time_columns]
     metadata = filtered[metadata_columns].copy()
 
-    return PreparedData(traces=zscored, metadata=metadata, time_columns=list(time_columns))
+    measurement_columns = [
+        column
+        for column in metadata.columns
+        if column not in {"dataset_name", "trial_type_name"}
+        and pd.api.types.is_numeric_dtype(metadata[column])
+    ]
+
+    return PreparedData(
+        traces=zscored,
+        metadata=metadata,
+        time_columns=list(time_columns),
+        measurement_columns=measurement_columns,
+    )
 
 
 __all__ = ["PreparedData", "prepare_data"]
