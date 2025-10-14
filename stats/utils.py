@@ -618,8 +618,13 @@ def latency_to_threshold(
         segment = trace[start:end]
         crossings = np.where(segment >= threshold)[0]
         if crossings.size:
-            latencies[idx] = start + crossings[0]
-            events[idx] = True
+            first = crossings[0]
+            if first >= search_len - 1:
+                latencies[idx] = start + search_len - 1
+                events[idx] = False
+            else:
+                latencies[idx] = start + first
+                events[idx] = True
         else:
             latencies[idx] = start + search_len - 1
             events[idx] = False

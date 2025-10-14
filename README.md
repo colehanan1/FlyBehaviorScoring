@@ -1,160 +1,164 @@
-# Fly Behavior Scoring & ML Starter
+# FlyPCA
 
-A ready-to-run, Git-ready project to:
-- Label fly behavior videos with a 0–5 human score via a simple GUI.
-- Compute data-driven metrics (e.g., time above threshold, AUC, reaction latency, rise speed) and a data score.
-- Persist meticulous, per-trial metadata to a single master CSV.
-- Train a baseline PyTorch regressor to predict scores from metrics (outputs 0–5 after rounding).
+FlyPCA provides a reproducible, event-aligned lag-embedded PCA workflow for Drosophila proboscis-distance time series. The package smooths and baseline-normalizes traces, performs Hankel (time-delay) embedding, learns compact principal components, derives interpretable behavioral features, and clusters trials into reaction vs. non-reaction cohorts.
 
-## Quick start
+## Pipeline Overview
 
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-```
+1. **Ingest** trial CSVs or manifests (trial_id, fly_id, distance, odor indices).
+2. **Preprocess** each trial with Savitzky–Golay smoothing, optional low-pass filtering, and pre-odor z-scoring.
+3. **Lag Embed & PCA** using Hankel matrices to preserve local temporal structure; fit PCA or IncrementalPCA.
+4. **Project** trials into PC trajectories aligned to odor onset.
+5. **Engineer Features** capturing temporal dynamics, velocity, Hilbert envelope, frequency bands, and PC-space summaries.
+6. **Cluster & Evaluate** with GMM or HDBSCAN and compute silhouette, Calinski–Harabasz, AUROC, and AUPRC (leave-one-fly-out).
+7. **Visualize & Report** scree plots, loadings, trajectories, cluster scatter, violin plots, and markdown reports.
 
-## Unsupervised trace-only clustering
-
-Run the unsupervised models on trace data via:
+## Quickstart
 
 ```bash
-python unsup/run_all.py \
-  --npy path/to/envelope_matrix_float16.npy \
-  --meta path/to/code_maps.json \
-  --out outputs/unsup
+make venv
+source .venv/bin/activate
+make install
+make test
 ```
 
-Optional arguments:
-
-- `--min-cluster-size`: minimum cluster size for the density-based model (default `5`).
-- `--seed`: random seed used for PCA and clustering (default `0`).
-- `--max-pcs`: cap on retained principal components (default `10`).
-- `--min-clusters`/`--max-clusters`: bounds for the adaptive k-means/GMM cluster-count search (defaults `2`/`10`).
-- `--datasets`: space-separated dataset names to retain (default `EB 3-octonol`).
-- `--debug`: print verbose filtering/PCA/clustering diagnostics to stdout.
-- `--pca-include-measurements`: automatically append all numeric measurement columns exposed by the metadata (e.g., AUC-, peak-, and timing-derived values) to the PCA feature matrix.
-- `--pca-extra-columns`: explicitly list additional metadata fields to append to the PCA feature matrix; values are validated and standardised before PCA.
-- `--pca-exclude-columns`: drop specific measurement columns after inclusion so they do not influence PCA or the downstream clustering.
-- `--pca-measurement-weight`: scale the selected measurement block after z-scoring so the metrics can dominate (`>1.0`) or lightly regularise (`<1.0`) the PCA inputs.
-
-When any measurement columns are retained, they are z-scored per column (and optionally rescaled via `--pca-measurement-weight`) before concatenation with the trace-derived feature block prior to fitting the global PCA. The dimensionality reduction therefore treats the trace envelope values and the selected summary metrics as a single feature vector, allowing you to emphasise or suppress the additional measurements on a per-run basis.
-
-The k-means backend chooses the cluster count that maximizes the silhouette score within the provided bounds, and the Gaussian mixture backend picks the component count that minimizes the Bayesian Information Criterion (BIC). In addition to the PCA-driven models, the run now includes odor-aligned reaction profiling backends that focus on the odor-on window (frames 1,230–2,430) and the subsequent odor-off recovery period.
-
-Models executed per run:
-
-1. **`simple`** – PCA + k-means on the 80 % variance PCs (adaptive cluster count).
-2. **`flexible`** – PCA + Gaussian mixture with BIC-based component selection.
-3. **`noise_robust`** – PCA + HDBSCAN (DBSCAN fallback) with noise labeling.
-4. **`reaction_motifs`** – odor-window feature extraction + NMF motifs + k-means clustering.
-5. **`reaction_clusters`** – the same odor-window feature extraction clustered without motif decomposition.
-
-Each invocation creates `outputs/unsup/YYYYMMDD_HHMMSS/` containing:
-
-- `timepoint_importance.csv`: average absolute PCA loadings over the most informative PCs.
-- `report_<model>.csv`: one-row metric summary per model (`simple`, `flexible`, `noise_robust`, `reaction_motifs`, `reaction_clusters`).
-- `trial_clusters_<model>.csv`: filtered metadata with an added `cluster_label` column (noise marked `-1`).
-- `pca_variance_<model>.png`: explained-variance bar chart with cumulative curve.
-- `time_importance_<model>.png`: timepoint importance line plot.
-- `embedding_<model>.png`: 2-D embedding scatter colored by cluster labels (noise appears as grey crosses).
-- `motifs_reaction_motifs.csv` / `motifs_reaction_motifs.png`: odor-aligned temporal motifs recovered by the NMF-based model.
-
-Input arrays/metadata are consumed at runtime and are not committed to the repository.
-
-### 1) Label / score videos
+Generate a synthetic demo dataset and full report:
 
 ```bash
-python label_videos.py   --videos /path/to/videos   --data   /path/to/csvs   --output scoring_results.csv
+make demo
 ```
 
-- The GUI shows **video first** with a 0–5 selector.
-- After you submit, it reveals metrics and **data-derived score** (weights configurable).
-- All rows are appended to a single **master CSV** with fly/trial/video/user score/data score/combined score and raw metrics.
+## Running on Real Data
 
-### 2) Train the baseline model
+1. **Assemble a manifest or wide CSV** describing each trial.
+   - *Stacked format*: one row per timepoint with columns `trial_id`, `fly_id`, `distance`, `odor_on_idx`, optional `odor_off_idx`, optional `time`, and optional `fps`.
+   - *Wide format*: one row per trial where the time series samples occupy columns with a consistent prefix (e.g., `dir_val_0`, `dir_val_1`, …). Provide metadata columns for trial identity, fly identity, odor indices, and fps.
+2. **Map column names in the config**. Copy `configs/default.yaml` and update the `io` section to match your data. Example for the wide file shown in the error transcript:
+
+   ```yaml
+   io:
+     format: wide
+     read_csv:
+       low_memory: false
+       dtype:
+         trial_label: str
+     wide:
+       trial_id_column: trial_label
+       trial_id_template: "{fly}_{trial_label}"
+       fly_id_column: fly
+       fps_column: fps
+       odor_on_value: 1230
+       odor_off_value: 2430
+       time_columns:
+         prefix: dir_val_
+   ```
+
+   Setting `dtype` ensures pandas does not emit mixed-type warnings. For stacked data, adjust `io.stacked.distance_column`, `io.stacked.time_column`, etc., instead.
+3. **Verify indices**: `odor_on_idx` and `odor_off_idx` are frame indices (0-based). They must be within `[0, n_frames)` and `odor_on_idx < odor_off_idx`. Ensure the time column is strictly increasing if present; for wide data the loader generates time stamps using `fps`.
+4. **Run the CLI pipeline**. The commands below fit the lag-embedded PCA model, project each trial, engineer features, cluster reactions, and generate a Markdown report with key plots.
 
 ```bash
-python train_model.py --data scoring_results.csv --epochs 100 --output-model fly_score_model.pth
+flypca fit-lag-pca \
+  --data /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --config configs/default.yaml \
+  --out artifacts/models/lagpca.joblib
+
+flypca project \
+  --model artifacts/models/lagpca.joblib \
+  --data /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --out artifacts/projections/
+
+flypca features \
+  --data /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --config configs/default.yaml \
+  --model artifacts/models/lagpca.joblib \
+  --projections artifacts/projections/ \
+  --out artifacts/features.parquet
+
+flypca cluster \
+  --features artifacts/features.parquet \
+  --config configs/default.yaml \
+  --projections-dir artifacts/projections/ \
+  --method gmm \
+  --out artifacts/cluster.csv \
+  --labels-path /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_BINARY.csv \
+  --labels-column-name user_score_odor \
+  --label-column user_score_odor
+
+flypca report \
+  --features artifacts/features.parquet \
+  --clusters artifacts/cluster.csv \
+  --model artifacts/models/lagpca.joblib \
+  --projections-dir artifacts/projections/ \
+  --out-dir artifacts/
 ```
 
-- Predicts a continuous score that you should **round to 0–5** for reporting.
-- GPU is used automatically when available (PyTorch + CUDA).
+Outputs are written under `artifacts/` by default: the trained PCA model (`models/`), projected PC trajectories (`projections/`), engineered features (`features.parquet`), clustering assignments, summary figures (`figures/`), and a Markdown report describing variance explained, cluster metrics, and representative trajectories.
 
-## Configure metric weights / threshold
-
-Edit these at the top of `label_videos.py`:
-- `THRESHOLD`: the reaction threshold in your signal units.
-- `METRIC_WEIGHTS`: relative weights for metrics (e.g., make `time_fraction` or `auc` dominate).
-
-## Summarise trained vs. untrained odor responses
-
-Use the `stats/odor_response_contingency.py` utility to extract the four-cell
-contingency table described in the project brief (``a`` through ``d``) from a
-behavioural CSV export. The script focuses on the `during_hit` column and lets
-you specify which trial numbers correspond to the trained and untrained odours.
+CLI entry points (Typer-based):
 
 ```bash
-python -m stats.odor_response_contingency \
-  data/odor_trials.csv \
-  "EB 3-octonol" \
-  --trained-trials 2 4 5 \
-  --untrained-trials 1 3 6 \
-  --output outputs/odor_summary.eps
+flypca fit-lag-pca --data data/manifest.csv --config configs/default.yaml --out artifacts/models/lagpca.joblib
+flypca project --model artifacts/models/lagpca.joblib --data data/manifest.csv --out artifacts/projections/
+flypca features --data data/manifest.csv --config configs/default.yaml --model artifacts/models/lagpca.joblib --projections artifacts/projections/ --out artifacts/features.parquet
+flypca cluster --features artifacts/features.parquet --config configs/default.yaml --projections-dir artifacts/projections/ --method gmm --out artifacts/cluster.csv --label-column reaction
+
+# cluster with label CSV
+flypca cluster \
+  --features artifacts/features.parquet \
+  --config configs/default.yaml \
+  --projections-dir artifacts/projections/ \
+  --labels-path data/labels.csv \
+  --labels-column-name user_score_odor \
+  --out artifacts/cluster.csv
+flypca report --features artifacts/features.parquet --clusters artifacts/cluster.csv --model artifacts/models/lagpca.joblib --projections artifacts/projections/ --out-dir artifacts/
 ```
 
-- Provide the dataset name exactly as it appears in the `dataset` column.
-- The trained trial list defaults to `2 4 5`; override it if your protocol
-  differs.
-- Pass whichever untrained trial numbers you want to include, omitting any you
-  wish to exclude (e.g., skip 7–10 entirely as shown above).
-- When `--output` is supplied, the script renders an EPS file mirroring the 2×2
-  contingency table; omit the flag to skip figure generation. Ensure the path
-  ends with `.eps`.
-- Supply `--style path/to/style.json` alongside `--output` to restyle the
-  figure without editing the Python source. The JSON file can override labels,
-  colours, font sizes, spacing, and even the title template. When `--style` is
-  given without `--output`, the CLI opens a preview window so you can iterate on
-  styling interactively.
+### Clustering configuration
 
-The command prints the counts for the four cases (`a` through `d`) along with
-the total number of flies that match the configured trials.
+- `standardize`: z-score the feature/projection matrix before fitting the mixture model (enabled by default).
+- `min_variance`: drop near-constant columns prior to clustering to prevent degeneracy.
+- `component_range`: sweep a range of Gaussian mixture sizes (inclusive) and pick the lowest-BIC model with a valid silhouette.
+- `covariance_types`: evaluate multiple covariance structures (`full`, `diag`, etc.) during the sweep.
+- `use_projections`: `auto` by default; if projections are supplied they are incorporated automatically, otherwise the feature table alone is clustered. Set to `true` or `false` to force behaviour.
+- `combine_with_features`: `auto` by default; when projections are used they are concatenated with engineered features unless explicitly disabled.
+- `projection_components` / `projection_timepoints`: cap how many PCs and aligned samples are flattened from the NPZ files.
 
-Example styling payload (`style.json`) that renames the table headers, swaps the
-palette, enlarges the figure, and tweaks the title formatting:
+Label CSVs can be merged on-the-fly using `--labels-path` and `--labels-column-name`. The helper derives `trial_id` values by
+applying the configured template (e.g. `{fly}_{trial_label}`) or, if absent, by combining `fly` and `trial_label` columns. The merged column is available for clustering diagnostics and supervised AUROC/AUPRC evaluation.
 
-```json
-{
-  "figure_size": [7, 4],
-  "row_labels": ["Learnt", "Not learnt", "Totals"],
-  "column_labels": ["Novel +", "Novel -", "Totals"],
-  "title_template": "Odor summary — {dataset}",
-  "title_kwargs": {"fontsize": 16, "pad": 12},
-  "scale": [1.3, 1.6],
-  "font_size": 14,
-  "cell_text_color": "#1f1f1f",
-  "header_text_color": "white",
-  "row_label_text_color": "#1f1f1f",
-  "column_label_facecolor": "#1b9e77",
-  "row_label_facecolor": "#d9d9d9",
-  "totals_facecolor": "#fce5cd",
-  "cell_facecolors": [
-    ["#fddbc7", "#fddbc7", "#fce5cd"],
-    ["#d1e5f0", "#d1e5f0", "#fce5cd"],
-    ["#fce5cd", "#fce5cd", "#fce5cd"]
-  ],
-  "edge_color": "#404040"
-}
+When `use_projections` is enabled the CLI expects `projections/manifest.csv` (written by `flypca project`) so trial IDs can be matched automatically.
+
+Expected data layout for manifests:
+
+```
+manifest.csv:
+path,trial_id,fly_id,odor_on_idx,odor_off_idx,fps
+trial001.csv,tr1,flyA,80,120,40
+...
+
+trial001.csv:
+frame,time,distance
+0,0.00,1.23
+...
 ```
 
-Every entry is optional—omit keys to retain the defaults used by the CLI.
+## Testing & Quality
 
-## File associations
+- Type-annotated, vectorized preprocessing and feature routines.
+- Deterministic seeds; logging records parameter settings and array shapes.
+- Pytest suite covers preprocessing, PCA embedding, feature extraction, and end-to-end synthetic performance (AUROC > 0.8).
 
-Videos and CSVs are matched by **base filename**. Example:
-- `fly2736_testing_3.mp4` ↔ `fly2736_testing_3.csv`
+## Interpreting PCs
 
-The tool also tries to parse `fly_id` and `trial_id` from folder/filename digits.
+- PC1 typically correlates with response amplitude and integrates the rising phase post-odor.
+- PC2 captures latency and decay kinetics when present.
+- Time-aligned PC trajectories and feature table outputs (parquet) enable downstream classifiers or visualization in standard tools.
 
-## Note
+## Make Targets
 
-This is intentionally minimal and extensible for PyCharm/Linux workflows. Extend `compute_metrics()` with more features and add them to `METRIC_WEIGHTS` to include them everywhere (CSV + training).
+- `make venv`: create `.venv` using Python 3.11.
+- `make install`: install flypca in editable mode with requirements.
+- `make test`: run unit tests (`pytest -q`).
+- `make demo`: synthesize data, run the full CLI pipeline, and emit artifacts (models, projections, features, clusters, figures, report).
+
+Refer to `examples/01_synthetic_demo.ipynb` for a notebook walkthrough replicating the pipeline with code and inline commentary.
