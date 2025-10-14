@@ -9,3 +9,7 @@ outputs/
 *.npy
 *.npz
 code_maps.json
+artifacts/
+*.joblib
+*.png
+*.parquet
