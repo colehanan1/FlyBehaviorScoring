@@ -215,6 +215,19 @@ def _extract_time_series_columns(df: pd.DataFrame, time_cfg: Dict[str, object]) 
         columns = sorted(columns, key=_key)
     else:
         raise ValueError("time_columns must specify either 'columns' or 'prefix'.")
+    start_index = int(time_cfg.get("start_index", 0))
+    if start_index < 0:
+        raise ValueError("time_columns.start_index must be non-negative.")
+    if start_index:
+        columns = columns[start_index:]
+    max_count = time_cfg.get("max_count")
+    if max_count is not None:
+        max_count_int = int(max_count)
+        if max_count_int <= 0:
+            raise ValueError("time_columns.max_count must be positive when provided.")
+        columns = columns[:max_count_int]
+    if not columns:
+        raise ValueError("No time columns remain after applying start_index/max_count constraints.")
     LOGGER.debug("Identified %d time columns for wide format.", len(columns))
     return columns
 

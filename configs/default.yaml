@@ -36,3 +36,4 @@ io:
     odor_off_value: 2430
     time_columns:
       prefix: dir_val_
+      max_count: 3600

@@ -108,3 +108,30 @@ def test_load_trials_wide_with_constants_and_templates(tmp_path: Path) -> None:
     assert trial.odor_off_idx == 10
     # fps should fall back to config default when column missing or NaN
     assert trial.fps == 40.0
+
+
+def test_load_trials_wide_with_max_count(tmp_path: Path) -> None:
+    samples = {f"dir_val_{i}": [float(i)] for i in range(4000)}
+    samples.update({"fly": ["flyA"], "trial_label": ["trial_long"]})
+    data = pd.DataFrame(samples)
+    path = _write_csv(tmp_path, "wide_long.csv", data)
+    config = {
+        "fps": 40.0,
+        "io": {
+            "format": "wide",
+            "wide": {
+                "trial_id_column": "trial_label",
+                "fly_id_column": "fly",
+                "odor_on_value": 1230,
+                "odor_off_value": 2430,
+                "time_columns": {"prefix": "dir_val_", "max_count": 3600},
+            },
+        },
+    }
+    trials = load_trials(path, config)
+    assert len(trials) == 1
+    trial = trials[0]
+    assert len(trial.distance) == 3600
+    # ensure odor indices stay within truncated length
+    assert trial.odor_on_idx == 1230
+    assert trial.odor_off_idx == 2430
