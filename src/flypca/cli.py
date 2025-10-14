@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -168,10 +168,43 @@ def cluster(
     label_column: Optional[str] = typer.Option(None, help="Optional label column name."),
     config: Optional[Path] = typer.Option(None, exists=True, help="Optional YAML config."),
     projections_dir: Optional[Path] = typer.Option(None, exists=True, help="Optional directory of projections."),
+    datasets: Optional[List[str]] = typer.Option(
+        None,
+        "--dataset",
+        "--datasets",
+        help="Filter clustering to specific dataset names.",
+    ),
 ) -> None:
     cfg = _load_config_or_default(config)
     table = pd.read_parquet(features_path) if features_path.suffix == ".parquet" else pd.read_csv(features_path)
     cluster_cfg = cfg.get("clustering", {})
+    dataset_filter_cfg = datasets if datasets else cluster_cfg.get("datasets")
+    if dataset_filter_cfg:
+        dataset_values = (
+            list(dataset_filter_cfg)
+            if isinstance(dataset_filter_cfg, (list, tuple, set))
+            else [dataset_filter_cfg]
+        )
+        dataset_values = [str(v) for v in dataset_values if v is not None]
+        if dataset_values:
+            if "dataset" not in table.columns:
+                logging.warning(
+                    "Dataset filter requested but 'dataset' column missing; skipping filter."
+                )
+            else:
+                before = len(table)
+                table = table[table["dataset"].astype(str).isin(dataset_values)].copy()
+                if table.empty:
+                    raise ValueError(
+                        "No rows remain after applying dataset filter: %s"
+                        % ", ".join(dataset_values)
+                    )
+                logging.info(
+                    "Filtered datasets %s: %d -> %d rows",
+                    ", ".join(dataset_values),
+                    before,
+                    len(table),
+                )
     feature_columns = cluster_cfg.get("feature_columns")
     min_variance = float(cluster_cfg.get("min_variance", 1e-6))
     standardize = bool(cluster_cfg.get("standardize", True))

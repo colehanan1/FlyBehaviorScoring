@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -25,6 +25,7 @@ class TrialTimeseries:
     odor_off_idx: Optional[int]
     time: np.ndarray
     distance: np.ndarray
+    metadata: Dict[str, object] = field(default_factory=dict)
 
     def validate(self) -> None:
         """Validate the trial structure."""
@@ -83,7 +84,11 @@ def _resolve_fps(row: pd.Series, default_fps: Optional[float]) -> float:
     return float(default_fps)
 
 
-def _load_trial_from_df(df: pd.DataFrame, fps: float) -> TrialTimeseries:
+def _load_trial_from_df(
+    df: pd.DataFrame,
+    fps: float,
+    metadata: Optional[Dict[str, object]] = None,
+) -> TrialTimeseries:
     trial_id = str(df["trial_id"].iloc[0])
     fly_id = str(df["fly_id"].iloc[0])
     odor_on_idx = int(df["odor_on_idx"].iloc[0])
@@ -102,6 +107,7 @@ def _load_trial_from_df(df: pd.DataFrame, fps: float) -> TrialTimeseries:
         odor_off_idx=odor_off_idx,
         time=time,
         distance=distance,
+        metadata=metadata or {},
     )
     trial.validate()
     return trial
@@ -124,7 +130,13 @@ def _load_from_manifest(directory: Path, default_fps: Optional[float]) -> List[T
         if "odor_off_idx" in row and not pd.isna(row["odor_off_idx"]):
             df["odor_off_idx"] = int(row["odor_off_idx"])
         fps = _resolve_fps(row, default_fps)
-        trials.append(_load_trial_from_df(df, fps=fps))
+        metadata = {
+            col: row[col]
+            for col in row.index
+            if col not in {"path", "trial_id", "fly_id", "odor_on_idx", "odor_off_idx", "fps"}
+            and not pd.isna(row[col])
+        }
+        trials.append(_load_trial_from_df(df, fps=fps, metadata=metadata))
     LOGGER.info("Loaded %d trials from manifest %s", len(trials), directory)
     return trials
 
@@ -191,7 +203,27 @@ def _load_stacked_csv(
             fps = float(default_fps)
         if fps is None:
             raise ValueError(f"FPS missing for trial {trial_id} and no default provided.")
-        trials.append(_load_trial_from_df(group, fps=fps))
+        metadata: Dict[str, object] = {}
+        skip_cols = {
+            "trial_id",
+            "fly_id",
+            "distance",
+            "odor_on_idx",
+            "odor_off_idx",
+            "time",
+            "t",
+            "timestamp",
+            "fps",
+        }
+        for col in group.columns:
+            if col in skip_cols:
+                continue
+            series = group[col]
+            if series.nunique(dropna=False) == 1:
+                value = series.iloc[0]
+                if pd.notna(value):
+                    metadata[col] = value
+        trials.append(_load_trial_from_df(group, fps=fps, metadata=metadata))
     LOGGER.info("Loaded %d trials from stacked CSV %s", len(trials), path)
     return trials
 
@@ -248,6 +280,13 @@ def _load_wide_csv(
     fps_col = config.get("fps_column")
     trial_template = config.get("trial_id_template")
     fly_template = config.get("fly_id_template")
+    metadata_columns_cfg = config.get("metadata_columns", [])
+    if isinstance(metadata_columns_cfg, (list, tuple, set)):
+        metadata_columns = [str(col) for col in metadata_columns_cfg]
+    elif metadata_columns_cfg:
+        metadata_columns = [str(metadata_columns_cfg)]
+    else:
+        metadata_columns = []
     if trial_col not in df.columns:
         LOGGER.warning(
             "Trial identifier column '%s' not found; using row index as trial_id.", trial_col
@@ -313,6 +352,25 @@ def _load_wide_csv(
             raise ValueError(f"Trial {trial_id} has no numeric distance samples.")
         distance = values[valid_mask]
         time = np.arange(len(distance), dtype=float) / fps
+        metadata: Dict[str, object] = {}
+        auto_metadata_columns = set(metadata_columns)
+        auto_metadata_columns.update({"dataset"})
+        for col in auto_metadata_columns:
+            if col in row and not pd.isna(row[col]):
+                metadata[col] = row[col]
+        skip_cols = set(time_columns) | {
+            trial_col,
+            fly_col,
+            str(odor_on_col) if odor_on_col else "",
+            str(odor_off_col) if odor_off_col else "",
+            str(fps_col) if fps_col else "",
+        }
+        for col in row.index:
+            if col in skip_cols or col in metadata:
+                continue
+            value = row[col]
+            if pd.notna(value):
+                metadata[col] = value
         trial = TrialTimeseries(
             trial_id=trial_id,
             fly_id=fly_id,
@@ -321,6 +379,7 @@ def _load_wide_csv(
             odor_off_idx=odor_off_idx,
             time=time,
             distance=distance,
+            metadata=metadata,
         )
         trial.validate()
         trials.append(trial)
@@ -358,7 +417,12 @@ def load_trials(path: str | Path, config: Optional[dict[str, object]] = None) ->
             fps = float(item.get("fps", default_fps)) if item.get("fps") or default_fps else None
             if fps is None:
                 raise ValueError(f"FPS missing for trial {item['trial_id']}")
-            trials.append(_load_trial_from_df(df, fps=fps))
+            metadata = {
+                k: v
+                for k, v in item.items()
+                if k not in {"path", "trial_id", "fly_id", "odor_on_idx", "odor_off_idx", "fps", "distance"}
+            }
+            trials.append(_load_trial_from_df(df, fps=fps, metadata=metadata))
         return trials
     if path.is_file():
         if fmt == "wide":

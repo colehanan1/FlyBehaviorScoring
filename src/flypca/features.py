@@ -245,6 +245,9 @@ def compute_trial_features(
     features.update(velocity_features)
     features.update(freq_features)
     features.update(pc_features)
+    for key, value in trial.metadata.items():
+        if key not in features:
+            features[key] = value
     return features
 
 

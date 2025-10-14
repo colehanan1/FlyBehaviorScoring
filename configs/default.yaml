@@ -23,6 +23,9 @@ clustering:
   covariance_types:
     - full
     - diag
+  datasets:
+    - opto_EB
+    - opto_benz_1
   use_projections: false
   combine_with_features: false
   projection_components: 3
@@ -46,6 +49,10 @@ io:
     fps_column: fps
     odor_on_value: 1230
     odor_off_value: 2430
+    metadata_columns:
+      - dataset
+      - trial_type
+      - fly_number
     time_columns:
       prefix: dir_val_
       max_count: 3600

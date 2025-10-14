@@ -48,15 +48,16 @@ def test_load_trials_stacked_with_column_mapping(tmp_path: Path) -> None:
 
 def test_load_trials_wide(tmp_path: Path) -> None:
     data = pd.DataFrame(
-            {
-                "trial_label": ["t1", "t2"],
-                "fly_name": ["f1", "f2"],
-                "odor_on_frame": [1, 1],
-                "fps": [40.0, 40.0],
-                "dir_val_0": [0.0, 0.1],
-                "dir_val_1": [0.4, 0.2],
-                "dir_val_2": [0.6, np.nan],
-            }
+        {
+            "trial_label": ["t1", "t2"],
+            "fly_name": ["f1", "f2"],
+            "dataset": ["set_a", "set_b"],
+            "odor_on_frame": [1, 1],
+            "fps": [40.0, 40.0],
+            "dir_val_0": [0.0, 0.1],
+            "dir_val_1": [0.4, 0.2],
+            "dir_val_2": [0.6, np.nan],
+        }
     )
     path = _write_csv(tmp_path, "wide.csv", data)
     config = {
@@ -69,6 +70,7 @@ def test_load_trials_wide(tmp_path: Path) -> None:
                 "odor_on_column": "odor_on_frame",
                 "fps_column": "fps",
                 "time_columns": {"prefix": "dir_val_"},
+                "metadata_columns": ["dataset"],
             },
         },
     }
@@ -78,6 +80,7 @@ def test_load_trials_wide(tmp_path: Path) -> None:
     # ensure NaNs trimmed
     np.testing.assert_allclose(trials[1].distance, [0.1, 0.2])
     assert trials[1].odor_on_idx == 1
+    assert trials[0].metadata["dataset"] == "set_a"
 
 
 def test_load_trials_wide_with_constants_and_templates(tmp_path: Path) -> None:
