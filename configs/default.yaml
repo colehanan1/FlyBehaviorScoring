@@ -1,0 +1,38 @@
+fps: 40.0
+pre_s: 2.0
+post_s: 2.0
+lag_ms: 250
+n_components: 5
+threshold_k: 4.0
+smoothing:
+  enable: true
+  savgol_window_ms: 151
+  savgol_poly: 3
+frequency:
+  enable: false
+  bands_hz:
+    - [0.5, 5.0]
+clustering:
+  method: gmm
+  n_components: 2
+io:
+  format: wide
+  read_csv:
+    low_memory: false
+  stacked:
+    trial_id_column: trial_id
+    fly_id_column: fly_id
+    distance_column: distance
+    time_column: time
+    odor_on_column: odor_on_idx
+    odor_off_column: odor_off_idx
+    fps_column: fps
+  wide:
+    trial_id_column: trial_label
+    trial_id_template: "{fly}_{trial_label}"
+    fly_id_column: fly
+    fps_column: fps
+    odor_on_value: 1230
+    odor_off_value: 2430
+    time_columns:
+      prefix: dir_val_

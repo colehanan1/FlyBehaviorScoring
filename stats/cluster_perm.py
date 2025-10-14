@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.stats import t as student_t
-from scipy.stats import ttest_1samp, wilcoxon
+from scipy.stats import wilcoxon
 
 from . import plotting
 from .utils import diff_matrix
@@ -51,6 +51,32 @@ class ClusterPermutationResult:
     n_flies: int
 
 
+def _one_sample_t(series: np.ndarray) -> Tuple[float, float]:
+    """Compute a stable one-sample t-test without SciPy's catastrophic cancellation."""
+
+    n = series.size
+    if n < 2:
+        return np.nan, np.nan
+
+    mean = float(np.mean(series))
+    centered = series - mean
+    # Sample variance (ddof=1). Using explicit computation avoids precision loss warnings.
+    var = float(np.dot(centered, centered) / (n - 1))
+    if np.isclose(var, 0.0):
+        if np.isclose(mean, 0.0):
+            return 0.0, 1.0
+        sign = 1.0 if mean > 0 else -1.0
+        return sign * np.inf, 0.0
+
+    std = float(np.sqrt(var))
+    denom = std / np.sqrt(n)
+    if np.isclose(denom, 0.0):
+        return np.nan, np.nan
+    t_stat = mean / denom
+    p_val = float(2.0 * student_t.sf(np.abs(t_stat), n - 1))
+    return t_stat, p_val
+
+
 def _compute_statistic(diff: np.ndarray, method: str) -> Tuple[np.ndarray, np.ndarray]:
     flies, timepoints = diff.shape
     stats = np.full(timepoints, np.nan, dtype=float)
@@ -61,7 +87,7 @@ def _compute_statistic(diff: np.ndarray, method: str) -> Tuple[np.ndarray, np.nd
         if series.size < 2:
             continue
         if method == "t":
-            stat, pval = ttest_1samp(series, 0.0, nan_policy="omit")
+            stat, pval = _one_sample_t(series)
         elif method == "wilcoxon":
             if np.allclose(series, 0.0):
                 continue
@@ -77,7 +103,7 @@ def _compute_statistic(diff: np.ndarray, method: str) -> Tuple[np.ndarray, np.nd
 
 
 def _find_clusters(stats: np.ndarray, pvals: np.ndarray, alpha: float) -> List[Tuple[int, np.ndarray]]:
-    mask = (pvals < alpha) & np.isfinite(stats)
+    mask = (pvals < alpha) & ~np.isnan(stats)
     clusters: List[Tuple[int, np.ndarray]] = []
     if not np.any(mask):
         return clusters

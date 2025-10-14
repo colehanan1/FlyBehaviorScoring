@@ -1,12 +1,10 @@
 numpy
+scipy
 pandas
-opencv-python
-Pillow
-torch
 scikit-learn
 matplotlib
+typer[all]
+joblib
 hdbscan
-scipy
-statsmodels
-lifelines
-patsy
+umap-learn
+pyyaml
