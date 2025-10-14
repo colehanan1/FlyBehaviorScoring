@@ -33,6 +33,21 @@ def _load_config(config_path: Path) -> Dict:
         return yaml.safe_load(f)
 
 
+def _load_config_or_default(
+    config_path: Optional[Path],
+    default_path: Path = Path("configs/default.yaml"),
+) -> Dict:
+    """Load a YAML config, falling back to the repo default when available."""
+
+    if config_path is not None:
+        return _load_config(config_path)
+    if default_path.exists():
+        logging.info("No config supplied; defaulting to %s", default_path)
+        return _load_config(default_path)
+    logging.debug("No configuration provided and default %s missing.", default_path)
+    return {}
+
+
 @app.callback()
 def main(
     ctx: typer.Context,
@@ -78,7 +93,7 @@ def project(
     config: Optional[Path] = typer.Option(None, help="Optional config for loading data."),
     out: Path = typer.Option(..., help="Output directory for projections."),
 ) -> None:
-    cfg = _load_config(config) if config else {}
+    cfg = _load_config_or_default(config)
     trials = load_trials(data, cfg)
     logging.info("Loaded %d trials for projection", len(trials))
     result = _load_model(model)
