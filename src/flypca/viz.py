@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -77,7 +77,24 @@ def pc_trajectories_plot(
     return path
 
 
-def pc_scatter(features: pd.DataFrame, assignments: np.ndarray, out_dir: str | Path) -> Path:
+AssignmentInput = Union[np.ndarray, Sequence[int | float], pd.Series]
+
+
+def _normalize_assignments(assignments: AssignmentInput, expected_length: int) -> np.ndarray:
+    """Convert cluster assignments to a NumPy array with validation."""
+
+    if isinstance(assignments, pd.Series):
+        values = assignments.to_numpy()
+    else:
+        values = np.asarray(assignments)
+    if values.size != expected_length:
+        raise ValueError(
+            f"Assignment count {values.size} does not match feature rows {expected_length}"
+        )
+    return values
+
+
+def pc_scatter(features: pd.DataFrame, assignments: AssignmentInput, out_dir: str | Path) -> Path:
     out_dir = _ensure_directory(out_dir)
     fig, ax = plt.subplots(figsize=(6, 5))
     lower_map = {c.lower(): c for c in features.columns}
@@ -90,7 +107,8 @@ def pc_scatter(features: pd.DataFrame, assignments: np.ndarray, out_dir: str | P
         y = numeric.iloc[:, 1]
     else:
         raise ValueError("PC scatter requires at least two numeric feature columns.")
-    scatter = ax.scatter(x, y, c=assignments, cmap="viridis", alpha=0.8)
+    assignment_array = _normalize_assignments(assignments, len(features))
+    scatter = ax.scatter(x, y, c=assignment_array, cmap="viridis", alpha=0.8)
     ax.set_xlabel(x.name)
     ax.set_ylabel(y.name)
     ax.set_title("PC Scatter with Clusters")
@@ -103,14 +121,23 @@ def pc_scatter(features: pd.DataFrame, assignments: np.ndarray, out_dir: str | P
     return path
 
 
-def feature_violin(features: pd.DataFrame, assignments: np.ndarray, columns: Optional[Iterable[str]], out_dir: str | Path) -> Path:
+def feature_violin(
+    features: pd.DataFrame,
+    assignments: AssignmentInput,
+    columns: Optional[Iterable[str]],
+    out_dir: str | Path,
+) -> Path:
     out_dir = _ensure_directory(out_dir)
     cols = list(columns) if columns is not None else [c for c in features.columns if c not in {"trial_id", "fly_id"}]
     fig, axes = plt.subplots(len(cols), 1, figsize=(6, 2 * len(cols)))
     if len(cols) == 1:
         axes = [axes]
+    assignment_array = _normalize_assignments(assignments, len(features))
     for ax, col in zip(axes, cols):
-        data = [features.loc[assignments == cluster, col].dropna() for cluster in np.unique(assignments)]
+        data = [
+            features.loc[assignment_array == cluster, col].dropna()
+            for cluster in np.unique(assignment_array)
+        ]
         ax.violinplot(data, showmeans=True)
         ax.set_title(col)
     axes[-1].set_xlabel("Cluster")

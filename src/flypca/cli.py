@@ -161,10 +161,28 @@ def report(
 ) -> None:
     features_df = pd.read_parquet(features_path) if features_path.suffix == ".parquet" else pd.read_csv(features_path)
     clusters_df = pd.read_csv(clusters_path)
+    clusters_df["trial_id"] = clusters_df["trial_id"].astype(str)
+    if clusters_df.duplicated("trial_id").any():
+        logging.warning(
+            "Duplicate trial_ids detected in clusters file %s; keeping last occurrence.",
+            clusters_path,
+        )
+        clusters_df = clusters_df.drop_duplicates("trial_id", keep="last")
     out_dir.mkdir(parents=True, exist_ok=True)
     figures_dir = out_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
-    assignments = clusters_df.set_index("trial_id").loc[features_df["trial_id"], "cluster"].to_numpy()
+    feature_trial_ids = features_df["trial_id"].astype(str)
+    cluster_series = (
+        clusters_df.set_index("trial_id")["cluster"].reindex(feature_trial_ids)
+    )
+    missing_assignments = cluster_series.isna()
+    if missing_assignments.any():
+        missing_trials = feature_trial_ids[missing_assignments].tolist()
+        raise ValueError(
+            "Missing cluster assignments for trials: %s"
+            % ", ".join(map(str, missing_trials))
+        )
+    assignments = cluster_series.to_numpy()
     projections = _load_projection_directory(projections_dir) if projections_dir else None
     result = _load_model(model) if model else None
     if result:
