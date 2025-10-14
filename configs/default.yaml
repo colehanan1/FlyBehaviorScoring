@@ -15,6 +15,18 @@ frequency:
 clustering:
   method: gmm
   n_components: 2
+  standardize: true
+  min_variance: 1.0e-6
+  component_range:
+    min: 2
+    max: 6
+  covariance_types:
+    - full
+    - diag
+  use_projections: false
+  combine_with_features: false
+  projection_components: 3
+  projection_timepoints: 200
 io:
   format: wide
   read_csv:

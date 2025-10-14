@@ -76,6 +76,8 @@ flypca features \
 
 flypca cluster \
   --features artifacts/features.parquet \
+  --config configs/default.yaml \
+  --projections-dir artifacts/projections/ \
   --method gmm \
   --out artifacts/cluster.csv \
   --label-column reaction  # optional if ground-truth labels exist
@@ -96,9 +98,21 @@ CLI entry points (Typer-based):
 flypca fit-lag-pca --data data/manifest.csv --config configs/default.yaml --out artifacts/models/lagpca.joblib
 flypca project --model artifacts/models/lagpca.joblib --data data/manifest.csv --out artifacts/projections/
 flypca features --data data/manifest.csv --config configs/default.yaml --model artifacts/models/lagpca.joblib --projections artifacts/projections/ --out artifacts/features.parquet
-flypca cluster --features artifacts/features.parquet --method gmm --out artifacts/cluster.csv --label-column reaction
+flypca cluster --features artifacts/features.parquet --config configs/default.yaml --projections-dir artifacts/projections/ --method gmm --out artifacts/cluster.csv --label-column reaction
 flypca report --features artifacts/features.parquet --clusters artifacts/cluster.csv --model artifacts/models/lagpca.joblib --projections artifacts/projections/ --out-dir artifacts/
 ```
+
+### Clustering configuration
+
+- `standardize`: z-score the feature/projection matrix before fitting the mixture model (enabled by default).
+- `min_variance`: drop near-constant columns prior to clustering to prevent degeneracy.
+- `component_range`: sweep a range of Gaussian mixture sizes (inclusive) and pick the lowest-BIC model with a valid silhouette.
+- `covariance_types`: evaluate multiple covariance structures (`full`, `diag`, etc.) during the sweep.
+- `use_projections`: replace the feature table with flattened lag-PCA trajectories loaded from `--projections-dir`.
+- `combine_with_features`: concatenate features and projections to form a joint representation.
+- `projection_components` / `projection_timepoints`: cap how many PCs and aligned samples are flattened from the NPZ files.
+
+When `use_projections` is enabled the CLI expects `projections/manifest.csv` (written by `flypca project`) so trial IDs can be matched automatically.
 
 Expected data layout for manifests:
 

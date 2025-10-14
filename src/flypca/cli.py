@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -86,6 +86,39 @@ def _load_projection_directory(path: Path) -> Dict[str, tuple[np.ndarray, np.nda
     return projections
 
 
+def _build_projection_matrix(
+    projections: Dict[str, tuple[np.ndarray, np.ndarray]],
+    trial_ids: Sequence[str],
+    n_components: Optional[int] = None,
+    max_timepoints: Optional[int] = None,
+) -> np.ndarray:
+    rows: list[np.ndarray] = []
+    expected_shape: Optional[Tuple[int, int]] = None
+    for trial_id in trial_ids:
+        if trial_id not in projections:
+            raise ValueError(f"Missing projection for trial {trial_id}")
+        _, pcs = projections[trial_id]
+        pcs_array = np.asarray(pcs)
+        if pcs_array.ndim != 2:
+            raise ValueError(f"Projection for {trial_id} has unexpected shape {pcs_array.shape}")
+        comp = n_components if n_components is not None else pcs_array.shape[1]
+        comp = min(comp, pcs_array.shape[1])
+        trimmed = pcs_array[:, :comp]
+        if max_timepoints is not None:
+            trimmed = trimmed[:max_timepoints, :]
+        if expected_shape is None:
+            expected_shape = trimmed.shape
+        elif trimmed.shape != expected_shape:
+            raise ValueError(
+                "Projection shapes are inconsistent: expected %s got %s for %s"
+                % (expected_shape, trimmed.shape, trial_id)
+            )
+        rows.append(trimmed.reshape(-1))
+    if not rows:
+        raise ValueError("No projections available for clustering")
+    return np.vstack(rows)
+
+
 @app.command("project")
 def project(
     model: Path = typer.Option(..., exists=True),
@@ -133,9 +166,66 @@ def cluster(
     method: str = typer.Option("gmm", help="Clustering method."),
     n_components: int = typer.Option(2, help="Number of clusters for GMM."),
     label_column: Optional[str] = typer.Option(None, help="Optional label column name."),
+    config: Optional[Path] = typer.Option(None, exists=True, help="Optional YAML config."),
+    projections_dir: Optional[Path] = typer.Option(None, exists=True, help="Optional directory of projections."),
 ) -> None:
+    cfg = _load_config_or_default(config)
     table = pd.read_parquet(features_path) if features_path.suffix == ".parquet" else pd.read_csv(features_path)
-    result = cluster_features(table, method=method, n_components=n_components)
+    cluster_cfg = cfg.get("clustering", {})
+    feature_columns = cluster_cfg.get("feature_columns")
+    min_variance = float(cluster_cfg.get("min_variance", 1e-6))
+    standardize = bool(cluster_cfg.get("standardize", True))
+    component_range_cfg = cluster_cfg.get("component_range")
+    if component_range_cfg is None:
+        component_values = None
+    else:
+        if isinstance(component_range_cfg, dict) and {"min", "max"} <= component_range_cfg.keys():
+            component_values = range(
+                int(component_range_cfg["min"]),
+                int(component_range_cfg["max"]) + 1,
+            )
+        else:
+            values = list(component_range_cfg) if isinstance(component_range_cfg, Sequence) else [component_range_cfg]
+            component_values = [int(v) for v in values]
+    covariance_types = cluster_cfg.get("covariance_types")
+    if covariance_types is not None:
+        covariance_types = [str(cov) for cov in covariance_types]
+    use_projections = bool(cluster_cfg.get("use_projections", False))
+    combine_projection = bool(cluster_cfg.get("combine_with_features", False))
+    projection_components = cluster_cfg.get("projection_components")
+    projection_timepoints = cluster_cfg.get("projection_timepoints")
+    projection_matrix = None
+    if projections_dir is not None or use_projections:
+        if projections_dir is None:
+            raise ValueError("Projections directory required when use_projections is true")
+        projections = _load_projection_directory(projections_dir)
+        trial_ids = table["trial_id"].astype(str).tolist()
+        projection_matrix = _build_projection_matrix(
+            projections,
+            trial_ids,
+            n_components=int(projection_components) if projection_components is not None else None,
+            max_timepoints=int(projection_timepoints) if projection_timepoints is not None else None,
+        )
+        use_projection_only = use_projections and not combine_projection
+        if use_projection_only:
+            logging.info("Clustering using projection trajectories only")
+        elif combine_projection:
+            logging.info("Clustering using combined feature and projection spaces")
+        else:
+            logging.info("Clustering using projection trajectories (default behaviour)")
+    result = cluster_features(
+        table,
+        method=method,
+        n_components=n_components,
+        random_state=cfg.get("seed", 0),
+        feature_columns=feature_columns,
+        min_variance=min_variance,
+        standardize=standardize,
+        component_range=component_values,
+        covariance_types=covariance_types,
+        projection_matrix=projection_matrix,
+        combine_projection=combine_projection,
+    )
     df_out = table[["trial_id", "fly_id"]].copy()
     df_out["cluster"] = result.assignments
     out.parent.mkdir(parents=True, exist_ok=True)
