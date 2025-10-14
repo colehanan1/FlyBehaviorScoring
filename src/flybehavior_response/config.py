@@ -27,6 +27,8 @@ class PipelineConfig:
     labels_csv: str
     file_hashes: Dict[str, str]
     class_balance: Dict[str, float]
+    logreg_solver: str
+    logreg_max_iter: int
 
     def to_json(self, path: Path) -> None:
         path.write_text(json.dumps(dataclasses.asdict(self), indent=2), encoding="utf-8")

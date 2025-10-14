@@ -63,6 +63,10 @@ def test_cli_train_eval_dry_run(tmp_path: Path) -> None:
             str(artifacts_dir),
             "--model",
             "logreg",
+            "--logreg-max-iter",
+            "200",
+            "--logreg-solver",
+            "liblinear",
         ]
     )
     _run_cli(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 import pandas as pd
 
@@ -23,13 +23,24 @@ DEFAULT_PLOTS_DIR = DEFAULT_ARTIFACTS_DIR / "plots"
 
 def _resolve_run_dir(artifacts_dir: Path, run_dir: Path | None) -> Path:
     if run_dir:
+        if not run_dir.exists():
+            raise FileNotFoundError(f"Specified run directory does not exist: {run_dir}")
         return run_dir
     if not artifacts_dir.exists():
         raise FileNotFoundError(f"Artifacts directory not found: {artifacts_dir}")
-    candidates = sorted([p for p in artifacts_dir.iterdir() if p.is_dir()], reverse=True)
+    candidates: List[Tuple[float, Path]] = []
+    for candidate in artifacts_dir.iterdir():
+        if not candidate.is_dir():
+            continue
+        has_model = any((candidate / f"model_{name}.joblib").exists() for name in supported_models())
+        if not has_model:
+            continue
+        candidates.append((candidate.stat().st_mtime, candidate))
     if not candidates:
-        raise FileNotFoundError(f"No run directories found in {artifacts_dir}")
-    return candidates[0]
+        raise FileNotFoundError(
+            f"No trained models found under {artifacts_dir}. Provide --run-dir to select a specific training output."
+        )
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def _parse_models(value: str | None) -> List[str]:
@@ -104,11 +115,24 @@ def _configure_parser() -> argparse.ArgumentParser:
         help="Validate inputs and create merged parquet",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    subparsers.add_parser(
+    train_parser = subparsers.add_parser(
         "train",
         parents=[common_parser],
         help="Train model pipelines",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    train_parser.add_argument(
+        "--logreg-solver",
+        type=str,
+        choices=["lbfgs", "liblinear", "saga"],
+        default="lbfgs",
+        help="Solver to use for logistic regression (iterative training)",
+    )
+    train_parser.add_argument(
+        "--logreg-max-iter",
+        type=int,
+        default=1000,
+        help="Maximum iterations for logistic regression; increase if convergence warnings occur",
     )
     subparsers.add_parser(
         "eval",
@@ -171,6 +195,8 @@ def _handle_train(args: argparse.Namespace) -> None:
         seed=args.seed,
         verbose=args.verbose,
         dry_run=args.dry_run,
+        logreg_solver=args.logreg_solver,
+        logreg_max_iter=args.logreg_max_iter,
     )
     logger = get_logger("train", verbose=args.verbose)
     logger.info("Training metrics: %s", json.dumps(metrics))
@@ -191,11 +217,12 @@ def _handle_eval(args: argparse.Namespace) -> None:
     if not args.data_csv or not args.labels_csv:
         raise ValueError("--data-csv and --labels-csv are required for eval")
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
+    logger = get_logger("eval", verbose=args.verbose)
+    logger.info("Using run directory: %s", run_dir)
     dataset = load_and_merge(args.data_csv, args.labels_csv, logger_name="eval")
     models = _load_models(run_dir)
     metrics = evaluate_models(models, dataset.frame.drop(columns=[LABEL_COLUMN]), dataset.frame[LABEL_COLUMN].astype(int))
     payload = {"models": metrics}
-    logger = get_logger("eval", verbose=args.verbose)
     logger.info("Evaluation metrics: %s", json.dumps(payload))
     if args.dry_run:
         logger.info("Dry run enabled; metrics not written")
@@ -212,6 +239,8 @@ def _handle_viz(args: argparse.Namespace) -> None:
         logger.info("Dry run enabled; skipping visualization generation")
         return
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
+    logger = get_logger("viz", verbose=args.verbose)
+    logger.info("Using run directory: %s", run_dir)
     generate_visuals(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,

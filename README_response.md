@@ -19,6 +19,8 @@ After installation, the `flybehavior-response` command becomes available. Common
 - `--use-raw-pca` / `--no-use-raw-pca`: Toggle raw trace PCA (default enabled).
 - `--n-pcs`: Number of PCA components (default 5).
 - `--model`: `lda`, `logreg`, or `both` (default `both`).
+- `--logreg-solver`: Logistic regression solver (`lbfgs`, `liblinear`, `saga`; default `lbfgs`).
+- `--logreg-max-iter`: Iteration cap for logistic regression (default `1000`; increase if convergence warnings appear).
 - `--cv`: Stratified folds for cross-validation (default 0 for none).
 - `--artifacts-dir`: Root directory for outputs (default `./artifacts`).
 - `--plots-dir`: Plot directory (default `./artifacts/plots`).
@@ -48,6 +50,10 @@ flybehavior-response train --data-csv all_envelope_rows_wide.csv \
 flybehavior-response eval --data-csv all_envelope_rows_wide.csv \
   --labels-csv scoring_results_opto_new_BINARY.csv
 
+# explicitly evaluate a past run directory
+flybehavior-response eval --data-csv all_envelope_rows_wide.csv \
+  --labels-csv scoring_results_opto_new_BINARY.csv --run-dir artifacts/2025-10-14T22-56-37Z
+
 flybehavior-response viz --data-csv all_envelope_rows_wide.csv \
   --labels-csv scoring_results_opto_new_BINARY.csv --plots-dir artifacts/plots
 
@@ -62,3 +68,5 @@ flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/
 - Duplicate keys across CSVs (`fly`, `fly_number`, `trial_label`) raise errors to prevent ambiguous merges.
 - Ratio features (`AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`) are supported but produce warnings because they are unstable.
 - Use `--dry-run` to confirm configuration before writing artifacts.
+- The CLI automatically selects the newest run directory containing model artifacts. Override with `--run-dir` if you maintain
+  multiple artifact trees (e.g., `artifacts/projections`).

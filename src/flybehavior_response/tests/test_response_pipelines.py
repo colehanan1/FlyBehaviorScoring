@@ -63,6 +63,16 @@ def test_model_pipelines_fit(tmp_path: Path) -> None:
     proba = logreg_pipeline.predict_proba(X)
     assert proba.shape == (6, 2)
 
+    liblinear_pipeline = build_model_pipeline(
+        preprocessor,
+        model_type=MODEL_LOGREG,
+        seed=0,
+        logreg_solver="liblinear",
+        logreg_max_iter=200,
+    )
+    liblinear_pipeline.fit(X, y)
+    assert liblinear_pipeline.predict(X).shape == (6,)
+
 
 def test_train_models_returns_metrics(tmp_path: Path) -> None:
     data_path, labels_path = _create_dataset(tmp_path)

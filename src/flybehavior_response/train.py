@@ -35,6 +35,8 @@ def train_models(
     seed: int,
     verbose: bool,
     dry_run: bool = False,
+    logreg_solver: str = "lbfgs",
+    logreg_max_iter: int = 1000,
 ) -> Dict[str, Dict[str, object]]:
     logger = get_logger(__name__, verbose=verbose)
     _set_seeds(seed)
@@ -64,6 +66,14 @@ def train_models(
         raise ValueError(f"Unsupported models requested: {invalid}")
 
     artifacts = make_run_artifacts(artifacts_dir) if not dry_run else None
+    if artifacts:
+        logger.info("Writing artifacts to %s", artifacts.run_dir)
+
+    trace_indices = [int(col.split("_")[-1]) for col in dataset.trace_columns]
+    if trace_indices:
+        trace_range = (min(trace_indices), max(trace_indices))
+    else:
+        trace_range = (0, 0)
 
     config = PipelineConfig(
         features=list(selected_features),
@@ -71,7 +81,7 @@ def train_models(
         use_raw_pca=use_raw_pca,
         seed=seed,
         models=list(requested_models),
-        trace_column_range=(min(int(col.split("_")[-1]) for col in dataset.trace_columns), max(int(col.split("_")[-1]) for col in dataset.trace_columns)),
+        trace_column_range=trace_range,
         data_csv=str(data_csv),
         labels_csv=str(labels_csv),
         file_hashes={
@@ -79,6 +89,8 @@ def train_models(
             "labels_csv": hash_file(labels_csv),
         },
         class_balance=compute_class_balance(dataset.frame[LABEL_COLUMN].astype(int).tolist()),
+        logreg_solver=logreg_solver,
+        logreg_max_iter=logreg_max_iter,
     )
 
     X = dataset.frame.drop(columns=[LABEL_COLUMN])
@@ -88,11 +100,37 @@ def train_models(
 
     for model_name in requested_models:
         logger.info("Training model: %s", model_name)
-        pipeline = build_model_pipeline(preprocessor, model_type=model_name, seed=seed)
+        pipeline = build_model_pipeline(
+            preprocessor,
+            model_type=model_name,
+            seed=seed,
+            logreg_solver=logreg_solver,
+            logreg_max_iter=logreg_max_iter,
+        )
         pipeline.fit(X, y)
         model_metrics = evaluate_models({model_name: pipeline}, X, y)[model_name]
         metrics[model_name] = model_metrics
         logger.info("Model %s accuracy: %.3f", model_name, model_metrics["accuracy"])
+        model_step = pipeline.named_steps["model"]
+        if hasattr(model_step, "n_iter_"):
+            n_iter = model_step.n_iter_
+            if isinstance(n_iter, np.ndarray):
+                iter_count = int(n_iter.max())
+            elif isinstance(n_iter, (list, tuple)):
+                iter_count = int(max(n_iter))
+            else:
+                iter_count = int(n_iter)
+            logger.info(
+                "Model %s iterations: %d (max_iter=%d)",
+                model_name,
+                iter_count,
+                getattr(model_step, "max_iter", -1),
+            )
+            if getattr(model_step, "max_iter", None) is not None and iter_count >= getattr(model_step, "max_iter"):
+                logger.warning(
+                    "Model %s reached max_iter without clear convergence; consider --logreg-max-iter",
+                    model_name,
+                )
         if cv >= 2:
             logger.info("Running %d-fold CV for %s", cv, model_name)
             cv_metrics = perform_cross_validation(
