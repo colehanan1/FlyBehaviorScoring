@@ -57,17 +57,17 @@ make demo
 
 ```bash
 flypca fit-lag-pca \
-  --data data/manifest.csv \
+  --data /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
   --config configs/default.yaml \
   --out artifacts/models/lagpca.joblib
 
 flypca project \
   --model artifacts/models/lagpca.joblib \
-  --data data/manifest.csv \
+  --data /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
   --out artifacts/projections/
 
 flypca features \
-  --data data/manifest.csv \
+  --data /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
   --config configs/default.yaml \
   --model artifacts/models/lagpca.joblib \
   --projections artifacts/projections/ \
