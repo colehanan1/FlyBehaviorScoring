@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
-from flypca.cluster import cluster_features
+from flypca.cluster import cluster_features, evaluate_with_labels
 
 
 def _make_feature_table() -> pd.DataFrame:
@@ -51,3 +53,13 @@ def test_cluster_features_with_projection_matrix() -> None:
     )
     unique = np.unique(result.assignments)
     assert unique.size == 2
+
+
+def test_evaluate_with_labels_accepts_binary(tmp_path: Path) -> None:
+    table = _make_feature_table()
+    features = table.drop(columns=["trial_id", "fly_id"])
+    labels = pd.Series([0] * 60 + [1] * 60)
+    fly_ids = table["fly_id"]
+    metrics = evaluate_with_labels(features, labels, fly_ids, n_folds=2)
+    assert 0.0 <= metrics["auroc"] <= 1.0
+    assert 0.0 <= metrics["auprc"] <= 1.0

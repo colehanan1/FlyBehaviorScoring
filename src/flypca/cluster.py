@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from sklearn import metrics
 from sklearn.mixture import GaussianMixture
+from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
@@ -227,7 +228,13 @@ def evaluate_with_labels(
     """Evaluate AUROC/AUPRC with leave-one-fly-out cross-validation."""
 
     df = features.copy()
-    df["label"] = labels.to_numpy()
+    label_numeric = pd.to_numeric(labels, errors="coerce")
+    if label_numeric.isna().any():
+        raise ValueError("Label column must contain numeric values (e.g. 0/1).")
+    unique_labels = np.unique(label_numeric.to_numpy())
+    if unique_labels.size < 2:
+        raise ValueError("At least two distinct label values are required.")
+    df["label"] = label_numeric.astype(int)
     df["fly_id"] = fly_ids.to_numpy()
     unique_flies = df["fly_id"].unique()
     if unique_flies.size < 2:
@@ -245,6 +252,13 @@ def evaluate_with_labels(
         X_test = _prepare_matrix(df.loc[test_mask].drop(columns=["label", "fly_id"]))
         y_train = df.loc[train_mask, "label"].to_numpy()
         y_test = df.loc[test_mask, "label"].to_numpy()
+        if np.unique(y_train).size < 2 or np.unique(y_test).size < 2:
+            LOGGER.debug(
+                "Skipping fold with insufficient class diversity (train classes=%s, test classes=%s)",
+                np.unique(y_train),
+                np.unique(y_test),
+            )
+            continue
         pipeline = Pipeline([
             ("scaler", StandardScaler()),
             ("clf", LogisticRegression(max_iter=1000, solver="lbfgs")),
@@ -253,7 +267,26 @@ def evaluate_with_labels(
         y_scores.append(pipeline.predict_proba(X_test)[:, 1])
         y_true.append(y_test)
     if not y_scores:
-        raise ValueError("No folds evaluated; check data balance.")
+        LOGGER.warning(
+            "No leave-one-fly-out folds evaluated; falling back to stratified cross-validation."
+        )
+        X_all = _prepare_matrix(df.drop(columns=["label", "fly_id"]))
+        y_all = df["label"].to_numpy()
+        skf = StratifiedKFold(n_splits=min(5, max(2, y_all.size // 2)), shuffle=True, random_state=0)
+        for train_idx, test_idx in skf.split(X_all, y_all):
+            y_train = y_all[train_idx]
+            y_test = y_all[test_idx]
+            if np.unique(y_train).size < 2 or np.unique(y_test).size < 2:
+                continue
+            pipeline = Pipeline([
+                ("scaler", StandardScaler()),
+                ("clf", LogisticRegression(max_iter=1000, solver="lbfgs")),
+            ])
+            pipeline.fit(X_all[train_idx], y_train)
+            y_scores.append(pipeline.predict_proba(X_all[test_idx])[:, 1])
+            y_true.append(y_test)
+        if not y_scores:
+            raise ValueError("Unable to compute supervised metrics due to class imbalance.")
     y_scores_concat = np.concatenate(y_scores)
     y_true_concat = np.concatenate(y_true)
     auroc = metrics.roc_auc_score(y_true_concat, y_scores_concat)
