@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from logging import Logger
 from pathlib import Path
 from typing import Iterable, List
 
@@ -98,6 +99,12 @@ def load_and_merge(data_csv: Path, labels_csv: Path, logger_name: str = __name__
     labels_df = _load_csv(labels_csv)
     logger.debug("Labels shape: %s", labels_df.shape)
 
+    logger.debug(
+        "Key column dtypes | data: %s | labels: %s",
+        {col: dtype.name for col, dtype in data_df[MERGE_KEYS].dtypes.items()},
+        {col: dtype.name for col, dtype in labels_df[MERGE_KEYS].dtypes.items()},
+    )
+
     _validate_keys(data_df, data_csv)
     _validate_keys(labels_df, labels_csv)
 
@@ -132,10 +139,19 @@ def load_and_merge(data_csv: Path, labels_csv: Path, logger_name: str = __name__
         logger.info("Dropped %d trace columns outside %s", len(to_drop), TRACE_RANGE)
 
     feature_cols = validate_feature_columns(data_df)
-    merged = pd.merge(data_df, labels_df[[*MERGE_KEYS, LABEL_COLUMN]], on=MERGE_KEYS, how="inner", validate="one_to_one")
+    merged = pd.merge(
+        data_df,
+        labels_df[[*MERGE_KEYS, LABEL_COLUMN]],
+        on=MERGE_KEYS,
+        how="inner",
+        validate="one_to_one",
+    )
 
     if merged.empty:
-        raise DataValidationError("Merge produced no rows. Verify matching keys across CSVs.")
+        _diagnose_merge_failure(data_df, labels_df, logger)
+        raise DataValidationError(
+            "Merge produced no rows. Verify matching keys across CSVs and column types."
+        )
 
     merged.sort_values(MERGE_KEYS, inplace=True)
     merged.reset_index(drop=True, inplace=True)
@@ -151,3 +167,59 @@ def load_and_merge(data_csv: Path, labels_csv: Path, logger_name: str = __name__
 def write_parquet(dataset: MergedDataset, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     dataset.frame.to_parquet(path, index=False)
+
+
+def _diagnose_merge_failure(
+    data_df: pd.DataFrame, labels_df: pd.DataFrame, logger: Logger
+) -> None:
+    """Emit detailed diagnostics to aid debugging of merge mismatches."""
+
+    data_keys = data_df[MERGE_KEYS].drop_duplicates()
+    label_keys = labels_df[MERGE_KEYS].drop_duplicates()
+
+    logger.error(
+        "Merge diagnostics | data rows: %d (unique keys: %d) | labels rows: %d (unique keys: %d)",
+        len(data_df),
+        len(data_keys),
+        len(labels_df),
+        len(label_keys),
+    )
+
+    data_key_set = {
+        tuple(row)
+        for row in data_keys.itertuples(index=False, name=None)
+    }
+    label_key_set = {
+        tuple(row)
+        for row in label_keys.itertuples(index=False, name=None)
+    }
+
+    only_in_data = list(data_key_set - label_key_set)[:5]
+    only_in_labels = list(label_key_set - data_key_set)[:5]
+
+    if only_in_data:
+        logger.error("Example keys present in data but missing in labels: %s", only_in_data)
+    if only_in_labels:
+        logger.error("Example keys present in labels but missing in data: %s", only_in_labels)
+
+    for key in MERGE_KEYS:
+        data_values = set(data_df[key].dropna().unique())
+        label_values = set(labels_df[key].dropna().unique())
+        missing_from_labels = list(data_values - label_values)[:5]
+        missing_from_data = list(label_values - data_values)[:5]
+        if missing_from_labels:
+            logger.error(
+                "Values for '%s' only in data: %s", key, missing_from_labels
+            )
+        if missing_from_data:
+            logger.error(
+                "Values for '%s' only in labels: %s", key, missing_from_data
+            )
+
+    for key in MERGE_KEYS:
+        logger.debug(
+            "Value sample for '%s' | data: %s | labels: %s",
+            key,
+            data_df[key].dropna().astype(str).unique()[:5].tolist(),
+            labels_df[key].dropna().astype(str).unique()[:5].tolist(),
+        )
