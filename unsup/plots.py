@@ -12,8 +12,8 @@ import pandas as pd
 from .pca_core import PCAResults
 
 
-ODOR_ON_FRAME = 1230
-ODOR_OFF_FRAME = 2430
+ODOR_ON_FRAME = 1200
+ODOR_OFF_FRAME = 2400
 
 
 def plot_variance(pca_results: PCAResults, path: str) -> None:
