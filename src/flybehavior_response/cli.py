@@ -42,66 +42,93 @@ def _parse_models(value: str | None) -> List[str]:
 
 def _configure_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fly behavior response modeling CLI")
-    parser.add_argument("--data-csv", type=Path, required=False, help="Path to data CSV")
-    parser.add_argument("--labels-csv", type=Path, required=False, help="Path to labels CSV")
-    parser.add_argument(
+
+    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser.add_argument("--data-csv", type=Path, help="Path to data CSV")
+    common_parser.add_argument("--labels-csv", type=Path, help="Path to labels CSV")
+    common_parser.add_argument(
         "--features",
         type=str,
         default=",".join(DEFAULT_FEATURES),
         help="Comma-separated list of engineered features to include",
     )
-    parser.add_argument(
+    common_parser.add_argument(
         "--include-auc-before",
         action="store_true",
         help="Include AUC-Before feature in addition to selected features",
     )
-    parser.add_argument(
+    common_parser.add_argument(
         "--use-raw-pca",
         dest="use_raw_pca",
         action="store_true",
         default=True,
         help="Include PCA on raw trace columns (default: enabled)",
     )
-    parser.add_argument(
+    common_parser.add_argument(
         "--no-use-raw-pca",
         dest="use_raw_pca",
         action="store_false",
         help="Disable PCA on raw trace columns",
     )
-    parser.add_argument("--n-pcs", type=int, default=5, help="Number of principal components to use for traces")
-    parser.add_argument(
+    common_parser.add_argument("--n-pcs", type=int, default=5, help="Number of principal components to use for traces")
+    common_parser.add_argument(
         "--model",
         type=str,
         choices=["lda", "logreg", "both"],
         default="both",
         help="Model to train/evaluate",
     )
-    parser.add_argument("--cv", type=int, default=0, help="Number of stratified folds for cross-validation")
-    parser.add_argument(
+    common_parser.add_argument("--cv", type=int, default=0, help="Number of stratified folds for cross-validation")
+    common_parser.add_argument(
         "--plots-dir",
         type=Path,
         default=DEFAULT_PLOTS_DIR,
         help="Directory to store generated plots",
     )
-    parser.add_argument(
+    common_parser.add_argument(
         "--artifacts-dir",
         type=Path,
         default=DEFAULT_ARTIFACTS_DIR,
         help="Directory to store artifacts",
     )
-    parser.add_argument("--run-dir", type=Path, help="Specific run directory to use for evaluation/visualization")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
-    parser.add_argument("--dry-run", action="store_true", help="Execute without writing artifacts")
+    common_parser.add_argument("--run-dir", type=Path, help="Specific run directory to use for evaluation/visualization")
+    common_parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    common_parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    common_parser.add_argument("--dry-run", action="store_true", help="Execute without writing artifacts")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("prepare", help="Validate inputs and create merged parquet")
-    subparsers.add_parser("train", help="Train model pipelines")
-    subparsers.add_parser("eval", help="Evaluate trained models")
-    subparsers.add_parser("viz", help="Generate visualizations")
+    subparsers.add_parser(
+        "prepare",
+        parents=[common_parser],
+        help="Validate inputs and create merged parquet",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    subparsers.add_parser(
+        "train",
+        parents=[common_parser],
+        help="Train model pipelines",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    subparsers.add_parser(
+        "eval",
+        parents=[common_parser],
+        help="Evaluate trained models",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    subparsers.add_parser(
+        "viz",
+        parents=[common_parser],
+        help="Generate visualizations",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
 
-    predict_parser = subparsers.add_parser("predict", help="Score new data with a trained pipeline")
+    predict_parser = subparsers.add_parser(
+        "predict",
+        parents=[common_parser],
+        help="Score new data with a trained pipeline",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     predict_parser.add_argument("--model-path", type=Path, required=True, help="Path to trained model joblib")
     predict_parser.add_argument(
         "--output-csv",

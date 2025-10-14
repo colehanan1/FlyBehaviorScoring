@@ -13,9 +13,8 @@ from flybehavior_response.io import LABEL_COLUMN
 def _run_cli(args: list[str]) -> None:
     env = os.environ.copy()
     src_path = str(Path(__file__).resolve().parents[2])
-    env['PYTHONPATH'] = src_path + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
-    subprocess.run([sys.executable, '-m', 'flybehavior_response.cli', *args], check=True, env=env)
-
+    env["PYTHONPATH"] = src_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    subprocess.run([sys.executable, "-m", "flybehavior_response.cli", *args], check=True, env=env)
 
 
 def _write_sample(tmp_path: Path) -> tuple[Path, Path]:
@@ -47,10 +46,34 @@ def _write_sample(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def test_cli_help_runs() -> None:
-    _run_cli(['--help'])
+    _run_cli(["--help"])
 
 
 def test_cli_train_eval_dry_run(tmp_path: Path) -> None:
     data_path, labels_path = _write_sample(tmp_path)
-    _run_cli(['--data-csv', str(data_path), '--labels-csv', str(labels_path), '--artifacts-dir', str(tmp_path / 'artifacts'), '--model', 'logreg', 'train'])
-    _run_cli(['--data-csv', str(data_path), '--labels-csv', str(labels_path), '--artifacts-dir', str(tmp_path / 'artifacts'), '--dry-run', 'eval'])
+    artifacts_dir = tmp_path / "artifacts"
+    _run_cli(
+        [
+            "train",
+            "--data-csv",
+            str(data_path),
+            "--labels-csv",
+            str(labels_path),
+            "--artifacts-dir",
+            str(artifacts_dir),
+            "--model",
+            "logreg",
+        ]
+    )
+    _run_cli(
+        [
+            "eval",
+            "--data-csv",
+            str(data_path),
+            "--labels-csv",
+            str(labels_path),
+            "--artifacts-dir",
+            str(artifacts_dir),
+            "--dry-run",
+        ]
+    )
