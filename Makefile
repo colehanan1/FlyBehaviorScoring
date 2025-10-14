@@ -1,36 +1,49 @@
-.PHONY: report
+PYTHON ?= python3
+VENV ?= .venv
+PIP := $(VENV)/bin/pip
+PYTHON_BIN := $(VENV)/bin/python
 
-# Environment variables expected:
-#   NPY   - path to the envelope matrix (required)
-#   META  - path to metadata JSON (required)
-#   OUT   - output directory (default: outputs/stats)
-#   DATASETS - dataset labels (default: testing)
-#   TARGET_TRIALS - target trials for Group A (default: 2,4,5)
-#   TIME_HZ - sampling rate (default: 40)
-#   RUN_ALL_FLAGS - additional flags passed to stats/run_all.py
-#   SUMMARY_ALPHA - alpha level for summary (default: 0.05)
+.PHONY: venv install test demo clean
 
-OUT ?= outputs/stats
-DATASETS ?= testing
-TARGET_TRIALS ?= 2,4,5
-TIME_HZ ?= 40
-RUN_ALL_FLAGS ?=
-SUMMARY_ALPHA ?= 0.05
+venv:
+$(PYTHON) -m venv $(VENV)
 
-report:
-	@if [ -z "$(NPY)" ] || [ -z "$(META)" ]; then \
-		echo "NPY and META variables must be set"; \
-		exit 1; \
-	fi
-	python stats/run_all.py \
-		--npy "$(NPY)" \
-		--meta "$(META)" \
-		--out "$(OUT)" \
-		--datasets "$(DATASETS)" \
-		--target-trials "$(TARGET_TRIALS)" \
-		--time-hz "$(TIME_HZ)" \
-	$(RUN_ALL_FLAGS)
-	python stats/summarize_results.py \
-		--in "$(OUT)" \
-		--out "$(OUT)/summary.txt" \
-		--alpha "$(SUMMARY_ALPHA)"
+install: venv
+$(PIP) install --upgrade pip
+$(PIP) install -e .
+
+test:
+$(PYTHON_BIN) -m pytest -q
+
+demo: install
+mkdir -p artifacts/demo
+$(PYTHON_BIN) - <<'PY'
+from pathlib import Path
+import pandas as pd
+from flypca.synthetic import generate_synthetic_trials
+
+trials, meta = generate_synthetic_trials(n_flies=4, trials_per_fly=10)
+rows = []
+for trial in trials:
+    df = pd.DataFrame({
+        "time": trial.time,
+        "distance": trial.distance,
+        "trial_id": trial.trial_id,
+        "fly_id": trial.fly_id,
+        "odor_on_idx": trial.odor_on_idx,
+        "odor_off_idx": trial.odor_off_idx,
+        "fps": trial.fps,
+    })
+    rows.append(df)
+data = pd.concat(rows, ignore_index=True)
+data.to_csv("artifacts/demo/data.csv", index=False)
+meta.to_csv("artifacts/demo/meta.csv", index=False)
+PY
+$(PYTHON_BIN) -m flypca.cli fit-lag-pca --data artifacts/demo/data.csv --config configs/default.yaml --out artifacts/demo/lagpca.joblib
+$(PYTHON_BIN) -m flypca.cli project --model artifacts/demo/lagpca.joblib --data artifacts/demo/data.csv --out artifacts/demo/projections
+$(PYTHON_BIN) -m flypca.cli features --data artifacts/demo/data.csv --config configs/default.yaml --model artifacts/demo/lagpca.joblib --projections artifacts/demo/projections --out artifacts/demo/features.parquet
+$(PYTHON_BIN) -m flypca.cli cluster --features artifacts/demo/features.parquet --out artifacts/demo/clusters.csv
+$(PYTHON_BIN) -m flypca.cli report --features artifacts/demo/features.parquet --clusters artifacts/demo/clusters.csv --model artifacts/demo/lagpca.joblib --projections artifacts/demo/projections --out-dir artifacts/demo
+
+clean:
+rm -rf $(VENV) artifacts/demo

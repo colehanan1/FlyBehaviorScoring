@@ -77,7 +77,7 @@ def _compute_statistic(diff: np.ndarray, method: str) -> Tuple[np.ndarray, np.nd
 
 
 def _find_clusters(stats: np.ndarray, pvals: np.ndarray, alpha: float) -> List[Tuple[int, np.ndarray]]:
-    mask = (pvals < alpha) & np.isfinite(stats)
+    mask = (pvals < alpha) & ~np.isnan(stats)
     clusters: List[Tuple[int, np.ndarray]] = []
     if not np.any(mask):
         return clusters
