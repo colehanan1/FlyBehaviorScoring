@@ -4,21 +4,109 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import List, Tuple
 
 import pandas as pd
+import typer
 
 from .evaluate import evaluate_models, load_pipeline, save_metrics
 from .features import DEFAULT_FEATURES, parse_feature_list
-from .io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge, write_parquet
+from .io import (
+    DEFAULT_TRACE_PREFIXES,
+    LABEL_COLUMN,
+    LABEL_INTENSITY_COLUMN,
+    load_and_merge,
+    write_parquet,
+)
 from .logging_utils import get_logger, set_global_logging
 from .modeling import supported_models
+from .prepare_raw import (
+    DEFAULT_OUTPUT_PATH as RAW_DEFAULT_OUTPUT_PATH,
+    DEFAULT_PREFIXES as RAW_DEFAULT_PREFIXES,
+    prepare_raw,
+)
 from .train import train_models
 from .visualize import generate_visuals
 
 DEFAULT_ARTIFACTS_DIR = Path("./artifacts")
 DEFAULT_PLOTS_DIR = DEFAULT_ARTIFACTS_DIR / "plots"
+
+
+prepare_raw_app = typer.Typer(add_completion=False, no_args_is_help=True)
+
+
+@prepare_raw_app.command(name="prepare-raw")
+def prepare_raw_cli(
+    *,
+    data_csv: Path = typer.Option(
+        ...,
+        "--data-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to per-trial raw coordinate CSV",
+    ),
+    labels_csv: Path = typer.Option(
+        ...,
+        "--labels-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to labels CSV",
+    ),
+    out: Path = typer.Option(
+        RAW_DEFAULT_OUTPUT_PATH,
+        "--out",
+        help="Destination CSV for prepared coordinates",
+    ),
+    fps: int = typer.Option(40, "--fps", help="Frame rate (frames per second)"),
+    odor_on_idx: int = typer.Option(1230, "--odor-on-idx", help="Index where odor stimulus begins"),
+    odor_off_idx: int = typer.Option(2430, "--odor-off-idx", help="Index where odor stimulus ends"),
+    truncate_before: int = typer.Option(
+        0,
+        "--truncate-before",
+        help="Number of frames to keep before odor onset (0 keeps all)",
+    ),
+    truncate_after: int = typer.Option(
+        0,
+        "--truncate-after",
+        help="Number of frames to keep after odor offset (0 keeps all)",
+    ),
+    series_prefixes: str = typer.Option(
+        ",".join(RAW_DEFAULT_PREFIXES),
+        "--series-prefixes",
+        help="Comma-separated list of time-series prefixes to extract",
+    ),
+    compute_dir_val: bool = typer.Option(
+        False,
+        "--compute-dir-val/--no-compute-dir-val",
+        help="Also compute dir_val distances between proboscis and eye coordinates",
+    ),
+    verbose: bool = typer.Option(False, "--verbose/--no-verbose", help="Enable verbose logging"),
+) -> None:
+    prefixes = [item.strip() for item in series_prefixes.split(",") if item.strip()]
+    if not prefixes:
+        raise typer.BadParameter("Provide at least one series prefix.")
+    set_global_logging(verbose=verbose)
+    prepared_df = prepare_raw(
+        data_csv=data_csv,
+        labels_csv=labels_csv,
+        out_path=out,
+        fps=fps,
+        odor_on_idx=odor_on_idx,
+        odor_off_idx=odor_off_idx,
+        truncate_before=truncate_before,
+        truncate_after=truncate_after,
+        series_prefixes=prefixes,
+        compute_dir_val=compute_dir_val,
+        verbose=verbose,
+    )
+    global_frames = int(prepared_df["total_frames"].iat[0]) if not prepared_df.empty else 0
+    typer.echo(
+        f"Prepared {len(prepared_df)} trials with {global_frames} frames per trial using prefixes {prefixes}. Output -> {out}"
+    )
 
 
 def _resolve_run_dir(artifacts_dir: Path, run_dir: Path | None) -> Path:
@@ -55,6 +143,15 @@ def _parse_models(value: str | None) -> List[str]:
     return [value]
 
 
+def _parse_series_prefixes(raw: str | None) -> List[str]:
+    if raw is None:
+        return list(DEFAULT_TRACE_PREFIXES)
+    prefixes = [item.strip() for item in raw.split(",") if item.strip()]
+    if not prefixes:
+        raise ValueError("At least one series prefix must be provided.")
+    return prefixes
+
+
 def _configure_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fly behavior response modeling CLI")
 
@@ -66,6 +163,12 @@ def _configure_parser() -> argparse.ArgumentParser:
         type=str,
         default=",".join(DEFAULT_FEATURES),
         help="Comma-separated list of engineered features to include",
+    )
+    common_parser.add_argument(
+        "--series-prefixes",
+        type=str,
+        default=",".join(DEFAULT_TRACE_PREFIXES),
+        help="Comma-separated list of time-series prefixes to load (default: dir_val_)",
     )
     common_parser.add_argument(
         "--include-auc-before",
@@ -172,7 +275,13 @@ def _handle_prepare(args: argparse.Namespace) -> None:
     if not args.data_csv or not args.labels_csv:
         raise ValueError("--data-csv and --labels-csv are required for prepare")
     logger = get_logger("prepare", verbose=args.verbose)
-    dataset = load_and_merge(args.data_csv, args.labels_csv, logger_name="prepare")
+    prefixes = _parse_series_prefixes(args.series_prefixes)
+    dataset = load_and_merge(
+        args.data_csv,
+        args.labels_csv,
+        logger_name="prepare",
+        trace_prefixes=prefixes,
+    )
     balance = dataset.frame[LABEL_COLUMN].astype(int).value_counts(normalize=True).to_dict()
     logger.info("Class balance: %s", balance)
     if args.dry_run:
@@ -187,6 +296,7 @@ def _handle_train(args: argparse.Namespace) -> None:
     if not args.data_csv or not args.labels_csv:
         raise ValueError("--data-csv and --labels-csv are required for train")
     features = parse_feature_list(args.features, args.include_auc_before)
+    prefixes = _parse_series_prefixes(args.series_prefixes)
     metrics = train_models(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,
@@ -201,6 +311,7 @@ def _handle_train(args: argparse.Namespace) -> None:
         dry_run=args.dry_run,
         logreg_solver=args.logreg_solver,
         logreg_max_iter=args.logreg_max_iter,
+        trace_prefixes=prefixes,
     )
     logger = get_logger("train", verbose=args.verbose)
     logger.info("Training metrics: %s", json.dumps(metrics))
@@ -223,7 +334,13 @@ def _handle_eval(args: argparse.Namespace) -> None:
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
     logger = get_logger("eval", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
-    dataset = load_and_merge(args.data_csv, args.labels_csv, logger_name="eval")
+    prefixes = _parse_series_prefixes(args.series_prefixes)
+    dataset = load_and_merge(
+        args.data_csv,
+        args.labels_csv,
+        logger_name="eval",
+        trace_prefixes=prefixes,
+    )
     models = _load_models(run_dir)
     drop_cols = [LABEL_COLUMN]
     if LABEL_INTENSITY_COLUMN in dataset.frame.columns:
@@ -254,6 +371,7 @@ def _handle_viz(args: argparse.Namespace) -> None:
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
     logger = get_logger("viz", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
+    prefixes = _parse_series_prefixes(args.series_prefixes)
     generate_visuals(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,
@@ -261,6 +379,7 @@ def _handle_viz(args: argparse.Namespace) -> None:
         seed=args.seed,
         output_dir=args.plots_dir,
         verbose=args.verbose,
+        trace_prefixes=prefixes,
     )
 
 
@@ -287,8 +406,21 @@ def _handle_predict(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    raw_args = list(argv) if argv is not None else sys.argv[1:]
+    if raw_args and raw_args[0] == "prepare-raw":
+        try:
+            prepare_raw_app(
+                prog_name="flybehavior-response",
+                args=raw_args,
+                standalone_mode=False,
+            )
+        except SystemExit as exc:  # pragma: no cover - delegated to Typer
+            if exc.code:
+                raise
+        return
+
     parser = _configure_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_args)
     set_global_logging(verbose=args.verbose)
 
     if args.command == "prepare":

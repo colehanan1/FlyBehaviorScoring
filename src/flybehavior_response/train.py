@@ -15,7 +15,7 @@ from sklearn.model_selection import train_test_split
 from .config import PipelineConfig, compute_class_balance, hash_file, make_run_artifacts
 from .evaluate import evaluate_models, perform_cross_validation, save_metrics
 from .features import build_column_transformer, validate_features
-from .io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge
+from .io import DEFAULT_TRACE_PREFIXES, LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge
 from .logging_utils import get_logger
 from .modeling import (
     MODEL_LDA,
@@ -47,11 +47,18 @@ def train_models(
     dry_run: bool = False,
     logreg_solver: str = "lbfgs",
     logreg_max_iter: int = 1000,
+    trace_prefixes: Sequence[str] | None = None,
 ) -> Dict[str, Dict[str, object]]:
     logger = get_logger(__name__, verbose=verbose)
     _set_seeds(seed)
 
-    dataset = load_and_merge(data_csv, labels_csv, logger_name=__name__)
+    dataset = load_and_merge(
+        data_csv,
+        labels_csv,
+        logger_name=__name__,
+        trace_prefixes=trace_prefixes,
+    )
+    logger.debug("Trace prefixes resolved to: %s", trace_prefixes or DEFAULT_TRACE_PREFIXES)
     selected_features = validate_features(features, dataset.feature_columns, logger_name=__name__)
     logger.debug("Selected features: %s", selected_features)
     logger.debug("Trace columns count: %d", len(dataset.trace_columns))
@@ -99,7 +106,11 @@ def train_models(
     if artifacts:
         logger.info("Writing artifacts to %s", artifacts.run_dir)
 
-    trace_indices = [int(col.split("_")[-1]) for col in dataset.trace_columns]
+    trace_indices = []
+    for col in dataset.trace_columns:
+        digits = "".join(ch for ch in col if ch.isdigit())
+        if digits:
+            trace_indices.append(int(digits))
     if trace_indices:
         trace_range = (min(trace_indices), max(trace_indices))
     else:
@@ -111,6 +122,9 @@ def train_models(
         "mean": float(sample_weights.mean()),
         "max": float(sample_weights.max()),
     }
+
+    prefix_list = list(trace_prefixes or DEFAULT_TRACE_PREFIXES)
+    logger.info("Trace series prefixes: %s", prefix_list)
 
     config = PipelineConfig(
         features=list(selected_features),
@@ -131,6 +145,7 @@ def train_models(
         label_intensity_counts=intensity_counts,
         label_weight_summary=weight_summary,
         label_weight_strategy="proportional_intensity",
+        trace_series_prefixes=prefix_list,
     )
 
     drop_columns = [LABEL_COLUMN]

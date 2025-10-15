@@ -69,9 +69,25 @@ flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/
 - Existing scripts that still pass `--model both` continue to run LDA + logistic regression only; update them to `--model all` to include the MLP.
 - Inspect `metrics.json` for `test` entries to verify held-out accuracy/F1 scores, and review `confusion_matrix_<model>.png` in the run directory for quick diagnostics.
 
+## Preparing raw coordinate inputs
+
+- Use the Typer subcommand to convert per-trial eye/proboscis traces into a modeling-ready CSV with metadata and optional `dir_val` distances:
+
+  ```bash
+  flybehavior-response prepare-raw \
+    --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_per_trial.csv \
+    --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
+    --out /home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv \
+    --fps 40 --odor-on-idx 1230 --odor-off-idx 2430 \
+    --truncate-before 0 --truncate-after 0 \
+    --series-prefixes "eye_x_f,eye_y_f,prob_x_f,prob_y_f" \
+    --no-compute-dir-val
+  ```
+- The output keeps raw values with consistent 0-based frame indices per prefix, adds timing metadata, and can be fed directly to `flybehavior-response train --series-prefixes eye_x_f,eye_y_f,prob_x_f,prob_y_f`.
+
 ## Label weighting and troubleshooting
 
-- Ensure trace columns range from `dir_val_0` through `dir_val_3600`; any higher indices are removed automatically.
+- Ensure trace columns follow contiguous 0-based numbering for each prefix (default `dir_val_`). Columns beyond `dir_val_3600` are trimmed automatically for legacy datasets.
 - `user_score_odor` must contain non-negative integers where `0` denotes no response and higher integers (e.g., `1-5`) encode increasing reaction strength. Rows with missing labels are dropped automatically, while negative or fractional scores raise schema errors.
 - Training uses proportional sample weights derived from label intensity so stronger reactions (e.g., `5`) contribute more than weaker ones (e.g., `1`). Review the logged weight summaries if model behaviour seems unexpected.
 - Duplicate keys across CSVs (`fly`, `fly_number`, `trial_label`) raise errors to prevent ambiguous merges.
