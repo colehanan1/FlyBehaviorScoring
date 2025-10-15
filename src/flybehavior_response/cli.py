@@ -335,6 +335,22 @@ def _configure_parser() -> argparse.ArgumentParser:
         default=DEFAULT_ARTIFACTS_DIR / "predictions.csv",
         help="Path to write predictions CSV",
     )
+    predict_parser.add_argument("--fly", type=str, help="Filter predictions to a specific fly identifier")
+    predict_parser.add_argument(
+        "--fly-number",
+        type=int,
+        help="Filter predictions to a specific numeric fly identifier",
+    )
+    predict_parser.add_argument(
+        "--trial-label",
+        type=str,
+        help="Filter predictions to a specific trial label (aliases legacy testing_trial)",
+    )
+    predict_parser.add_argument(
+        "--testing-trial",
+        type=str,
+        help="Legacy alias for --trial-label when datasets expose a testing_trial column",
+    )
 
     return parser
 
@@ -466,22 +482,90 @@ def _handle_viz(args: argparse.Namespace) -> None:
 def _handle_predict(args: argparse.Namespace) -> None:
     if not args.data_csv:
         raise ValueError("--data-csv is required for predict")
+    logger = get_logger("predict", verbose=args.verbose)
+    logger.info("Loading prediction data: %s", args.data_csv)
     model = load_pipeline(args.model_path)
     data_df = pd.read_csv(args.data_csv)
-    keys = [col for col in ["fly", "fly_number", "trial_label"] if col in data_df.columns]
-    output = data_df[keys].copy() if keys else pd.DataFrame()
-    output["prediction"] = model.predict(data_df)
+    logger.debug("Prediction dataset shape: %s", data_df.shape)
+
+    original_columns = set(data_df.columns)
+    had_testing_trial_column = "testing_trial" in original_columns
+    had_trial_label_column = "trial_label" in original_columns
+    if not had_trial_label_column and had_testing_trial_column:
+        logger.info("Detected legacy 'testing_trial' column; treating it as 'trial_label'.")
+        data_df = data_df.rename(columns={"testing_trial": "trial_label"})
+        had_trial_label_column = True
+
+    filtered_df = data_df.copy()
+    applied_filters: list[str] = []
+
+    if args.fly is not None:
+        if "fly" not in filtered_df.columns:
+            raise ValueError("Column 'fly' missing from prediction CSV; cannot filter by fly.")
+        filtered_df = filtered_df.loc[filtered_df["fly"].astype(str) == args.fly]
+        applied_filters.append(f"fly={args.fly}")
+
+    if args.fly_number is not None:
+        if "fly_number" not in filtered_df.columns:
+            raise ValueError(
+                "Column 'fly_number' missing from prediction CSV; cannot filter by fly number."
+            )
+        numeric_fly_numbers = pd.to_numeric(filtered_df["fly_number"], errors="coerce")
+        filtered_df = filtered_df.loc[numeric_fly_numbers == args.fly_number]
+        applied_filters.append(f"fly_number={args.fly_number}")
+
+    trial_filter_value = args.trial_label if args.trial_label is not None else args.testing_trial
+    if trial_filter_value is not None:
+        if "trial_label" not in filtered_df.columns:
+            missing_column = "trial_label" if had_trial_label_column else "testing_trial"
+            raise ValueError(
+                f"Column '{missing_column}' missing from prediction CSV; cannot filter by trial."
+            )
+        filtered_df = filtered_df.loc[
+            filtered_df["trial_label"].astype(str) == str(trial_filter_value)
+        ]
+        applied_filters.append(f"trial_label={trial_filter_value}")
+
+    if filtered_df.empty:
+        criteria = ", ".join(applied_filters) if applied_filters else "provided dataset"
+        raise ValueError(f"No rows matched the prediction filters ({criteria}).")
+
+    if applied_filters and len(filtered_df) > 1:
+        raise ValueError(
+            "Prediction filters %s matched %d rows; refine selection with more specific values."
+            % (applied_filters, len(filtered_df))
+        )
+
+    filtered_df = filtered_df.copy()
+    if had_testing_trial_column and "testing_trial" not in filtered_df.columns:
+        filtered_df["testing_trial"] = filtered_df.get("trial_label", pd.NA)
+
+    feature_df = filtered_df.drop(columns=[LABEL_COLUMN, LABEL_INTENSITY_COLUMN], errors="ignore")
+
+    logger.info(
+        "Scoring %d row(s) with model %s", len(filtered_df), args.model_path.name
+    )
+    predictions = model.predict(feature_df)
+
+    output_columns = [
+        col
+        for col in ["dataset", "fly", "fly_number", "trial_label", "testing_trial"]
+        if col in filtered_df.columns
+    ]
+    output = filtered_df[output_columns].copy() if output_columns else pd.DataFrame()
+    output["prediction"] = predictions.astype(int)
+
     if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(data_df)
+        proba = model.predict_proba(feature_df)
         if proba.ndim == 2 and proba.shape[1] >= 2:
             output["probability"] = proba[:, 1]
+
     if args.dry_run:
-        logger = get_logger("predict", verbose=args.verbose)
         logger.info("Dry run enabled; predictions not written")
         return
+
     args.output_csv.parent.mkdir(parents=True, exist_ok=True)
     output.to_csv(args.output_csv, index=False)
-    logger = get_logger("predict", verbose=args.verbose)
     logger.info("Predictions written to %s", args.output_csv)
 
 

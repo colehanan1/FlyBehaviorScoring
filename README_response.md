@@ -27,6 +27,7 @@ After installation, the `flybehavior-response` command becomes available. Common
 - `--seed`: Random seed (default 42).
 - `--dry-run`: Validate pipeline without saving artifacts.
 - `--verbose`: Enable DEBUG logging.
+- `--fly`, `--fly-number`, `--trial-label`/`--testing-trial` (predict only): Filter predictions to a single trial.
 
 ### Subcommands
 
@@ -59,6 +60,11 @@ flybehavior-response viz --data-csv /home/ramanlab/Documents/cole/Data/Opto/Comb
 
 flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/model_logreg.joblib \
   --output-csv artifacts/predictions.csv
+
+# score a specific fly/trial tuple in the original envelope export
+flybehavior-response predict --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_envelope_rows_wide.csv \
+  --model-path artifacts/<run>/model_logreg.joblib --fly september_09_fly_3 --fly-number 3 --trial-label t2 \
+  --output-csv artifacts/predictions_envelope_t2.csv
 ```
 
 ## Training with the MLP classifier
@@ -66,6 +72,7 @@ flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/
 - `--model all` trains LDA, logistic regression, and the new MLP classifier using a shared stratified 80/20 split and writes per-model confusion matrices into the run directory.
 - Each training run now exports `predictions_<model>_{train,test}.csv` so you can audit which trials were classified correctly, along with their reaction probabilities and sample weights.
 - `--model mlp` isolates the neural network if you want to iterate quickly without re-fitting the classical baselines.
+- The `mlp` option instantiates scikit-learn's `MLPClassifier` with a single hidden layer of 100 neurons sandwiched between the input features (raw PCA scores plus any engineered features you kept) and the two-unit output layer for the binary reaction task. This structure mirrors the default `hidden_layer_sizes=(100,)`, so you effectively have three layers end-to-end: an input layer sized to your feature count, one hidden representation, and an output layer producing the reaction logits.
 - Existing scripts that still pass `--model both` continue to run LDA + logistic regression only; update them to `--model all` to include the MLP.
 - Inspect `metrics.json` for `test` entries to verify held-out accuracy/F1 scores, and review `confusion_matrix_<model>.png` in the run directory for quick diagnostics.
 
@@ -124,6 +131,8 @@ flybehavior-response predict --raw-series \
   --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.csv \
   --model-path artifacts/<timestamp>/model_logreg.joblib \
   --output-csv artifacts/<timestamp>/raw_predictions.csv
+
+The raw workflow is always two-step: generate a per-trial table with `prepare-raw`, then invoke `train`, `eval`, `viz`, and `predict` with `--raw-series` (or explicit `--series-prefixes`) so every command consumes the four eye/proboscis streams exactly as prepared.
 ```
 
 During training the loader automatically recognises that engineered features are absent and logs that it is proceeding in a trace-only configuration. Keep PCA enabled (`--use-raw-pca`, the default) to derive compact principal components from the four coordinate streams.
@@ -140,6 +149,20 @@ flybehavior-response train \
 ```
 
 The loader detects that engineered features are missing, logs a trace-only message, and continues with PCA on the `dir_val_` traces. The same behaviour applies to `eval`, `viz`, and `predict`, so the entire pipeline operates normally on these legacy tables.
+
+### Scoring individual trials
+
+- Use the new `predict` filters when you want to score a single envelope or raw trial without extracting it manually:
+
+  ```bash
+  flybehavior-response predict \
+    --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_envelope_rows_wide.csv \
+    --model-path artifacts/<run>/model_logreg.joblib \
+    --fly september_09_fly_3 --fly-number 3 --testing-trial t2 \
+    --output-csv artifacts/<run>/prediction_september_09_fly_3_t2.csv
+  ```
+
+- The loader automatically treats a `testing_trial` column as the canonical `trial_label`, so legacy exports continue to work. Supply any subset of the filters (`--fly`, `--fly-number`, `--trial-label`/`--testing-trial`) to narrow the prediction set; when all three are present, exactly one trial is returned and written with its reaction probability.
 
 ## Label weighting and troubleshooting
 
