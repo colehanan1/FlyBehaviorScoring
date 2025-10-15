@@ -44,8 +44,12 @@ def _resolve_run_dir(artifacts_dir: Path, run_dir: Path | None) -> Path:
 
 
 def _parse_models(value: str | None) -> List[str]:
-    if value is None or value == "both":
-        return ["both"]
+    if value is None:
+        return list(supported_models())
+    if value == "all":
+        return list(supported_models())
+    if value == "both":
+        return ["lda", "logreg"]
     if value not in supported_models():
         raise ValueError(f"Unsupported model choice: {value}")
     return [value]
@@ -85,9 +89,9 @@ def _configure_parser() -> argparse.ArgumentParser:
     common_parser.add_argument(
         "--model",
         type=str,
-        choices=["lda", "logreg", "both"],
-        default="both",
-        help="Model to train/evaluate",
+        choices=["lda", "logreg", "mlp", "both", "all"],
+        default="all",
+        help="Model to train/evaluate ('all' runs every supported model; 'both' keeps LDA+logreg")",
     )
     common_parser.add_argument("--cv", type=int, default=0, help="Number of stratified folds for cross-validation")
     common_parser.add_argument(
