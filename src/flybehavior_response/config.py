@@ -32,6 +32,7 @@ class PipelineConfig:
     label_intensity_counts: Dict[str, int]
     label_weight_summary: Dict[str, float]
     label_weight_strategy: str
+    trace_series_prefixes: List[str] = field(default_factory=list)
 
     def to_json(self, path: Path) -> None:
         path.write_text(json.dumps(dataclasses.asdict(self), indent=2), encoding="utf-8")
@@ -44,12 +45,14 @@ class PipelineConfig:
         data.setdefault("label_intensity_counts", {})
         data.setdefault("label_weight_summary", {})
         data.setdefault("label_weight_strategy", "proportional_intensity")
+        data.setdefault("trace_series_prefixes", [])
         data["label_intensity_counts"] = {
             str(k): int(v) for k, v in data["label_intensity_counts"].items()
         }
         data["label_weight_summary"] = {
             str(k): float(v) for k, v in data["label_weight_summary"].items()
         }
+        data["trace_series_prefixes"] = list(data["trace_series_prefixes"])
         return cls(**data)
 
 
