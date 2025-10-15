@@ -18,7 +18,7 @@ After installation, the `flybehavior-response` command becomes available. Common
 - `--include-auc-before`: Adds `AUC-Before` to the feature set.
 - `--use-raw-pca` / `--no-use-raw-pca`: Toggle raw trace PCA (default enabled).
 - `--n-pcs`: Number of PCA components (default 5).
-- `--model`: `lda`, `logreg`, or `both` (default `both`).
+- `--model`: `lda`, `logreg`, `mlp`, `both`, or `all` (default `all`).
 - `--logreg-solver`: Logistic regression solver (`lbfgs`, `liblinear`, `saga`; default `lbfgs`).
 - `--logreg-max-iter`: Iteration cap for logistic regression (default `1000`; increase if convergence warnings appear).
 - `--cv`: Stratified folds for cross-validation (default 0 for none).
@@ -45,7 +45,7 @@ flybehavior-response prepare --data-csv /home/ramanlab/Documents/cole/Data/Opto/
   --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv
 
 flybehavior-response train --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv --model both --n-pcs 5
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv --model all --n-pcs 5
 
 flybehavior-response eval --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
   --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv
@@ -60,6 +60,13 @@ flybehavior-response viz --data-csv /home/ramanlab/Documents/cole/Data/Opto/Comb
 flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/model_logreg.joblib \
   --output-csv artifacts/predictions.csv
 ```
+
+## Training with the MLP classifier
+
+- `--model all` trains LDA, logistic regression, and the new MLP classifier using a shared stratified 80/20 split and writes per-model confusion matrices into the run directory.
+- `--model mlp` isolates the neural network if you want to iterate quickly without re-fitting the classical baselines.
+- Existing scripts that still pass `--model both` continue to run LDA + logistic regression only; update them to `--model all` to include the MLP.
+- Inspect `metrics.json` for `test` entries to verify held-out accuracy/F1 scores, and review `confusion_matrix_<model>.png` in the run directory for quick diagnostics.
 
 ## Label weighting and troubleshooting
 

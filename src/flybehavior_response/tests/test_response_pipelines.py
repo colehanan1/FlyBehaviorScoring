@@ -93,5 +93,6 @@ def test_train_models_returns_metrics(tmp_path: Path) -> None:
     )
     assert set(metrics["models"].keys()) == {MODEL_LDA, MODEL_LOGREG}
     assert "accuracy" in metrics["models"][MODEL_LDA]
+    assert "test" in metrics["models"][MODEL_LDA]
     assert "cross_validation" in metrics["models"][MODEL_LDA]
     assert "weighted" in metrics["models"][MODEL_LOGREG]

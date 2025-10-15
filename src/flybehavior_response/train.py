@@ -74,10 +74,22 @@ def train_models(
     )
 
     requested_models = list(models)
-    if "both" in requested_models:
-        requested_models = [MODEL_LDA, MODEL_LOGREG]
     if not requested_models:
         requested_models = list(supported_models())
+
+    if "both" in requested_models or "all" in requested_models:
+        logger.warning(
+            "Received legacy model keyword in train_models; please provide explicit model list."
+        )
+        merged = []
+        for name in requested_models:
+            if name == "both":
+                merged.extend([MODEL_LDA, MODEL_LOGREG])
+            elif name == "all":
+                merged.extend(supported_models())
+            else:
+                merged.append(name)
+        requested_models = list(dict.fromkeys(merged))
 
     invalid = [name for name in requested_models if name not in supported_models()]
     if invalid:
