@@ -29,6 +29,9 @@ class PipelineConfig:
     class_balance: Dict[str, float]
     logreg_solver: str
     logreg_max_iter: int
+    label_intensity_counts: Dict[str, int]
+    label_weight_summary: Dict[str, float]
+    label_weight_strategy: str
 
     def to_json(self, path: Path) -> None:
         path.write_text(json.dumps(dataclasses.asdict(self), indent=2), encoding="utf-8")
@@ -38,6 +41,15 @@ class PipelineConfig:
     def from_json(cls, path: Path) -> "PipelineConfig":
         data = json.loads(path.read_text(encoding="utf-8"))
         data["trace_column_range"] = tuple(data["trace_column_range"])
+        data.setdefault("label_intensity_counts", {})
+        data.setdefault("label_weight_summary", {})
+        data.setdefault("label_weight_strategy", "proportional_intensity")
+        data["label_intensity_counts"] = {
+            str(k): int(v) for k, v in data["label_intensity_counts"].items()
+        }
+        data["label_weight_summary"] = {
+            str(k): float(v) for k, v in data["label_weight_summary"].items()
+        }
         return cls(**data)
 
 

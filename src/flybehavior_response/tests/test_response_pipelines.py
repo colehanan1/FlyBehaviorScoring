@@ -6,9 +6,10 @@ import numpy as np
 import pandas as pd
 
 from flybehavior_response.features import build_column_transformer, validate_features
-from flybehavior_response.io import LABEL_COLUMN, load_and_merge
+from flybehavior_response.io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge
 from flybehavior_response.modeling import MODEL_LDA, MODEL_LOGREG, build_model_pipeline
 from flybehavior_response.train import train_models
+from flybehavior_response.weights import expand_samples_by_weight
 
 
 def _create_dataset(tmp_path: Path) -> tuple[Path, Path]:
@@ -31,7 +32,7 @@ def _create_dataset(tmp_path: Path) -> tuple[Path, Path]:
             "fly": ["a", "b", "c", "d", "e", "f"],
             "fly_number": [1, 2, 3, 4, 5, 6],
             "trial_label": ["t1", "t2", "t3", "t4", "t5", "t6"],
-            LABEL_COLUMN: [0, 1, 0, 1, 0, 1],
+            LABEL_COLUMN: [0, 1, 0, 2, 0, 5],
         }
     )
     data_path = tmp_path / "data.csv"
@@ -53,13 +54,14 @@ def test_model_pipelines_fit(tmp_path: Path) -> None:
         n_pcs=2,
         seed=42,
     )
-    X = dataset.frame.drop(columns=[LABEL_COLUMN])
+    X = dataset.frame.drop(columns=[LABEL_COLUMN, LABEL_INTENSITY_COLUMN])
     y = dataset.frame[LABEL_COLUMN].astype(int)
     lda_pipeline = build_model_pipeline(preprocessor, model_type=MODEL_LDA, seed=42)
-    lda_pipeline.fit(X, y)
+    X_expanded, y_expanded = expand_samples_by_weight(X, y, dataset.sample_weights)
+    lda_pipeline.fit(X_expanded, y_expanded)
     assert lda_pipeline.predict(X).shape == (6,)
     logreg_pipeline = build_model_pipeline(preprocessor, model_type=MODEL_LOGREG, seed=42)
-    logreg_pipeline.fit(X, y)
+    logreg_pipeline.fit(X, y, model__sample_weight=dataset.sample_weights.to_numpy())
     proba = logreg_pipeline.predict_proba(X)
     assert proba.shape == (6, 2)
 
@@ -70,7 +72,7 @@ def test_model_pipelines_fit(tmp_path: Path) -> None:
         logreg_solver="liblinear",
         logreg_max_iter=200,
     )
-    liblinear_pipeline.fit(X, y)
+    liblinear_pipeline.fit(X, y, model__sample_weight=dataset.sample_weights.to_numpy())
     assert liblinear_pipeline.predict(X).shape == (6,)
 
 
@@ -92,3 +94,4 @@ def test_train_models_returns_metrics(tmp_path: Path) -> None:
     assert set(metrics["models"].keys()) == {MODEL_LDA, MODEL_LOGREG}
     assert "accuracy" in metrics["models"][MODEL_LDA]
     assert "cross_validation" in metrics["models"][MODEL_LDA]
+    assert "weighted" in metrics["models"][MODEL_LOGREG]

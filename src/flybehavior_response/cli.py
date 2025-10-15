@@ -11,7 +11,7 @@ import pandas as pd
 
 from .evaluate import evaluate_models, load_pipeline, save_metrics
 from .features import DEFAULT_FEATURES, parse_feature_list
-from .io import LABEL_COLUMN, load_and_merge, write_parquet
+from .io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge, write_parquet
 from .logging_utils import get_logger, set_global_logging
 from .modeling import supported_models
 from .train import train_models
@@ -221,7 +221,16 @@ def _handle_eval(args: argparse.Namespace) -> None:
     logger.info("Using run directory: %s", run_dir)
     dataset = load_and_merge(args.data_csv, args.labels_csv, logger_name="eval")
     models = _load_models(run_dir)
-    metrics = evaluate_models(models, dataset.frame.drop(columns=[LABEL_COLUMN]), dataset.frame[LABEL_COLUMN].astype(int))
+    drop_cols = [LABEL_COLUMN]
+    if LABEL_INTENSITY_COLUMN in dataset.frame.columns:
+        drop_cols.append(LABEL_INTENSITY_COLUMN)
+    features = dataset.frame.drop(columns=drop_cols)
+    metrics = evaluate_models(
+        models,
+        features,
+        dataset.frame[LABEL_COLUMN].astype(int),
+        sample_weight=dataset.sample_weights,
+    )
     payload = {"models": metrics}
     logger.info("Evaluation metrics: %s", json.dumps(payload))
     if args.dry_run:

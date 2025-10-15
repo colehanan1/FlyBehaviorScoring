@@ -12,8 +12,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from .config import PipelineConfig
-from .evaluate import evaluate_models
-from .io import LABEL_COLUMN, load_and_merge
+from .io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge
 from .logging_utils import get_logger
 from .modeling import MODEL_LDA, MODEL_LOGREG
 
@@ -116,7 +115,15 @@ def generate_visuals(
         from joblib import load
 
         lda_model = load(lda_path)
-        plots["lda_scores"] = plot_lda_scores(lda_model, dataset.frame.drop(columns=[LABEL_COLUMN]), labels, output_dir / "lda_scores.png")
+        drop_cols = [LABEL_COLUMN]
+        if LABEL_INTENSITY_COLUMN in dataset.frame.columns:
+            drop_cols.append(LABEL_INTENSITY_COLUMN)
+        plots["lda_scores"] = plot_lda_scores(
+            lda_model,
+            dataset.frame.drop(columns=drop_cols),
+            labels,
+            output_dir / "lda_scores.png",
+        )
     else:
         logger.info("LDA model not found at %s; skipping LDA score plot.", lda_path)
 
@@ -125,7 +132,15 @@ def generate_visuals(
         from joblib import load
 
         logreg_model = load(logreg_path)
-        plots["roc_curve"] = plot_roc_curve(logreg_model, dataset.frame.drop(columns=[LABEL_COLUMN]), labels, output_dir / "roc.png")
+        drop_cols = [LABEL_COLUMN]
+        if LABEL_INTENSITY_COLUMN in dataset.frame.columns:
+            drop_cols.append(LABEL_INTENSITY_COLUMN)
+        plots["roc_curve"] = plot_roc_curve(
+            logreg_model,
+            dataset.frame.drop(columns=drop_cols),
+            labels,
+            output_dir / "roc.png",
+        )
     else:
         logger.info("Logistic Regression model not found at %s; skipping ROC plot.", logreg_path)
 

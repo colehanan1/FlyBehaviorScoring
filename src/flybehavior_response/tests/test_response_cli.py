@@ -35,7 +35,7 @@ def _write_sample(tmp_path: Path) -> tuple[Path, Path]:
             "fly": ["a", "b"],
             "fly_number": [1, 2],
             "trial_label": ["t1", "t2"],
-            LABEL_COLUMN: [0, 1],
+            LABEL_COLUMN: [0, 4],
         }
     )
     data_path = tmp_path / "data.csv"

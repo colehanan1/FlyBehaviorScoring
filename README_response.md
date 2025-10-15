@@ -13,7 +13,7 @@ pip install -e .
 After installation, the `flybehavior-response` command becomes available. Common arguments:
 
 - `--data-csv`: Wide proboscis trace CSV.
-- `--labels-csv`: Labels CSV with `user_score_odor`.
+- `--labels-csv`: Labels CSV with `user_score_odor` scores (0 = no response, 1-5 = increasing response strength).
 - `--features`: Comma-separated engineered feature list (default: `AUC-During,TimeToPeak-During,Peak-Value`).
 - `--include-auc-before`: Adds `AUC-Before` to the feature set.
 - `--use-raw-pca` / `--no-use-raw-pca`: Toggle raw trace PCA (default enabled).
@@ -32,7 +32,7 @@ After installation, the `flybehavior-response` command becomes available. Common
 
 | Command | Purpose |
 | --- | --- |
-| `prepare` | Validate inputs, report class balance, write merged parquet. |
+| `prepare` | Validate inputs, report class balance and intensity distribution, write merged parquet. |
 | `train` | Fit preprocessing + models, compute metrics, save joblib/config/metrics. |
 | `eval` | Reload saved models and recompute metrics on merged data. |
 | `viz` | Generate PC scatter, LDA score histogram, and ROC curve (if available). |
@@ -61,10 +61,11 @@ flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/
   --output-csv artifacts/predictions.csv
 ```
 
-## Troubleshooting
+## Label weighting and troubleshooting
 
 - Ensure trace columns range from `dir_val_0` through `dir_val_3600`; any higher indices are removed automatically.
-- Labels must be binary (`0` or `1`) with no missing values; rows with missing labels are dropped during preparation.
+- `user_score_odor` must contain non-negative integers where `0` denotes no response and higher integers (e.g., `1-5`) encode increasing reaction strength. Rows with missing labels are dropped automatically, while negative or fractional scores raise schema errors.
+- Training uses proportional sample weights derived from label intensity so stronger reactions (e.g., `5`) contribute more than weaker ones (e.g., `1`). Review the logged weight summaries if model behaviour seems unexpected.
 - Duplicate keys across CSVs (`fly`, `fly_number`, `trial_label`) raise errors to prevent ambiguous merges.
 - Ratio features (`AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`) are supported but produce warnings because they are unstable.
 - Use `--dry-run` to confirm configuration before writing artifacts.

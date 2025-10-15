@@ -15,6 +15,7 @@ from .logging_utils import get_logger
 MERGE_KEYS = ["fly", "fly_number", "trial_label"]
 OPTIONAL_KEYS = ["dataset", "trial_type"]
 LABEL_COLUMN = "user_score_odor"
+LABEL_INTENSITY_COLUMN = "user_score_odor_intensity"
 TRACE_PATTERN = re.compile(r"^dir_val_(\d+)$")
 TRACE_RANGE = (0, 3600)
 FEATURE_COLUMNS = {
@@ -39,6 +40,8 @@ class MergedDataset:
     frame: pd.DataFrame
     trace_columns: List[str]
     feature_columns: List[str]
+    label_intensity: pd.Series
+    sample_weights: pd.Series
 
 
 def _load_csv(path: Path) -> pd.DataFrame:
@@ -88,6 +91,32 @@ def validate_feature_columns(frame: pd.DataFrame) -> List[str]:
     return available
 
 
+def _coerce_labels(labels: pd.Series, labels_csv: Path) -> pd.Series:
+    try:
+        numeric = pd.to_numeric(labels, errors="raise")
+    except Exception as exc:  # pragma: no cover - pandas specific
+        raise DataValidationError(
+            f"Label column '{LABEL_COLUMN}' in {labels_csv} must be numeric with 0 indicating no response and positive integers for responses."
+        ) from exc
+    if (numeric < 0).any():
+        raise DataValidationError(
+            f"Negative label values detected in {labels_csv}. Expected 0 for no response and positive integers for response strength."
+        )
+    if not (numeric.dropna() == numeric.dropna().astype(int)).all():
+        raise DataValidationError(
+            f"Non-integer label values detected in {labels_csv}. Use integers 0-5 to encode response strength."
+        )
+    return numeric.astype(int)
+
+
+def _compute_sample_weights(intensity: pd.Series) -> pd.Series:
+    weights = pd.Series(1.0, index=intensity.index, dtype=float)
+    positive_mask = intensity > 0
+    if positive_mask.any():
+        weights.loc[positive_mask] = intensity.loc[positive_mask].astype(float)
+    return weights
+
+
 def load_and_merge(data_csv: Path, labels_csv: Path, logger_name: str = __name__) -> MergedDataset:
     """Load and merge data and labels CSVs."""
     logger = get_logger(logger_name)
@@ -121,11 +150,8 @@ def load_and_merge(data_csv: Path, labels_csv: Path, logger_name: str = __name__
             "Dropped %d rows with NaN labels in %s.", na_count, labels_csv
         )
 
-    invalid = set(label_values.dropna().unique()) - {0, 1}
-    if invalid:
-        raise DataValidationError(
-            f"Invalid labels detected {invalid}. Labels must be 0 or 1."
-        )
+    coerced_labels = _coerce_labels(labels_df[LABEL_COLUMN], labels_csv)
+    labels_df[LABEL_COLUMN] = coerced_labels
 
     trace_cols = _extract_trace_columns(data_df.columns)
     if not trace_cols:
@@ -159,9 +185,29 @@ def load_and_merge(data_csv: Path, labels_csv: Path, logger_name: str = __name__
     if merged[LABEL_COLUMN].isna().any():
         raise DataValidationError("Merged data contains NaN labels after merge.")
 
+    intensity = merged[LABEL_COLUMN].astype(int)
+    weights = _compute_sample_weights(intensity)
+    merged[LABEL_INTENSITY_COLUMN] = intensity
+    merged[LABEL_COLUMN] = (intensity > 0).astype(int)
+
+    distribution = intensity.value_counts().sort_index().to_dict()
+    logger.info("Label intensity distribution: %s", distribution)
+    logger.info(
+        "Sample weight summary | min=%.2f mean=%.2f max=%.2f",
+        float(weights.min()),
+        float(weights.mean()),
+        float(weights.max()),
+    )
+
     logger.info("Merged dataset shape: %s", merged.shape)
 
-    return MergedDataset(frame=merged, trace_columns=trace_cols, feature_columns=feature_cols)
+    return MergedDataset(
+        frame=merged,
+        trace_columns=trace_cols,
+        feature_columns=feature_cols,
+        label_intensity=intensity,
+        sample_weights=weights,
+    )
 
 
 def write_parquet(dataset: MergedDataset, path: Path) -> None:

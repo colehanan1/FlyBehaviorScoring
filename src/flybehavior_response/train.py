@@ -12,9 +12,10 @@ from joblib import dump
 from .config import PipelineConfig, compute_class_balance, hash_file, make_run_artifacts
 from .evaluate import evaluate_models, perform_cross_validation, save_metrics
 from .features import build_column_transformer, validate_features
-from .io import LABEL_COLUMN, load_and_merge
+from .io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge
 from .logging_utils import get_logger
 from .modeling import MODEL_LDA, MODEL_LOGREG, build_model_pipeline, supported_models
+from .weights import expand_samples_by_weight
 
 
 def _set_seeds(seed: int) -> None:
@@ -46,6 +47,14 @@ def train_models(
     logger.debug("Selected features: %s", selected_features)
     logger.debug("Trace columns count: %d", len(dataset.trace_columns))
 
+    sample_weights = dataset.sample_weights
+    logger.info(
+        "Applying proportional sample weights derived from label intensities (min=%.2f mean=%.2f max=%.2f)",
+        float(sample_weights.min()),
+        float(sample_weights.mean()),
+        float(sample_weights.max()),
+    )
+
     preprocessor = build_column_transformer(
         trace_columns=dataset.trace_columns,
         feature_columns=dataset.feature_columns,
@@ -75,6 +84,13 @@ def train_models(
     else:
         trace_range = (0, 0)
 
+    intensity_counts = {str(int(k)): int(v) for k, v in dataset.label_intensity.value_counts().sort_index().items()}
+    weight_summary = {
+        "min": float(sample_weights.min()),
+        "mean": float(sample_weights.mean()),
+        "max": float(sample_weights.max()),
+    }
+
     config = PipelineConfig(
         features=list(selected_features),
         n_pcs=n_pcs,
@@ -91,9 +107,15 @@ def train_models(
         class_balance=compute_class_balance(dataset.frame[LABEL_COLUMN].astype(int).tolist()),
         logreg_solver=logreg_solver,
         logreg_max_iter=logreg_max_iter,
+        label_intensity_counts=intensity_counts,
+        label_weight_summary=weight_summary,
+        label_weight_strategy="proportional_intensity",
     )
 
-    X = dataset.frame.drop(columns=[LABEL_COLUMN])
+    drop_columns = [LABEL_COLUMN]
+    if LABEL_INTENSITY_COLUMN in dataset.frame.columns:
+        drop_columns.append(LABEL_INTENSITY_COLUMN)
+    X = dataset.frame.drop(columns=drop_columns)
     y = dataset.frame[LABEL_COLUMN].astype(int)
 
     metrics: Dict[str, Dict[str, object]] = {}
@@ -107,8 +129,17 @@ def train_models(
             logreg_solver=logreg_solver,
             logreg_max_iter=logreg_max_iter,
         )
-        pipeline.fit(X, y)
-        model_metrics = evaluate_models({model_name: pipeline}, X, y)[model_name]
+        if model_name == MODEL_LDA:
+            X_fit, y_fit = expand_samples_by_weight(X, y, sample_weights)
+            pipeline.fit(X_fit, y_fit)
+        else:
+            pipeline.fit(X, y, model__sample_weight=sample_weights.to_numpy())
+        model_metrics = evaluate_models(
+            {model_name: pipeline},
+            X,
+            y,
+            sample_weight=sample_weights,
+        )[model_name]
         metrics[model_name] = model_metrics
         logger.info("Model %s accuracy: %.3f", model_name, model_metrics["accuracy"])
         model_step = pipeline.named_steps["model"]
@@ -134,12 +165,13 @@ def train_models(
         if cv >= 2:
             logger.info("Running %d-fold CV for %s", cv, model_name)
             cv_metrics = perform_cross_validation(
-                dataset.frame,
+                X,
                 dataset.frame[LABEL_COLUMN].astype(int),
                 model_type=model_name,
                 preprocessor=preprocessor,
                 cv=cv,
                 seed=seed,
+                sample_weights=sample_weights,
             )
             metrics[model_name]["cross_validation"] = cv_metrics
 
