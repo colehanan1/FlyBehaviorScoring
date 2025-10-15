@@ -6,15 +6,24 @@ import random
 from pathlib import Path
 from typing import Dict, Sequence
 
+import matplotlib.pyplot as plt
 import numpy as np
 from joblib import dump
+from sklearn.metrics import ConfusionMatrixDisplay
+from sklearn.model_selection import train_test_split
 
 from .config import PipelineConfig, compute_class_balance, hash_file, make_run_artifacts
 from .evaluate import evaluate_models, perform_cross_validation, save_metrics
 from .features import build_column_transformer, validate_features
 from .io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge
 from .logging_utils import get_logger
-from .modeling import MODEL_LDA, MODEL_LOGREG, build_model_pipeline, supported_models
+from .modeling import (
+    MODEL_LDA,
+    MODEL_LOGREG,
+    MODEL_MLP,
+    build_model_pipeline,
+    supported_models,
+)
 from .weights import expand_samples_by_weight
 
 
@@ -118,6 +127,23 @@ def train_models(
     X = dataset.frame.drop(columns=drop_columns)
     y = dataset.frame[LABEL_COLUMN].astype(int)
 
+    X_train, X_test, y_train, y_test, sw_train, sw_test = train_test_split(
+        X,
+        y,
+        sample_weights,
+        test_size=0.2,
+        stratify=y,
+        random_state=seed,
+    )
+
+    logger.info(
+        "Split data into training (%d samples, reaction rate=%.2f) and test (%d samples, reaction rate=%.2f)",
+        len(y_train),
+        float(y_train.mean()),
+        len(y_test),
+        float(y_test.mean()),
+    )
+
     metrics: Dict[str, Dict[str, object]] = {}
 
     for model_name in requested_models:
@@ -130,18 +156,45 @@ def train_models(
             logreg_max_iter=logreg_max_iter,
         )
         if model_name == MODEL_LDA:
-            X_fit, y_fit = expand_samples_by_weight(X, y, sample_weights)
+            X_fit, y_fit = expand_samples_by_weight(X_train, y_train, sw_train)
             pipeline.fit(X_fit, y_fit)
         else:
-            pipeline.fit(X, y, model__sample_weight=sample_weights.to_numpy())
-        model_metrics = evaluate_models(
+            fit_kwargs = {}
+            if model_name in {MODEL_LOGREG, MODEL_MLP}:
+                fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
+            pipeline.fit(
+                X_train,
+                y_train,
+                **fit_kwargs,
+            )
+
+        train_metrics = evaluate_models(
             {model_name: pipeline},
-            X,
-            y,
-            sample_weight=sample_weights,
+            X_train,
+            y_train,
+            sample_weight=sw_train,
         )[model_name]
-        metrics[model_name] = model_metrics
-        logger.info("Model %s accuracy: %.3f", model_name, model_metrics["accuracy"])
+        test_metrics = evaluate_models(
+            {model_name: pipeline},
+            X_test,
+            y_test,
+            sample_weight=sw_test,
+        )[model_name]
+        metrics[model_name] = train_metrics
+        metrics[model_name]["test"] = test_metrics
+
+        logger.info(
+            "Model %s accuracy -> train: %.3f | test: %.3f",
+            model_name,
+            train_metrics["accuracy"],
+            test_metrics["accuracy"],
+        )
+        logger.info(
+            "Model %s F1 (binary) -> train: %.3f | test: %.3f",
+            model_name,
+            train_metrics["f1_binary"],
+            test_metrics["f1_binary"],
+        )
         model_step = pipeline.named_steps["model"]
         if hasattr(model_step, "n_iter_"):
             n_iter = model_step.n_iter_
@@ -165,13 +218,13 @@ def train_models(
         if cv >= 2:
             logger.info("Running %d-fold CV for %s", cv, model_name)
             cv_metrics = perform_cross_validation(
-                X,
-                dataset.frame[LABEL_COLUMN].astype(int),
+                X_train,
+                y_train,
                 model_type=model_name,
                 preprocessor=preprocessor,
                 cv=cv,
                 seed=seed,
-                sample_weights=sample_weights,
+                sample_weights=sw_train,
             )
             metrics[model_name]["cross_validation"] = cv_metrics
 
@@ -180,6 +233,20 @@ def train_models(
             model_path = artifacts.run_dir / f"model_{model_name}.joblib"
             dump(pipeline, model_path)
             logger.info("Saved model to %s", model_path)
+
+            cm = np.array(test_metrics["confusion_matrix"]["raw"], dtype=int)
+            fig, ax = plt.subplots(figsize=(5, 5))
+            disp = ConfusionMatrixDisplay(
+                confusion_matrix=cm,
+                display_labels=["No Reaction", "Reaction"],
+            )
+            disp.plot(ax=ax, cmap="Blues", values_format="d", colorbar=False)
+            ax.set_title(f"{model_name.upper()} Confusion Matrix (Test)")
+            fig.tight_layout()
+            cm_path = artifacts.run_dir / f"confusion_matrix_{model_name}.png"
+            fig.savefig(cm_path, dpi=300)
+            plt.close(fig)
+            logger.info("Saved confusion matrix plot to %s", cm_path)
 
     metrics_payload = {"models": metrics}
     if not dry_run:

@@ -6,10 +6,12 @@ from typing import Iterable
 
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 
 MODEL_LDA = "lda"
 MODEL_LOGREG = "logreg"
+MODEL_MLP = "mlp"
 
 
 def create_estimator(
@@ -28,6 +30,14 @@ def create_estimator(
             max_iter=logreg_max_iter,
             solver=logreg_solver,
             random_state=seed,
+        )
+    if model_type == MODEL_MLP:
+        return MLPClassifier(
+            hidden_layer_sizes=(100,),
+            max_iter=1000,
+            random_state=seed,
+            early_stopping=True,
+            validation_fraction=0.1,
         )
     raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -54,4 +64,4 @@ def build_model_pipeline(
 
 
 def supported_models() -> Iterable[str]:
-    return [MODEL_LDA, MODEL_LOGREG]
+    return [MODEL_LDA, MODEL_LOGREG, MODEL_MLP]

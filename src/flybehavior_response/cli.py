@@ -85,7 +85,7 @@ def _configure_parser() -> argparse.ArgumentParser:
     common_parser.add_argument(
         "--model",
         type=str,
-        choices=["lda", "logreg", "both"],
+        choices=["lda", "logreg", "mlp", "both"],
         default="both",
         help="Model to train/evaluate",
     )
