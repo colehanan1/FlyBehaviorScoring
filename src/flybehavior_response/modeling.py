@@ -33,7 +33,7 @@ def create_estimator(
         )
     if model_type == MODEL_MLP:
         return MLPClassifier(
-            hidden_layer_sizes=(20000,),
+            hidden_layer_sizes=20000,
             max_iter=1000,
             random_state=seed,
         )
