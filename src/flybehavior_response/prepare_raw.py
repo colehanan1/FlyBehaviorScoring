@@ -18,7 +18,7 @@ REQUIRED_METADATA_COLUMNS = [
     "fly",
     "fly_number",
     "trial_type",
-    "testing_trial",
+    "trial_label",
 ]
 DEFAULT_OUTPUT_PATH = Path(
     "/home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv"
