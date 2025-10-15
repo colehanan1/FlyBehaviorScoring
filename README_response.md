@@ -83,6 +83,16 @@ flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/
     --series-prefixes "eye_x_f,eye_y_f,prob_x_f,prob_y_f" \
     --no-compute-dir-val
   ```
+- If your acquisition exports trials as a 3-D NumPy array (trials × frames × 4 channels), save the matrix to `.npy` and provide a JSON metadata file describing each trial and the layout:
+
+  ```bash
+  flybehavior-response prepare-raw \
+    --data-npy /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_matrix.npy \
+    --matrix-meta /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_matrix.json \
+    --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
+    --out /home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv
+  ```
+  The metadata JSON must contain a `metadata` (or `trials`) array with per-row descriptors (`dataset`, `fly`, `fly_number`, `trial_type`, `testing_trial`), an optional `layout` field (`trial_time_channel` or `trial_channel_time`), and optional `channel_prefixes` that match the prefixes passed via `--series-prefixes`.
 - The output keeps raw values with consistent 0-based frame indices per prefix, adds timing metadata, and can be fed directly to `flybehavior-response train --series-prefixes eye_x_f,eye_y_f,prob_x_f,prob_y_f`.
 
 ## Label weighting and troubleshooting

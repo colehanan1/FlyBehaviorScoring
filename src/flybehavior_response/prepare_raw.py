@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import OrderedDict
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -115,9 +116,103 @@ def _group_align_labels(
     return pd.Series([], dtype=float)
 
 
+def _load_matrix_trials(
+    *,
+    data_path: Path,
+    meta_path: Path,
+    prefixes: Sequence[str],
+    logger: Any,
+) -> tuple[pd.DataFrame, List[str]]:
+    """Load per-trial metadata and traces from a matrix + JSON description."""
+
+    matrix = np.load(data_path)
+    if matrix.ndim != 3:
+        raise ValueError(
+            "Expected data_npy to contain a 3D array (trials x frames x channels or trials x channels x frames)."
+        )
+    meta = json.loads(meta_path.read_text())
+    metadata_entries = meta.get("metadata") or meta.get("trials")
+    if metadata_entries is None:
+        raise ValueError(
+            "Matrix metadata JSON must include a 'metadata' or 'trials' array describing each trial."
+        )
+    metadata_df = pd.DataFrame(metadata_entries)
+    if metadata_df.empty:
+        raise ValueError("Metadata JSON contained no trial descriptions.")
+
+    if "testing_trial" not in metadata_df.columns:
+        metadata_df["testing_trial"] = pd.NA
+        logger.warning(
+            "Matrix metadata is missing 'testing_trial'; downstream alignment will rely on row order within groups."
+        )
+
+    expected_trials = matrix.shape[0]
+    if len(metadata_df) != expected_trials:
+        raise ValueError(
+            "Matrix trials (%d) do not match metadata entries (%d)." % (expected_trials, len(metadata_df))
+        )
+
+    layout = meta.get("layout") or meta.get("matrix_layout") or meta.get("order")
+    if layout is None:
+        layout = "trial_time_channel"
+    layout = str(layout).lower()
+    if layout in {"trial_channel_time", "nct", "channels_last_false"}:
+        matrix = np.transpose(matrix, (0, 2, 1))
+    elif layout in {"trial_time_channel", "ntc", "channels_last_true"}:
+        pass
+    else:
+        raise ValueError(
+            "Unsupported matrix layout '%s'. Expected 'trial_time_channel' or 'trial_channel_time'." % layout
+        )
+
+    n_trials, frame_count, channel_count = matrix.shape
+    json_prefixes = meta.get("channel_prefixes") or meta.get("prefixes") or meta.get("channels")
+    if json_prefixes is not None:
+        json_prefixes = [str(item) for item in json_prefixes]
+        if len(json_prefixes) != len(prefixes):
+            raise ValueError(
+                "channel_prefixes length %d from JSON does not match expected prefixes %d." % (
+                    len(json_prefixes),
+                    len(prefixes),
+                )
+            )
+        if list(prefixes) != json_prefixes:
+            raise ValueError(
+                "Provided series_prefixes %s do not match channel_prefixes %s from matrix metadata." % (
+                    list(prefixes),
+                    json_prefixes,
+                )
+            )
+
+    if channel_count != len(prefixes):
+        raise ValueError(
+            "Matrix channel dimension (%d) does not match number of prefixes (%d)." % (
+                channel_count,
+                len(prefixes),
+            )
+        )
+
+    flattened: "OrderedDict[str, Any]" = OrderedDict()
+    for channel_idx, prefix in enumerate(prefixes):
+        for frame in range(frame_count):
+            flattened[f"{prefix}{frame}"] = matrix[:, frame, channel_idx]
+
+    traces_df = pd.DataFrame(flattened)
+    combined_df = pd.concat([metadata_df.reset_index(drop=True), traces_df], axis=1)
+    logger.debug(
+        "Loaded matrix with %d trials, %d frames, %d channels into wide table.",
+        n_trials,
+        frame_count,
+        channel_count,
+    )
+    return combined_df, list(prefixes)
+
+
 def prepare_raw(
     *,
-    data_csv: Path,
+    data_csv: Path | None = None,
+    data_npy: Path | None = None,
+    matrix_meta: Path | None = None,
     labels_csv: Path,
     out_path: Path = DEFAULT_OUTPUT_PATH,
     fps: int = 40,
@@ -139,14 +234,29 @@ def prepare_raw(
             )
         )
     logger = get_logger("prepare_raw", verbose=verbose)
-    logger.info("Reading data CSV %s", data_csv)
-    data_df = pd.read_csv(data_csv)
+    if data_npy is not None:
+        if data_csv is not None:
+            raise ValueError("Provide either data_csv or data_npy, not both.")
+        if matrix_meta is None:
+            raise ValueError("matrix_meta JSON is required when supplying data_npy.")
+        logger.info("Reading data matrix %s", data_npy)
+        data_df, prefixes = _load_matrix_trials(
+            data_path=data_npy,
+            meta_path=matrix_meta,
+            prefixes=prefixes,
+            logger=logger,
+        )
+    else:
+        if data_csv is None:
+            raise ValueError("Either data_csv or data_npy must be provided to prepare_raw.")
+        logger.info("Reading data CSV %s", data_csv)
+        data_df = pd.read_csv(data_csv)
     logger.debug("Data shape: %s", data_df.shape)
     _ensure_columns(data_df, REQUIRED_METADATA_COLUMNS[:-1])
     if "testing_trial" not in data_df.columns:
         data_df["testing_trial"] = pd.NA
         logger.warning(
-            "Input CSV is missing 'testing_trial'; downstream alignment will rely on row order within groups."
+            "Input table is missing 'testing_trial'; downstream alignment will rely on row order within groups."
         )
     _ensure_columns(data_df, REQUIRED_METADATA_COLUMNS)
 
@@ -370,5 +480,31 @@ if __name__ == "__main__":  # pragma: no cover - self-check harness
         )
         dirval_df = pd.read_csv(dirval_path)
         assert any(col.startswith("dir_val_f") for col in dirval_df.columns)
+
+        matrix = rng.normal(size=(2, 3, 4))
+        matrix_path = tmp_path / "matrix.npy"
+        np.save(matrix_path, matrix)
+        meta_payload = {
+            "metadata": [
+                {
+                    "dataset": "d",
+                    "fly": "f",
+                    "fly_number": 1,
+                    "trial_type": "testing",
+                    "testing_trial": idx + 1,
+                }
+                for idx in range(matrix.shape[0])
+            ],
+            "layout": "trial_time_channel",
+            "channel_prefixes": DEFAULT_PREFIXES,
+        }
+        meta_path = tmp_path / "matrix.json"
+        meta_path.write_text(json.dumps(meta_payload))
+        prepare_raw(
+            data_npy=matrix_path,
+            matrix_meta=meta_path,
+            labels_csv=label_path,
+            out_path=tmp_path / "prepared_matrix.csv",
+        )
 
     print("prepare_raw self-checks completed successfully.")

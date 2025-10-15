@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -139,3 +140,66 @@ def test_prepare_raw_rejects_per_fly_table(tmp_path: Path) -> None:
             labels_csv=label_path,
             out_path=tmp_path / "should_fail.csv",
         )
+
+
+def test_prepare_raw_from_matrix(tmp_path: Path) -> None:
+    rng = np.random.default_rng(321)
+    matrix = rng.normal(size=(3, 6, 4))
+    matrix_path = tmp_path / "coords.npy"
+    np.save(matrix_path, matrix)
+
+    metadata = [
+        {
+            "dataset": "d",
+            "fly": "f1",
+            "fly_number": 1,
+            "trial_type": "testing",
+            "testing_trial": idx + 1,
+        }
+        for idx in range(3)
+    ]
+    meta_payload = {
+        "metadata": metadata,
+        "layout": "trial_time_channel",
+        "channel_prefixes": DEFAULT_PREFIXES,
+    }
+    meta_path = tmp_path / "coords_meta.json"
+    meta_path.write_text(json.dumps(meta_payload))
+
+    labels = pd.DataFrame(
+        {
+            "dataset": ["d"] * 3,
+            "fly": ["f1"] * 3,
+            "fly_number": [1] * 3,
+            "trial_type": ["testing"] * 3,
+            "testing_trial": [1, 2, 3],
+            "trial_label": [0, 1, 0],
+        }
+    )
+    labels_path = tmp_path / "labels.csv"
+    labels.to_csv(labels_path, index=False)
+
+    prepared = prepare_raw(
+        data_npy=matrix_path,
+        matrix_meta=meta_path,
+        labels_csv=labels_path,
+        out_path=tmp_path / "prepared_matrix.csv",
+    )
+
+    assert prepared.shape[0] == 3
+    assert prepared["total_frames"].iat[0] == 6
+    assert prepared.filter(regex=r"^eye_x_f").shape[1] == 6
+
+    # Validate alternate layout handling.
+    alt_matrix = np.transpose(matrix, (0, 2, 1))
+    alt_matrix_path = tmp_path / "coords_nct.npy"
+    np.save(alt_matrix_path, alt_matrix)
+    meta_payload["layout"] = "trial_channel_time"
+    meta_path.write_text(json.dumps(meta_payload))
+    prepared_alt = prepare_raw(
+        data_npy=alt_matrix_path,
+        matrix_meta=meta_path,
+        labels_csv=labels_path,
+        out_path=tmp_path / "prepared_matrix_alt.csv",
+    )
+    assert prepared_alt.equals(prepared)

@@ -55,6 +55,22 @@ def prepare_raw_cli(
         dir_okay=False,
         help="Path to per-trial raw coordinate CSV",
     ),
+    data_npy: Optional[Path] = typer.Option(
+        None,
+        "--data-npy",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to per-trial raw coordinate matrix (.npy)",
+    ),
+    matrix_meta: Optional[Path] = typer.Option(
+        None,
+        "--matrix-meta",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="JSON file describing the matrix layout and per-trial metadata",
+    ),
     labels_csv: Path = typer.Option(
         ...,
         "--labels-csv",
@@ -93,16 +109,30 @@ def prepare_raw_cli(
     ),
     verbose: bool = typer.Option(False, "--verbose/--no-verbose", help="Enable verbose logging"),
 ) -> None:
-    if data_csv is None:
-        if data_csv_arg is None:
+    if data_npy is not None:
+        if data_csv is not None or data_csv_arg is not None:
             raise typer.BadParameter(
-                "Provide --data-csv or a positional raw CSV path when invoking prepare-raw."
+                "When using --data-npy, do not also supply a CSV path. Provide only the matrix and metadata JSON."
             )
-        data_csv = data_csv_arg
-    elif data_csv_arg is not None:
-        raise typer.BadParameter(
-            "Received raw CSV as both positional argument and --data-csv. Specify it only once."
-        )
+        if matrix_meta is None:
+            raise typer.BadParameter("--matrix-meta is required when using --data-npy inputs.")
+    else:
+        if matrix_meta is not None:
+            raise typer.BadParameter("--matrix-meta is only valid together with --data-npy.")
+        if data_csv is None:
+            if data_csv_arg is None:
+                raise typer.BadParameter(
+                    "Provide --data-csv or a positional raw CSV path when invoking prepare-raw."
+                )
+            if data_csv_arg.suffix.lower() == ".npy":
+                raise typer.BadParameter(
+                    "Detected positional .npy input; re-run with --data-npy and provide --matrix-meta for metadata."
+                )
+            data_csv = data_csv_arg
+        elif data_csv_arg is not None:
+            raise typer.BadParameter(
+                "Received raw CSV as both positional argument and --data-csv. Specify it only once."
+            )
 
     prefixes = [item.strip() for item in series_prefixes.split(",") if item.strip()]
     if not prefixes:
@@ -110,6 +140,8 @@ def prepare_raw_cli(
     set_global_logging(verbose=verbose)
     prepared_df = prepare_raw(
         data_csv=data_csv,
+        data_npy=data_npy,
+        matrix_meta=matrix_meta,
         labels_csv=labels_csv,
         out_path=out,
         fps=fps,
