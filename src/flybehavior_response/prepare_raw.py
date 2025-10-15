@@ -19,7 +19,7 @@ REQUIRED_METADATA_COLUMNS = [
     "fly",
     "fly_number",
     "trial_type",
-    "testing_trial",
+    "trial_label",
 ]
 DEFAULT_OUTPUT_PATH = Path(
     "/home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv"
@@ -70,10 +70,10 @@ def _group_align_labels(
     by_keys: Sequence[str],
     logger_name: str,
 ) -> pd.Series:
-    """Align labels to trials when ``testing_trial`` is missing.
+    """Align labels to trials when ``trial_label`` is missing.
 
     This alignment respects the original row order of the labels CSV and
-    prioritises ``testing_trial`` ordering for the data when available.
+    prioritises ``trial_label`` ordering for the data when available.
     """
 
     logger = get_logger(logger_name)
@@ -100,15 +100,15 @@ def _group_align_labels(
                     label_count=len(label_subset),
                 )
             )
-        if "testing_trial" in data_subset.columns:
-            data_subset = data_subset.sort_values("testing_trial", na_position="last")
+        if "trial_label" in data_subset.columns:
+            data_subset = data_subset.sort_values("trial_label", na_position="last")
         label_subset = label_subset.sort_values("_original_order")
         warnings.append(str(key))
         aligned = pd.Series(label_subset["label"].to_numpy(), index=data_subset.index)
         aligned_labels.append(aligned)
     if warnings:
         logger.warning(
-            "Aligned labels by row-order for groups lacking 'testing_trial': %s",
+            "Aligned labels by row-order for groups lacking 'trial_label': %s",
             ", ".join(warnings),
         )
     if aligned_labels:
@@ -140,10 +140,10 @@ def _load_matrix_trials(
     if metadata_df.empty:
         raise ValueError("Metadata JSON contained no trial descriptions.")
 
-    if "testing_trial" not in metadata_df.columns:
-        metadata_df["testing_trial"] = pd.NA
+    if "trial_label" not in metadata_df.columns:
+        metadata_df["trial_label"] = pd.NA
         logger.warning(
-            "Matrix metadata is missing 'testing_trial'; downstream alignment will rely on row order within groups."
+            "Matrix metadata is missing 'trial_label'; downstream alignment will rely on row order within groups."
         )
 
     expected_trials = matrix.shape[0]
@@ -253,10 +253,10 @@ def prepare_raw(
         data_df = pd.read_csv(data_csv)
     logger.debug("Data shape: %s", data_df.shape)
     _ensure_columns(data_df, REQUIRED_METADATA_COLUMNS[:-1])
-    if "testing_trial" not in data_df.columns:
-        data_df["testing_trial"] = pd.NA
+    if "trial_label" not in data_df.columns:
+        data_df["trial_label"] = pd.NA
         logger.warning(
-            "Input table is missing 'testing_trial'; downstream alignment will rely on row order within groups."
+            "Input table is missing 'trial_label'; downstream alignment will rely on row order within groups."
         )
     _ensure_columns(data_df, REQUIRED_METADATA_COLUMNS)
 
@@ -317,7 +317,7 @@ def prepare_raw(
     labels_df = labels_df.rename(columns={"trial_label": "label"})
     labels_df["label"] = pd.to_numeric(labels_df["label"], errors="raise")
 
-    if "testing_trial" in labels_df.columns and labels_df["testing_trial"].notna().all():
+    if "trial_label" in labels_df.columns and labels_df["trial_label"].notna().all():
         join_keys = REQUIRED_METADATA_COLUMNS
         logger.debug("Joining labels on keys: %s", join_keys)
         merged_labels = pd.merge(
@@ -347,7 +347,7 @@ def prepare_raw(
         if label_series.isna().any():
             raise ValueError("Row-order alignment produced NaN labels; check CSV consistency.")
 
-    metadata = data_df[["dataset", "fly", "fly_number", "trial_type", "testing_trial"]].copy()
+    metadata = data_df[["dataset", "fly", "fly_number", "trial_type", "trial_label"]].copy()
     metadata["fps"] = int(fps)
     metadata["odor_on_idx"] = int(odor_on_idx)
     metadata["odor_off_idx"] = int(odor_off_idx)
@@ -368,7 +368,7 @@ def prepare_raw(
         "fly",
         "fly_number",
         "trial_type",
-        "testing_trial",
+        "trial_label",
         "fps",
         "odor_on_idx",
         "odor_off_idx",
@@ -398,7 +398,7 @@ if __name__ == "__main__":  # pragma: no cover - self-check harness
             "fly": ["f"] * 2,
             "fly_number": [1, 1],
             "trial_type": ["testing", "testing"],
-            "testing_trial": [1, 2],
+            "trial_label": [1, 2],
             **{f"eye_x_f{i}": rng.normal(size=2) for i in range(3)},
             **{f"eye_y_f{i}": rng.normal(size=2) for i in range(3)},
             **{f"prob_x_f{i}": rng.normal(size=2) for i in range(3)},
@@ -411,11 +411,11 @@ if __name__ == "__main__":  # pragma: no cover - self-check harness
             "fly": ["f", "f"],
             "fly_number": [1, 1],
             "trial_type": ["testing", "testing"],
-            "testing_trial": [1, 2],
+            "trial_label": [1, 2],
             "trial_label": [0, 1],
         }
     )
-    fallback_labels = keyed_labels.drop(columns=["testing_trial"])
+    fallback_labels = keyed_labels.drop(columns=["trial_label"])
     fallback_labels.loc[:, "trial_label"] = [1, 0]
 
     with TemporaryDirectory() as tmp:
@@ -437,7 +437,7 @@ if __name__ == "__main__":  # pragma: no cover - self-check harness
             "fly",
             "fly_number",
             "trial_type",
-            "testing_trial",
+            "trial_label",
             "fps",
             "odor_on_idx",
             "odor_off_idx",
@@ -491,7 +491,7 @@ if __name__ == "__main__":  # pragma: no cover - self-check harness
                     "fly": "f",
                     "fly_number": 1,
                     "trial_type": "testing",
-                    "testing_trial": idx + 1,
+                    "trial_label": idx + 1,
                 }
                 for idx in range(matrix.shape[0])
             ],
