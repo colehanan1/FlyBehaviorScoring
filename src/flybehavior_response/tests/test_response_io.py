@@ -211,3 +211,33 @@ def test_load_and_merge_allows_trace_only_inputs(tmp_path: Path) -> None:
 
     assert dataset.trace_prefixes == list(RAW_TRACE_PREFIXES)
     assert dataset.feature_columns == []
+
+
+def test_load_and_merge_dir_val_trace_only(tmp_path: Path) -> None:
+    data = pd.DataFrame(
+        {
+            "fly": ["a", "b"],
+            "fly_number": [1, 2],
+            "trial_label": ["t1", "t2"],
+            "dir_val_0": [0.1, 0.2],
+            "dir_val_1": [0.3, 0.4],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "fly": ["a", "b"],
+            "fly_number": [1, 2],
+            "trial_label": ["t1", "t2"],
+            LABEL_COLUMN: [0, 5],
+        }
+    )
+    data_path = tmp_path / "data.csv"
+    labels_path = tmp_path / "labels.csv"
+    data.to_csv(data_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    dataset = load_and_merge(data_path, labels_path)
+
+    assert dataset.trace_prefixes == ["dir_val_"]
+    assert dataset.trace_columns == ["dir_val_0", "dir_val_1"]
+    assert dataset.feature_columns == []

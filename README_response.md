@@ -128,6 +128,19 @@ flybehavior-response predict --raw-series \
 
 During training the loader automatically recognises that engineered features are absent and logs that it is proceeding in a trace-only configuration. Keep PCA enabled (`--use-raw-pca`, the default) to derive compact principal components from the four coordinate streams.
 
+### Running without engineered features on legacy `dir_val_` traces
+
+Older exports that only include `dir_val_###` columns (no engineered metrics) are now supported out of the box. Simply point the trainer at the data/label CSVs—no extra flags are required:
+
+```bash
+flybehavior-response train \
+  --data-csv /path/to/dir_val_only_data.csv \
+  --labels-csv /path/to/labels.csv \
+  --model all
+```
+
+The loader detects that engineered features are missing, logs a trace-only message, and continues with PCA on the `dir_val_` traces. The same behaviour applies to `eval`, `viz`, and `predict`, so the entire pipeline operates normally on these legacy tables.
+
 ## Label weighting and troubleshooting
 
 - Ensure trace columns follow contiguous 0-based numbering for each prefix (default `dir_val_`). Columns beyond `dir_val_3600` are trimmed automatically for legacy datasets.

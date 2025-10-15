@@ -229,6 +229,13 @@ def load_and_merge(
             logger.info("Dropped %d trace columns outside %s", len(dropped), TRACE_RANGE)
 
     allow_empty_features = resolved_prefixes != DEFAULT_TRACE_PREFIXES
+    if not allow_empty_features:
+        # Legacy dir_val_ exports may omit engineered summaries entirely.
+        if not any(col in data_df.columns for col in FEATURE_COLUMNS):
+            allow_empty_features = True
+            logger.info(
+                "Detected dir_val_ traces without engineered features; proceeding with trace-only dataset."
+            )
     feature_cols = validate_feature_columns(
         data_df, allow_empty=allow_empty_features
     )
