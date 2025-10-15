@@ -14,17 +14,27 @@ import pandas as pd
 from .io_wide import find_series_columns
 from .logging_utils import get_logger
 
+TRIAL_ID_COLUMN = "trial_label"
+
 REQUIRED_METADATA_COLUMNS = [
     "dataset",
     "fly",
     "fly_number",
     "trial_type",
-    "testing_trial",
+    TRIAL_ID_COLUMN,
 ]
 DEFAULT_OUTPUT_PATH = Path(
     "/home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv"
 )
 DEFAULT_PREFIXES = ["eye_x_f", "eye_y_f", "prob_x_f", "prob_y_f"]
+LABEL_COLUMN_CANDIDATES = [
+    "user_score_odor",
+    "label",
+    "response_label",
+    "response",
+    "score",
+    "trial_response",
+]
 
 
 def _ensure_columns(frame: pd.DataFrame, columns: Iterable[str]) -> None:
@@ -35,6 +45,28 @@ def _ensure_columns(frame: pd.DataFrame, columns: Iterable[str]) -> None:
                 missing=missing
             )
         )
+
+
+def _normalise_trial_identifier(df: pd.DataFrame, logger: Any, source: str) -> pd.DataFrame:
+    """Ensure ``TRIAL_ID_COLUMN`` exists, renaming legacy columns when necessary."""
+
+    if TRIAL_ID_COLUMN in df.columns:
+        return df
+    if "testing_trial" in df.columns:
+        logger.warning(
+            "Renaming legacy column 'testing_trial' from %s to '%s'.",
+            source,
+            TRIAL_ID_COLUMN,
+        )
+        return df.rename(columns={"testing_trial": TRIAL_ID_COLUMN})
+    df = df.copy()
+    df[TRIAL_ID_COLUMN] = pd.NA
+    logger.warning(
+        "%s is missing '%s'; downstream alignment will rely on row order within groups.",
+        source,
+        TRIAL_ID_COLUMN,
+    )
+    return df
 
 
 def enumerate_time_columns(df: pd.DataFrame, prefixes: Sequence[str]) -> tuple[List[str], int]:
@@ -69,11 +101,12 @@ def _group_align_labels(
     *,
     by_keys: Sequence[str],
     logger_name: str,
+    label_column: str,
 ) -> pd.Series:
-    """Align labels to trials when ``testing_trial`` is missing.
+    """Align labels to trials when the per-trial identifier is missing.
 
     This alignment respects the original row order of the labels CSV and
-    prioritises ``testing_trial`` ordering for the data when available.
+    prioritises the per-trial identifier ordering for the data when available.
     """
 
     logger = get_logger(logger_name)
@@ -100,15 +133,16 @@ def _group_align_labels(
                     label_count=len(label_subset),
                 )
             )
-        if "testing_trial" in data_subset.columns:
-            data_subset = data_subset.sort_values("testing_trial", na_position="last")
+        if TRIAL_ID_COLUMN in data_subset.columns:
+            data_subset = data_subset.sort_values(TRIAL_ID_COLUMN, na_position="last")
         label_subset = label_subset.sort_values("_original_order")
         warnings.append(str(key))
-        aligned = pd.Series(label_subset["label"].to_numpy(), index=data_subset.index)
+        aligned = pd.Series(label_subset[label_column].to_numpy(), index=data_subset.index)
         aligned_labels.append(aligned)
     if warnings:
         logger.warning(
-            "Aligned labels by row-order for groups lacking 'testing_trial': %s",
+            "Aligned labels by row-order for groups lacking '%s': %s",
+            TRIAL_ID_COLUMN,
             ", ".join(warnings),
         )
     if aligned_labels:
@@ -125,6 +159,15 @@ def _load_matrix_trials(
 ) -> tuple[pd.DataFrame, List[str]]:
     """Load per-trial metadata and traces from a matrix + JSON description."""
 
+    meta = json.loads(meta_path.read_text())
+    metadata_entries = meta.get("metadata") or meta.get("trials")
+    columns_spec = (
+        meta.get("columns")
+        or meta.get("column_names")
+        or meta.get("cols")
+        or meta.get("header")
+    )
+
     try:
         matrix = np.load(data_path)
     except ValueError as exc:
@@ -137,6 +180,36 @@ def _load_matrix_trials(
             matrix = np.load(data_path, allow_pickle=True)
         else:
             raise
+
+    if matrix.ndim == 2:
+        if columns_spec is None:
+            raise ValueError(
+                "2D matrix inputs require a 'columns' (or 'column_names') array in the metadata JSON."
+            )
+        columns = [str(col) for col in columns_spec]
+        if len(columns) != matrix.shape[1]:
+            raise ValueError(
+                "Column count %d in JSON does not match matrix width %d."
+                % (len(columns), matrix.shape[1])
+            )
+        frame_df = pd.DataFrame(matrix, columns=columns)
+        frame_df = _normalise_trial_identifier(frame_df, logger, "matrix table")
+        if metadata_entries is not None:
+            metadata_df = pd.DataFrame(metadata_entries)
+            if len(metadata_df) != len(frame_df):
+                raise ValueError(
+                    "Metadata rows (%d) do not match matrix trials (%d)."
+                    % (len(metadata_df), len(frame_df))
+                )
+            metadata_df = _normalise_trial_identifier(metadata_df, logger, "matrix metadata")
+            for column in metadata_df.columns:
+                frame_df[column] = metadata_df[column].to_numpy()
+        for prefix in prefixes:
+            matching = [col for col in frame_df.columns if col.startswith(prefix)]
+            for column in matching:
+                frame_df[column] = pd.to_numeric(frame_df[column], errors="raise")
+        return frame_df, list(prefixes)
+
     if matrix.dtype == object:
         logger.warning(
             "Coercing object-dtype matrix from %s to a numeric array; ensure ragged trials are not present.",
@@ -152,8 +225,6 @@ def _load_matrix_trials(
         raise ValueError(
             "Expected data_npy to contain a 3D array (trials x frames x channels or trials x channels x frames)."
         )
-    meta = json.loads(meta_path.read_text())
-    metadata_entries = meta.get("metadata") or meta.get("trials")
     if metadata_entries is None:
         raise ValueError(
             "Matrix metadata JSON must include a 'metadata' or 'trials' array describing each trial."
@@ -162,11 +233,7 @@ def _load_matrix_trials(
     if metadata_df.empty:
         raise ValueError("Metadata JSON contained no trial descriptions.")
 
-    if "testing_trial" not in metadata_df.columns:
-        metadata_df["testing_trial"] = pd.NA
-        logger.warning(
-            "Matrix metadata is missing 'testing_trial'; downstream alignment will rely on row order within groups."
-        )
+    metadata_df = _normalise_trial_identifier(metadata_df, logger, "matrix metadata")
 
     expected_trials = matrix.shape[0]
     if len(metadata_df) != expected_trials:
@@ -273,13 +340,9 @@ def prepare_raw(
             raise ValueError("Either data_csv or data_npy must be provided to prepare_raw.")
         logger.info("Reading data CSV %s", data_csv)
         data_df = pd.read_csv(data_csv)
+    data_df = _normalise_trial_identifier(data_df, logger, "data table")
     logger.debug("Data shape: %s", data_df.shape)
     _ensure_columns(data_df, REQUIRED_METADATA_COLUMNS[:-1])
-    if "testing_trial" not in data_df.columns:
-        data_df["testing_trial"] = pd.NA
-        logger.warning(
-            "Input table is missing 'testing_trial'; downstream alignment will rely on row order within groups."
-        )
     _ensure_columns(data_df, REQUIRED_METADATA_COLUMNS)
 
     group_counts = (
@@ -331,33 +394,51 @@ def prepare_raw(
     time_df = pd.DataFrame(truncated, index=data_df.index)
 
     labels_df = pd.read_csv(labels_csv)
+    labels_df = _normalise_trial_identifier(labels_df, logger, "labels table")
     logger.info("Reading labels CSV %s", labels_csv)
     logger.debug("Labels shape: %s", labels_df.shape)
 
-    if "trial_label" not in labels_df.columns:
-        raise ValueError("Labels CSV must include a 'trial_label' column.")
-    labels_df = labels_df.rename(columns={"trial_label": "label"})
-    labels_df["label"] = pd.to_numeric(labels_df["label"], errors="raise")
+    label_candidates = [col for col in LABEL_COLUMN_CANDIDATES if col in labels_df.columns]
+    if label_candidates:
+        label_column = label_candidates[0]
+    elif TRIAL_ID_COLUMN in labels_df.columns:
+        label_column = TRIAL_ID_COLUMN
+        logger.warning(
+            "No explicit label column found; using '%s' from labels CSV as the response column.",
+            TRIAL_ID_COLUMN,
+        )
+    else:
+        raise ValueError(
+            "Labels CSV must include one of %s (or a numeric '%s') to provide response values."
+            % (LABEL_COLUMN_CANDIDATES, TRIAL_ID_COLUMN)
+        )
 
-    if "testing_trial" in labels_df.columns and labels_df["testing_trial"].notna().all():
+    try:
+        labels_df[label_column] = pd.to_numeric(labels_df[label_column], errors="raise")
+    except Exception as exc:  # pragma: no cover - pandas specific
+        raise ValueError(
+            "Label column '%s' must contain numeric values for classification." % label_column
+        ) from exc
+
+    if labels_df[TRIAL_ID_COLUMN].notna().all():
         join_keys = REQUIRED_METADATA_COLUMNS
         logger.debug("Joining labels on keys: %s", join_keys)
         merged_labels = pd.merge(
             data_df[join_keys],
-            labels_df[join_keys + ["label"]],
+            labels_df[join_keys + [label_column]],
             on=join_keys,
             how="left",
             validate="one_to_one",
         )
-        if merged_labels["label"].isna().any():
-            missing = data_df.loc[merged_labels["label"].isna(), join_keys]
+        if merged_labels[label_column].isna().any():
+            missing = data_df.loc[merged_labels[label_column].isna(), join_keys]
             raise ValueError(
                 "Missing labels for %d trials after key join. Offending rows: %s" % (
                     len(missing),
                     missing.to_dict(orient="records"),
                 )
             )
-        label_series = merged_labels["label"].astype(float)
+        label_series = merged_labels[label_column].astype(float)
     else:
         logger.debug("Falling back to row-order alignment within groups: %s", REQUIRED_METADATA_COLUMNS[:-1])
         label_series = _group_align_labels(
@@ -365,11 +446,12 @@ def prepare_raw(
             labels_df,
             by_keys=REQUIRED_METADATA_COLUMNS[:-1],
             logger_name="prepare_raw",
+            label_column=label_column,
         )
         if label_series.isna().any():
             raise ValueError("Row-order alignment produced NaN labels; check CSV consistency.")
 
-    metadata = data_df[["dataset", "fly", "fly_number", "trial_type", "testing_trial"]].copy()
+    metadata = data_df[["dataset", "fly", "fly_number", "trial_type", TRIAL_ID_COLUMN]].copy()
     metadata["fps"] = int(fps)
     metadata["odor_on_idx"] = int(odor_on_idx)
     metadata["odor_off_idx"] = int(odor_off_idx)
@@ -390,7 +472,7 @@ def prepare_raw(
         "fly",
         "fly_number",
         "trial_type",
-        "testing_trial",
+        TRIAL_ID_COLUMN,
         "fps",
         "odor_on_idx",
         "odor_off_idx",
@@ -420,7 +502,7 @@ if __name__ == "__main__":  # pragma: no cover - self-check harness
             "fly": ["f"] * 2,
             "fly_number": [1, 1],
             "trial_type": ["testing", "testing"],
-            "testing_trial": [1, 2],
+            TRIAL_ID_COLUMN: ["trial_1", "trial_2"],
             **{f"eye_x_f{i}": rng.normal(size=2) for i in range(3)},
             **{f"eye_y_f{i}": rng.normal(size=2) for i in range(3)},
             **{f"prob_x_f{i}": rng.normal(size=2) for i in range(3)},
@@ -433,12 +515,12 @@ if __name__ == "__main__":  # pragma: no cover - self-check harness
             "fly": ["f", "f"],
             "fly_number": [1, 1],
             "trial_type": ["testing", "testing"],
-            "testing_trial": [1, 2],
-            "trial_label": [0, 1],
+            TRIAL_ID_COLUMN: ["trial_1", "trial_2"],
+            "user_score_odor": [0, 1],
         }
     )
-    fallback_labels = keyed_labels.drop(columns=["testing_trial"])
-    fallback_labels.loc[:, "trial_label"] = [1, 0]
+    fallback_labels = keyed_labels.drop(columns=[TRIAL_ID_COLUMN])
+    fallback_labels.loc[:, "user_score_odor"] = [1, 0]
 
     with TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -459,7 +541,7 @@ if __name__ == "__main__":  # pragma: no cover - self-check harness
             "fly",
             "fly_number",
             "trial_type",
-            "testing_trial",
+            TRIAL_ID_COLUMN,
             "fps",
             "odor_on_idx",
             "odor_off_idx",
@@ -513,7 +595,7 @@ if __name__ == "__main__":  # pragma: no cover - self-check harness
                     "fly": "f",
                     "fly_number": 1,
                     "trial_type": "testing",
-                    "testing_trial": idx + 1,
+                    TRIAL_ID_COLUMN: f"trial_{idx + 1}",
                 }
                 for idx in range(matrix.shape[0])
             ],

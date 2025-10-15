@@ -19,7 +19,7 @@ def sample_tables(tmp_path: Path) -> tuple[Path, Path]:
             "fly": ["f"] * 4,
             "fly_number": [1] * 4,
             "trial_type": ["testing"] * 4,
-            "testing_trial": [1, 2, 3, 4],
+            "trial_label": [f"trial_{i}" for i in range(1, 5)],
             **{f"eye_x_f{i}": rng.normal(size=4) for i in range(5)},
             **{f"eye_y_f{i}": rng.normal(size=4) for i in range(5)},
             **{f"prob_x_f{i}": rng.normal(size=4) for i in range(5)},
@@ -32,8 +32,8 @@ def sample_tables(tmp_path: Path) -> tuple[Path, Path]:
             "fly": ["f"] * 4,
             "fly_number": [1] * 4,
             "trial_type": ["testing"] * 4,
-            "testing_trial": [1, 2, 3, 4],
-            "trial_label": [0, 1, 0, 1],
+            "trial_label": [f"trial_{i}" for i in range(1, 5)],
+            "user_score_odor": [0, 1, 0, 1],
         }
     )
     data_path = tmp_path / "data.csv"
@@ -59,7 +59,7 @@ def test_prepare_raw_roundtrip(sample_tables: tuple[Path, Path], tmp_path: Path)
         "fly",
         "fly_number",
         "trial_type",
-        "testing_trial",
+        "trial_label",
         "fps",
         "odor_on_idx",
         "odor_off_idx",
@@ -95,7 +95,7 @@ def test_prepare_raw_truncation_and_dirval(sample_tables: tuple[Path, Path], tmp
 
 def test_prepare_raw_row_order_alignment(sample_tables: tuple[Path, Path], tmp_path: Path) -> None:
     data_path, label_path = sample_tables
-    labels_no_trial = pd.read_csv(label_path).drop(columns=["testing_trial"])
+    labels_no_trial = pd.read_csv(label_path).drop(columns=["trial_label"])
     fallback_labels_path = tmp_path / "labels_no_trial.csv"
     labels_no_trial.to_csv(fallback_labels_path, index=False)
     prepared = prepare_raw(
@@ -113,7 +113,7 @@ def test_prepare_raw_rejects_per_fly_table(tmp_path: Path) -> None:
             "fly": ["f"],
             "fly_number": [1],
             "trial_type": ["testing"],
-            "testing_trial": [1],
+            "trial_label": ["trial_1"],
             **{f"eye_x_f{i}": [0.1 * i] for i in range(5)},
             **{f"eye_y_f{i}": [0.2 * i] for i in range(5)},
             **{f"prob_x_f{i}": [0.3 * i] for i in range(5)},
@@ -126,8 +126,8 @@ def test_prepare_raw_rejects_per_fly_table(tmp_path: Path) -> None:
             "fly": ["f"],
             "fly_number": [1],
             "trial_type": ["testing"],
-            "testing_trial": [1],
-            "trial_label": [1],
+            "trial_label": ["trial_1"],
+            "user_score_odor": [1],
         }
     )
     data_path = tmp_path / "agg.csv"
@@ -154,7 +154,7 @@ def test_prepare_raw_from_matrix(tmp_path: Path) -> None:
             "fly": "f1",
             "fly_number": 1,
             "trial_type": "testing",
-            "testing_trial": idx + 1,
+            "trial_label": f"trial_{idx + 1}",
         }
         for idx in range(3)
     ]
@@ -172,8 +172,8 @@ def test_prepare_raw_from_matrix(tmp_path: Path) -> None:
             "fly": ["f1"] * 3,
             "fly_number": [1] * 3,
             "trial_type": ["testing"] * 3,
-            "testing_trial": [1, 2, 3],
-            "trial_label": [0, 1, 0],
+            "trial_label": [f"trial_{i}" for i in range(1, 4)],
+            "user_score_odor": [0, 1, 0],
         }
     )
     labels_path = tmp_path / "labels.csv"
@@ -222,7 +222,7 @@ def test_prepare_raw_from_object_matrix(tmp_path: Path) -> None:
             "fly": "f1",
             "fly_number": 1,
             "trial_type": "testing",
-            "testing_trial": idx + 1,
+            "trial_label": f"trial_{idx + 1}",
         }
         for idx in range(2)
     ]
@@ -240,8 +240,8 @@ def test_prepare_raw_from_object_matrix(tmp_path: Path) -> None:
             "fly": ["f1"] * 2,
             "fly_number": [1] * 2,
             "trial_type": ["testing"] * 2,
-            "testing_trial": [1, 2],
-            "trial_label": [0, 1],
+            "trial_label": [f"trial_{i}" for i in range(1, 3)],
+            "user_score_odor": [0, 1],
         }
     )
     labels_path = tmp_path / "labels_object.csv"
