@@ -32,3 +32,4 @@ Homepage = "https://example.com/flypca"
 
 [project.scripts]
 flypca = "flypca.cli:app"
+flybehavior-response = "flybehavior_response.cli:main"

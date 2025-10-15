@@ -25,6 +25,7 @@ clustering:
     - diag
   datasets:
     - opto_EB
+    - opto_benz_1
   use_projections: auto
   combine_with_features: auto
   projection_components: 3
