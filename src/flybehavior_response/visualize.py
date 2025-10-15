@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -99,9 +99,15 @@ def generate_visuals(
     seed: int,
     output_dir: Path,
     verbose: bool,
+    trace_prefixes: Sequence[str] | None = None,
 ) -> Dict[str, Path]:
     logger = get_logger(__name__, verbose=verbose)
-    dataset = load_and_merge(data_csv, labels_csv, logger_name=__name__)
+    dataset = load_and_merge(
+        data_csv,
+        labels_csv,
+        logger_name=__name__,
+        trace_prefixes=trace_prefixes,
+    )
     config_path = run_dir / "config.json"
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found at {config_path}. Run training before visualization.")

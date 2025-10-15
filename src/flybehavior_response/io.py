@@ -6,10 +6,11 @@ import re
 from dataclasses import dataclass
 from logging import Logger
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Sequence
 
 import pandas as pd
 
+from .io_wide import find_series_columns
 from .logging_utils import get_logger
 
 MERGE_KEYS = ["fly", "fly_number", "trial_label"]
@@ -18,6 +19,8 @@ LABEL_COLUMN = "user_score_odor"
 LABEL_INTENSITY_COLUMN = "user_score_odor_intensity"
 TRACE_PATTERN = re.compile(r"^dir_val_(\d+)$")
 TRACE_RANGE = (0, 3600)
+DEFAULT_TRACE_PREFIXES = ["dir_val_"]
+RAW_TRACE_PREFIXES = ["eye_x_f", "eye_y_f", "prob_x_f", "prob_y_f"]
 FEATURE_COLUMNS = {
     "AUC-Before",
     "AUC-During",
@@ -42,6 +45,7 @@ class MergedDataset:
     feature_columns: List[str]
     label_intensity: pd.Series
     sample_weights: pd.Series
+    trace_prefixes: List[str]
 
 
 def _load_csv(path: Path) -> pd.DataFrame:
@@ -69,21 +73,69 @@ def _validate_keys(frame: pd.DataFrame, path: Path) -> None:
         )
 
 
-def _extract_trace_columns(columns: Iterable[str]) -> List[str]:
-    trace_cols: List[str] = []
-    for col in columns:
-        match = TRACE_PATTERN.match(col)
-        if not match:
-            continue
-        idx = int(match.group(1))
-        if TRACE_RANGE[0] <= idx <= TRACE_RANGE[1]:
-            trace_cols.append(col)
-    return sorted(trace_cols, key=lambda x: int(x.split("_")[-1]))
+def _filter_trace_columns(
+    df: pd.DataFrame, prefixes: Sequence[str]
+) -> tuple[List[str], pd.DataFrame, List[str]]:
+    """Validate and return trace columns for the requested prefixes."""
+
+    requested = list(prefixes)
+    resolved_prefixes = list(requested)
+    mapping: dict[str, List[str]] | None = None
+
+    try:
+        mapping = find_series_columns(df, requested)
+    except ValueError:
+        if requested == DEFAULT_TRACE_PREFIXES:
+            try:
+                mapping = find_series_columns(df, RAW_TRACE_PREFIXES)
+            except ValueError:
+                mapping = None
+            else:
+                resolved_prefixes = list(RAW_TRACE_PREFIXES)
+        if mapping is None:
+            if requested != DEFAULT_TRACE_PREFIXES:
+                raise
+            mapping = {}
+            prefix = requested[0]
+            matches: List[tuple[int, str]] = []
+            for column in df.columns:
+                match = TRACE_PATTERN.match(column)
+                if match:
+                    idx = int(match.group(1))
+                    if TRACE_RANGE[0] <= idx <= TRACE_RANGE[1]:
+                        matches.append((idx, column))
+            if not matches:
+                raise
+            matches.sort(key=lambda pair: pair[0])
+            mapping[prefix] = [name for _, name in matches]
+            resolved_prefixes = list(requested)
+
+    adjusted_df = df
+    if resolved_prefixes == DEFAULT_TRACE_PREFIXES:
+        allowed = TRACE_RANGE[1] - TRACE_RANGE[0] + 1
+        extra_columns: List[str] = []
+        for prefix, columns in mapping.items():
+            if len(columns) > allowed:
+                extra_columns.extend(columns[allowed:])
+                mapping[prefix] = columns[:allowed]
+        if extra_columns:
+            adjusted_df = df.drop(columns=extra_columns)
+
+    allowed_columns: List[str] = []
+    for prefix in resolved_prefixes:
+        allowed_columns.extend(mapping[prefix])
+    allowed_set = set(allowed_columns)
+    ordered = [col for col in adjusted_df.columns if col in allowed_set]
+    return ordered, adjusted_df, resolved_prefixes
 
 
-def validate_feature_columns(frame: pd.DataFrame) -> List[str]:
+def validate_feature_columns(
+    frame: pd.DataFrame, *, allow_empty: bool = False
+) -> List[str]:
     available = [col for col in frame.columns if col in FEATURE_COLUMNS]
     if not available:
+        if allow_empty:
+            return []
         raise DataValidationError(
             "No engineered feature columns detected. Expected columns include: "
             f"{sorted(FEATURE_COLUMNS)}"
@@ -117,7 +169,13 @@ def _compute_sample_weights(intensity: pd.Series) -> pd.Series:
     return weights
 
 
-def load_and_merge(data_csv: Path, labels_csv: Path, logger_name: str = __name__) -> MergedDataset:
+def load_and_merge(
+    data_csv: Path,
+    labels_csv: Path,
+    *,
+    logger_name: str = __name__,
+    trace_prefixes: Sequence[str] | None = None,
+) -> MergedDataset:
     """Load and merge data and labels CSVs."""
     logger = get_logger(logger_name)
     logger.info("Loading data CSV: %s", data_csv)
@@ -153,18 +211,38 @@ def load_and_merge(data_csv: Path, labels_csv: Path, logger_name: str = __name__
     coerced_labels = _coerce_labels(labels_df[LABEL_COLUMN], labels_csv)
     labels_df[LABEL_COLUMN] = coerced_labels
 
-    trace_cols = _extract_trace_columns(data_df.columns)
+    requested_prefixes = list(trace_prefixes or DEFAULT_TRACE_PREFIXES)
+    try:
+        trace_cols, data_df, resolved_prefixes = _filter_trace_columns(
+            data_df, requested_prefixes
+        )
+    except ValueError as exc:
+        raise DataValidationError(str(exc)) from exc
     if not trace_cols:
         raise DataValidationError(
-            "No trace columns found. Expected columns matching 'dir_val_0'..'dir_val_3600'."
+            "No trace columns found. Expected columns matching prefixes: %s" % requested_prefixes
         )
+    if resolved_prefixes == DEFAULT_TRACE_PREFIXES:
+        dropped = [col for col in data_df.columns if TRACE_PATTERN.match(col) and col not in trace_cols]
+        if dropped:
+            data_df = data_df.drop(columns=dropped)
+            logger.info("Dropped %d trace columns outside %s", len(dropped), TRACE_RANGE)
 
-    to_drop = [col for col in data_df.columns if TRACE_PATTERN.match(col) and col not in trace_cols]
-    if to_drop:
-        data_df = data_df.drop(columns=to_drop)
-        logger.info("Dropped %d trace columns outside %s", len(to_drop), TRACE_RANGE)
-
-    feature_cols = validate_feature_columns(data_df)
+    allow_empty_features = resolved_prefixes != DEFAULT_TRACE_PREFIXES
+    if not allow_empty_features:
+        # Legacy dir_val_ exports may omit engineered summaries entirely.
+        if not any(col in data_df.columns for col in FEATURE_COLUMNS):
+            allow_empty_features = True
+            logger.info(
+                "Detected dir_val_ traces without engineered features; proceeding with trace-only dataset."
+            )
+    feature_cols = validate_feature_columns(
+        data_df, allow_empty=allow_empty_features
+    )
+    if not feature_cols and allow_empty_features:
+        logger.info(
+            "No engineered feature columns detected; continuing with trace-only dataset."
+        )
     merged = pd.merge(
         data_df,
         labels_df[[*MERGE_KEYS, LABEL_COLUMN]],
@@ -207,6 +285,7 @@ def load_and_merge(data_csv: Path, labels_csv: Path, logger_name: str = __name__
         feature_columns=feature_cols,
         label_intensity=intensity,
         sample_weights=weights,
+        trace_prefixes=resolved_prefixes,
     )
 
 

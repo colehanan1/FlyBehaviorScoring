@@ -4,21 +4,160 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import pandas as pd
+import typer
 
+from .config import PipelineConfig
 from .evaluate import evaluate_models, load_pipeline, save_metrics
 from .features import DEFAULT_FEATURES, parse_feature_list
-from .io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge, write_parquet
+from .io import (
+    DEFAULT_TRACE_PREFIXES,
+    LABEL_COLUMN,
+    LABEL_INTENSITY_COLUMN,
+    load_and_merge,
+    write_parquet,
+)
 from .logging_utils import get_logger, set_global_logging
 from .modeling import supported_models
+from .prepare_raw import (
+    DEFAULT_OUTPUT_PATH as RAW_DEFAULT_OUTPUT_PATH,
+    DEFAULT_PREFIXES as RAW_DEFAULT_PREFIXES,
+    prepare_raw,
+)
 from .train import train_models
 from .visualize import generate_visuals
 
 DEFAULT_ARTIFACTS_DIR = Path("./artifacts")
 DEFAULT_PLOTS_DIR = DEFAULT_ARTIFACTS_DIR / "plots"
+
+
+prepare_raw_app = typer.Typer(add_completion=False)
+
+
+@prepare_raw_app.callback(invoke_without_command=True, no_args_is_help=True)
+def prepare_raw_cli(
+    data_csv_arg: Optional[Path] = typer.Argument(
+        None,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional positional path to per-trial raw coordinate CSV",
+    ),
+    *,
+    data_csv: Optional[Path] = typer.Option(
+        None,
+        "--data-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to per-trial raw coordinate CSV",
+    ),
+    data_npy: Optional[Path] = typer.Option(
+        None,
+        "--data-npy",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to per-trial raw coordinate matrix (.npy)",
+    ),
+    matrix_meta: Optional[Path] = typer.Option(
+        None,
+        "--matrix-meta",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="JSON file describing the matrix layout and per-trial metadata",
+    ),
+    labels_csv: Path = typer.Option(
+        ...,
+        "--labels-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to labels CSV",
+    ),
+    out: Path = typer.Option(
+        RAW_DEFAULT_OUTPUT_PATH,
+        "--out",
+        help="Destination CSV for prepared coordinates",
+    ),
+    fps: int = typer.Option(40, "--fps", help="Frame rate (frames per second)"),
+    odor_on_idx: int = typer.Option(1230, "--odor-on-idx", help="Index where odor stimulus begins"),
+    odor_off_idx: int = typer.Option(2430, "--odor-off-idx", help="Index where odor stimulus ends"),
+    truncate_before: int = typer.Option(
+        0,
+        "--truncate-before",
+        help="Number of frames to keep before odor onset (0 keeps all)",
+    ),
+    truncate_after: int = typer.Option(
+        0,
+        "--truncate-after",
+        help="Number of frames to keep after odor offset (0 keeps all)",
+    ),
+    series_prefixes: str = typer.Option(
+        ",".join(RAW_DEFAULT_PREFIXES),
+        "--series-prefixes",
+        help="Comma-separated list of time-series prefixes to extract",
+    ),
+    compute_dir_val: bool = typer.Option(
+        False,
+        "--compute-dir-val/--no-compute-dir-val",
+        help="Also compute dir_val distances between proboscis and eye coordinates",
+    ),
+    verbose: bool = typer.Option(False, "--verbose/--no-verbose", help="Enable verbose logging"),
+) -> None:
+    if data_npy is not None:
+        if data_csv is not None or data_csv_arg is not None:
+            raise typer.BadParameter(
+                "When using --data-npy, do not also supply a CSV path. Provide only the matrix and metadata JSON."
+            )
+        if matrix_meta is None:
+            raise typer.BadParameter("--matrix-meta is required when using --data-npy inputs.")
+    else:
+        if matrix_meta is not None:
+            raise typer.BadParameter("--matrix-meta is only valid together with --data-npy.")
+        if data_csv is None:
+            if data_csv_arg is None:
+                raise typer.BadParameter(
+                    "Provide --data-csv or a positional raw CSV path when invoking prepare-raw."
+                )
+            if data_csv_arg.suffix.lower() == ".npy":
+                raise typer.BadParameter(
+                    "Detected positional .npy input; re-run with --data-npy and provide --matrix-meta for metadata."
+                )
+            data_csv = data_csv_arg
+        elif data_csv_arg is not None:
+            raise typer.BadParameter(
+                "Received raw CSV as both positional argument and --data-csv. Specify it only once."
+            )
+
+    prefixes = [item.strip() for item in series_prefixes.split(",") if item.strip()]
+    if not prefixes:
+        raise typer.BadParameter("Provide at least one series prefix.")
+    set_global_logging(verbose=verbose)
+    prepared_df = prepare_raw(
+        data_csv=data_csv,
+        data_npy=data_npy,
+        matrix_meta=matrix_meta,
+        labels_csv=labels_csv,
+        out_path=out,
+        fps=fps,
+        odor_on_idx=odor_on_idx,
+        odor_off_idx=odor_off_idx,
+        truncate_before=truncate_before,
+        truncate_after=truncate_after,
+        series_prefixes=prefixes,
+        compute_dir_val=compute_dir_val,
+        verbose=verbose,
+    )
+    global_frames = int(prepared_df["total_frames"].iat[0]) if not prepared_df.empty else 0
+    typer.echo(
+        f"Prepared {len(prepared_df)} trials with {global_frames} frames per trial using prefixes {prefixes}. Output -> {out}"
+    )
 
 
 def _resolve_run_dir(artifacts_dir: Path, run_dir: Path | None) -> Path:
@@ -44,11 +183,36 @@ def _resolve_run_dir(artifacts_dir: Path, run_dir: Path | None) -> Path:
 
 
 def _parse_models(value: str | None) -> List[str]:
-    if value is None or value == "both":
-        return ["both"]
+    if value is None:
+        return list(supported_models())
+    if value == "all":
+        return list(supported_models())
+    if value == "both":
+        return ["lda", "logreg"]
     if value not in supported_models():
         raise ValueError(f"Unsupported model choice: {value}")
     return [value]
+
+
+def _parse_series_prefixes(raw: str | None) -> List[str]:
+    if raw is None:
+        return list(DEFAULT_TRACE_PREFIXES)
+    prefixes = [item.strip() for item in raw.split(",") if item.strip()]
+    if not prefixes:
+        raise ValueError("At least one series prefix must be provided.")
+    return prefixes
+
+
+def _select_trace_prefixes(
+    args: argparse.Namespace, *, fallback: Sequence[str] | None = None
+) -> List[str] | None:
+    if getattr(args, "raw_series", False):
+        return list(RAW_DEFAULT_PREFIXES)
+    if args.series_prefixes is not None:
+        return _parse_series_prefixes(args.series_prefixes)
+    if fallback:
+        return list(fallback)
+    return None
 
 
 def _configure_parser() -> argparse.ArgumentParser:
@@ -62,6 +226,17 @@ def _configure_parser() -> argparse.ArgumentParser:
         type=str,
         default=",".join(DEFAULT_FEATURES),
         help="Comma-separated list of engineered features to include",
+    )
+    common_parser.add_argument(
+        "--series-prefixes",
+        type=str,
+        default=None,
+        help="Comma-separated list of time-series prefixes to load",
+    )
+    common_parser.add_argument(
+        "--raw-series",
+        action="store_true",
+        help="Use the default raw coordinate prefixes (eye/proboscis channels)",
     )
     common_parser.add_argument(
         "--include-auc-before",
@@ -85,9 +260,9 @@ def _configure_parser() -> argparse.ArgumentParser:
     common_parser.add_argument(
         "--model",
         type=str,
-        choices=["lda", "logreg", "both"],
-        default="both",
-        help="Model to train/evaluate",
+        choices=["lda", "logreg", "mlp", "both", "all"],
+        default="all",
+        help="Model to train/evaluate ('all' runs every supported model; 'both' keeps LDA+logreg)",
     )
     common_parser.add_argument("--cv", type=int, default=0, help="Number of stratified folds for cross-validation")
     common_parser.add_argument(
@@ -160,6 +335,22 @@ def _configure_parser() -> argparse.ArgumentParser:
         default=DEFAULT_ARTIFACTS_DIR / "predictions.csv",
         help="Path to write predictions CSV",
     )
+    predict_parser.add_argument("--fly", type=str, help="Filter predictions to a specific fly identifier")
+    predict_parser.add_argument(
+        "--fly-number",
+        type=int,
+        help="Filter predictions to a specific numeric fly identifier",
+    )
+    predict_parser.add_argument(
+        "--trial-label",
+        type=str,
+        help="Filter predictions to a specific trial label (aliases legacy testing_trial)",
+    )
+    predict_parser.add_argument(
+        "--testing-trial",
+        type=str,
+        help="Legacy alias for --trial-label when datasets expose a testing_trial column",
+    )
 
     return parser
 
@@ -168,7 +359,13 @@ def _handle_prepare(args: argparse.Namespace) -> None:
     if not args.data_csv or not args.labels_csv:
         raise ValueError("--data-csv and --labels-csv are required for prepare")
     logger = get_logger("prepare", verbose=args.verbose)
-    dataset = load_and_merge(args.data_csv, args.labels_csv, logger_name="prepare")
+    prefixes = _select_trace_prefixes(args)
+    dataset = load_and_merge(
+        args.data_csv,
+        args.labels_csv,
+        logger_name="prepare",
+        trace_prefixes=prefixes,
+    )
     balance = dataset.frame[LABEL_COLUMN].astype(int).value_counts(normalize=True).to_dict()
     logger.info("Class balance: %s", balance)
     if args.dry_run:
@@ -183,6 +380,7 @@ def _handle_train(args: argparse.Namespace) -> None:
     if not args.data_csv or not args.labels_csv:
         raise ValueError("--data-csv and --labels-csv are required for train")
     features = parse_feature_list(args.features, args.include_auc_before)
+    prefixes = _select_trace_prefixes(args)
     metrics = train_models(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,
@@ -197,6 +395,7 @@ def _handle_train(args: argparse.Namespace) -> None:
         dry_run=args.dry_run,
         logreg_solver=args.logreg_solver,
         logreg_max_iter=args.logreg_max_iter,
+        trace_prefixes=prefixes,
     )
     logger = get_logger("train", verbose=args.verbose)
     logger.info("Training metrics: %s", json.dumps(metrics))
@@ -219,7 +418,19 @@ def _handle_eval(args: argparse.Namespace) -> None:
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
     logger = get_logger("eval", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
-    dataset = load_and_merge(args.data_csv, args.labels_csv, logger_name="eval")
+    config_prefixes: Sequence[str] | None = None
+    config_path = run_dir / "config.json"
+    if config_path.exists():
+        config = PipelineConfig.from_json(config_path)
+        if config.trace_series_prefixes:
+            config_prefixes = config.trace_series_prefixes
+    prefixes = _select_trace_prefixes(args, fallback=config_prefixes)
+    dataset = load_and_merge(
+        args.data_csv,
+        args.labels_csv,
+        logger_name="eval",
+        trace_prefixes=prefixes,
+    )
     models = _load_models(run_dir)
     drop_cols = [LABEL_COLUMN]
     if LABEL_INTENSITY_COLUMN in dataset.frame.columns:
@@ -250,6 +461,13 @@ def _handle_viz(args: argparse.Namespace) -> None:
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
     logger = get_logger("viz", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
+    config_prefixes: Sequence[str] | None = None
+    config_path = run_dir / "config.json"
+    if config_path.exists():
+        config = PipelineConfig.from_json(config_path)
+        if config.trace_series_prefixes:
+            config_prefixes = config.trace_series_prefixes
+    prefixes = _select_trace_prefixes(args, fallback=config_prefixes)
     generate_visuals(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,
@@ -257,34 +475,117 @@ def _handle_viz(args: argparse.Namespace) -> None:
         seed=args.seed,
         output_dir=args.plots_dir,
         verbose=args.verbose,
+        trace_prefixes=prefixes,
     )
 
 
 def _handle_predict(args: argparse.Namespace) -> None:
     if not args.data_csv:
         raise ValueError("--data-csv is required for predict")
+    logger = get_logger("predict", verbose=args.verbose)
+    logger.info("Loading prediction data: %s", args.data_csv)
     model = load_pipeline(args.model_path)
     data_df = pd.read_csv(args.data_csv)
-    keys = [col for col in ["fly", "fly_number", "trial_label"] if col in data_df.columns]
-    output = data_df[keys].copy() if keys else pd.DataFrame()
-    output["prediction"] = model.predict(data_df)
+    logger.debug("Prediction dataset shape: %s", data_df.shape)
+
+    original_columns = set(data_df.columns)
+    had_testing_trial_column = "testing_trial" in original_columns
+    had_trial_label_column = "trial_label" in original_columns
+    if not had_trial_label_column and had_testing_trial_column:
+        logger.info("Detected legacy 'testing_trial' column; treating it as 'trial_label'.")
+        data_df = data_df.rename(columns={"testing_trial": "trial_label"})
+        had_trial_label_column = True
+
+    filtered_df = data_df.copy()
+    applied_filters: list[str] = []
+
+    if args.fly is not None:
+        if "fly" not in filtered_df.columns:
+            raise ValueError("Column 'fly' missing from prediction CSV; cannot filter by fly.")
+        filtered_df = filtered_df.loc[filtered_df["fly"].astype(str) == args.fly]
+        applied_filters.append(f"fly={args.fly}")
+
+    if args.fly_number is not None:
+        if "fly_number" not in filtered_df.columns:
+            raise ValueError(
+                "Column 'fly_number' missing from prediction CSV; cannot filter by fly number."
+            )
+        numeric_fly_numbers = pd.to_numeric(filtered_df["fly_number"], errors="coerce")
+        filtered_df = filtered_df.loc[numeric_fly_numbers == args.fly_number]
+        applied_filters.append(f"fly_number={args.fly_number}")
+
+    trial_filter_value = args.trial_label if args.trial_label is not None else args.testing_trial
+    if trial_filter_value is not None:
+        if "trial_label" not in filtered_df.columns:
+            missing_column = "trial_label" if had_trial_label_column else "testing_trial"
+            raise ValueError(
+                f"Column '{missing_column}' missing from prediction CSV; cannot filter by trial."
+            )
+        filtered_df = filtered_df.loc[
+            filtered_df["trial_label"].astype(str) == str(trial_filter_value)
+        ]
+        applied_filters.append(f"trial_label={trial_filter_value}")
+
+    if filtered_df.empty:
+        criteria = ", ".join(applied_filters) if applied_filters else "provided dataset"
+        raise ValueError(f"No rows matched the prediction filters ({criteria}).")
+
+    if applied_filters and len(filtered_df) > 1:
+        raise ValueError(
+            "Prediction filters %s matched %d rows; refine selection with more specific values."
+            % (applied_filters, len(filtered_df))
+        )
+
+    filtered_df = filtered_df.copy()
+    if had_testing_trial_column and "testing_trial" not in filtered_df.columns:
+        filtered_df["testing_trial"] = filtered_df.get("trial_label", pd.NA)
+
+    feature_df = filtered_df.drop(columns=[LABEL_COLUMN, LABEL_INTENSITY_COLUMN], errors="ignore")
+
+    logger.info(
+        "Scoring %d row(s) with model %s", len(filtered_df), args.model_path.name
+    )
+    predictions = model.predict(feature_df)
+
+    output_columns = [
+        col
+        for col in ["dataset", "fly", "fly_number", "trial_label", "testing_trial"]
+        if col in filtered_df.columns
+    ]
+    output = filtered_df[output_columns].copy() if output_columns else pd.DataFrame()
+    output["prediction"] = predictions.astype(int)
+
     if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(data_df)
+        proba = model.predict_proba(feature_df)
         if proba.ndim == 2 and proba.shape[1] >= 2:
             output["probability"] = proba[:, 1]
+
     if args.dry_run:
-        logger = get_logger("predict", verbose=args.verbose)
         logger.info("Dry run enabled; predictions not written")
         return
+
     args.output_csv.parent.mkdir(parents=True, exist_ok=True)
     output.to_csv(args.output_csv, index=False)
-    logger = get_logger("predict", verbose=args.verbose)
     logger.info("Predictions written to %s", args.output_csv)
 
 
 def main(argv: list[str] | None = None) -> None:
+    raw_args = list(argv) if argv is not None else sys.argv[1:]
+    if raw_args and raw_args[0] == "prepare-raw":
+        command_args = raw_args[1:]
+        try:
+            prepare_raw_app(
+                prog_name="flybehavior-response prepare-raw",
+                args=command_args,
+                standalone_mode=False,
+            )
+        except SystemExit as exc:  # pragma: no cover - delegated to Typer
+            if exc.code:
+                raise
+        return
+
     parser = _configure_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_args)
     set_global_logging(verbose=args.verbose)
 
     if args.command == "prepare":

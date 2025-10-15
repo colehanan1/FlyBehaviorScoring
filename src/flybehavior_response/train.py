@@ -6,15 +6,24 @@ import random
 from pathlib import Path
 from typing import Dict, Sequence
 
+import matplotlib.pyplot as plt
 import numpy as np
 from joblib import dump
+from sklearn.metrics import ConfusionMatrixDisplay
+from sklearn.model_selection import train_test_split
 
 from .config import PipelineConfig, compute_class_balance, hash_file, make_run_artifacts
 from .evaluate import evaluate_models, perform_cross_validation, save_metrics
 from .features import build_column_transformer, validate_features
 from .io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge
 from .logging_utils import get_logger
-from .modeling import MODEL_LDA, MODEL_LOGREG, build_model_pipeline, supported_models
+from .modeling import (
+    MODEL_LDA,
+    MODEL_LOGREG,
+    MODEL_MLP,
+    build_model_pipeline,
+    supported_models,
+)
 from .weights import expand_samples_by_weight
 
 
@@ -38,13 +47,33 @@ def train_models(
     dry_run: bool = False,
     logreg_solver: str = "lbfgs",
     logreg_max_iter: int = 1000,
+    trace_prefixes: Sequence[str] | None = None,
 ) -> Dict[str, Dict[str, object]]:
     logger = get_logger(__name__, verbose=verbose)
     _set_seeds(seed)
 
-    dataset = load_and_merge(data_csv, labels_csv, logger_name=__name__)
-    selected_features = validate_features(features, dataset.feature_columns, logger_name=__name__)
-    logger.debug("Selected features: %s", selected_features)
+    dataset = load_and_merge(
+        data_csv,
+        labels_csv,
+        logger_name=__name__,
+        trace_prefixes=trace_prefixes,
+    )
+    resolved_prefixes = list(dataset.trace_prefixes)
+    logger.debug("Trace prefixes resolved to: %s", resolved_prefixes)
+    if dataset.feature_columns:
+        selected_features = validate_features(
+            features, dataset.feature_columns, logger_name=__name__
+        )
+        logger.debug("Selected features: %s", selected_features)
+    else:
+        if features:
+            logger.warning(
+                "Ignoring requested engineered features %s because the dataset does not "
+                "include any of the expected columns.",
+                sorted(features),
+            )
+        selected_features = []
+        logger.debug("Dataset does not contain engineered features; proceeding with trace-only preprocessing.")
     logger.debug("Trace columns count: %d", len(dataset.trace_columns))
 
     sample_weights = dataset.sample_weights
@@ -65,10 +94,22 @@ def train_models(
     )
 
     requested_models = list(models)
-    if "both" in requested_models:
-        requested_models = [MODEL_LDA, MODEL_LOGREG]
     if not requested_models:
         requested_models = list(supported_models())
+
+    if "both" in requested_models or "all" in requested_models:
+        logger.warning(
+            "Received legacy model keyword in train_models; please provide explicit model list."
+        )
+        merged = []
+        for name in requested_models:
+            if name == "both":
+                merged.extend([MODEL_LDA, MODEL_LOGREG])
+            elif name == "all":
+                merged.extend(supported_models())
+            else:
+                merged.append(name)
+        requested_models = list(dict.fromkeys(merged))
 
     invalid = [name for name in requested_models if name not in supported_models()]
     if invalid:
@@ -78,7 +119,11 @@ def train_models(
     if artifacts:
         logger.info("Writing artifacts to %s", artifacts.run_dir)
 
-    trace_indices = [int(col.split("_")[-1]) for col in dataset.trace_columns]
+    trace_indices = []
+    for col in dataset.trace_columns:
+        digits = "".join(ch for ch in col if ch.isdigit())
+        if digits:
+            trace_indices.append(int(digits))
     if trace_indices:
         trace_range = (min(trace_indices), max(trace_indices))
     else:
@@ -90,6 +135,8 @@ def train_models(
         "mean": float(sample_weights.mean()),
         "max": float(sample_weights.max()),
     }
+
+    logger.info("Trace series prefixes: %s", resolved_prefixes)
 
     config = PipelineConfig(
         features=list(selected_features),
@@ -110,6 +157,7 @@ def train_models(
         label_intensity_counts=intensity_counts,
         label_weight_summary=weight_summary,
         label_weight_strategy="proportional_intensity",
+        trace_series_prefixes=resolved_prefixes,
     )
 
     drop_columns = [LABEL_COLUMN]
@@ -118,7 +166,63 @@ def train_models(
     X = dataset.frame.drop(columns=drop_columns)
     y = dataset.frame[LABEL_COLUMN].astype(int)
 
+    X_train, X_test, y_train, y_test, sw_train, sw_test = train_test_split(
+        X,
+        y,
+        sample_weights,
+        test_size=0.2,
+        stratify=y,
+        random_state=seed,
+    )
+
+    logger.info(
+        "Split data into training (%d samples, reaction rate=%.2f) and test (%d samples, reaction rate=%.2f)",
+        len(y_train),
+        float(y_train.mean()),
+        len(y_test),
+        float(y_test.mean()),
+    )
+
     metrics: Dict[str, Dict[str, object]] = {}
+
+    def _write_split_predictions(
+        *,
+        split_name: str,
+        model_name: str,
+        pipeline,
+        X_split,
+        y_split,
+        weights_split,
+    ) -> None:
+        if dry_run:
+            return
+        assert artifacts is not None
+        predictions = pipeline.predict(X_split)
+        proba = None
+        if hasattr(pipeline, "predict_proba"):
+            proba = pipeline.predict_proba(X_split)
+            if proba is not None and proba.ndim == 2 and proba.shape[1] >= 2:
+                proba = proba[:, 1]
+            else:
+                proba = None
+        original_rows = dataset.frame.loc[y_split.index].copy()
+        if "model" in original_rows.columns:
+            original_rows = original_rows.drop(columns=["model"])
+        if "split" in original_rows.columns:
+            original_rows = original_rows.drop(columns=["split"])
+        original_rows.insert(0, "model", model_name)
+        original_rows.insert(1, "split", split_name)
+        original_rows["predicted_label"] = predictions.astype(int)
+        original_rows["correct"] = (
+            original_rows[LABEL_COLUMN].astype(int) == original_rows["predicted_label"]
+        )
+        if proba is not None:
+            original_rows["prob_reaction"] = proba.astype(float)
+        weights_aligned = weights_split.reindex(y_split.index)
+        original_rows["sample_weight"] = weights_aligned.to_numpy(dtype=float)
+        predictions_path = artifacts.run_dir / f"predictions_{model_name}_{split_name}.csv"
+        original_rows.to_csv(predictions_path, index=False)
+        logger.info("Saved %s predictions to %s", split_name, predictions_path)
 
     for model_name in requested_models:
         logger.info("Training model: %s", model_name)
@@ -130,18 +234,45 @@ def train_models(
             logreg_max_iter=logreg_max_iter,
         )
         if model_name == MODEL_LDA:
-            X_fit, y_fit = expand_samples_by_weight(X, y, sample_weights)
+            X_fit, y_fit = expand_samples_by_weight(X_train, y_train, sw_train)
             pipeline.fit(X_fit, y_fit)
         else:
-            pipeline.fit(X, y, model__sample_weight=sample_weights.to_numpy())
-        model_metrics = evaluate_models(
+            fit_kwargs = {}
+            if model_name in {MODEL_LOGREG, MODEL_MLP}:
+                fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
+            pipeline.fit(
+                X_train,
+                y_train,
+                **fit_kwargs,
+            )
+
+        train_metrics = evaluate_models(
             {model_name: pipeline},
-            X,
-            y,
-            sample_weight=sample_weights,
+            X_train,
+            y_train,
+            sample_weight=sw_train,
         )[model_name]
-        metrics[model_name] = model_metrics
-        logger.info("Model %s accuracy: %.3f", model_name, model_metrics["accuracy"])
+        test_metrics = evaluate_models(
+            {model_name: pipeline},
+            X_test,
+            y_test,
+            sample_weight=sw_test,
+        )[model_name]
+        metrics[model_name] = train_metrics
+        metrics[model_name]["test"] = test_metrics
+
+        logger.info(
+            "Model %s accuracy -> train: %.3f | test: %.3f",
+            model_name,
+            train_metrics["accuracy"],
+            test_metrics["accuracy"],
+        )
+        logger.info(
+            "Model %s F1 (binary) -> train: %.3f | test: %.3f",
+            model_name,
+            train_metrics["f1_binary"],
+            test_metrics["f1_binary"],
+        )
         model_step = pipeline.named_steps["model"]
         if hasattr(model_step, "n_iter_"):
             n_iter = model_step.n_iter_
@@ -165,13 +296,13 @@ def train_models(
         if cv >= 2:
             logger.info("Running %d-fold CV for %s", cv, model_name)
             cv_metrics = perform_cross_validation(
-                X,
-                dataset.frame[LABEL_COLUMN].astype(int),
+                X_train,
+                y_train,
                 model_type=model_name,
                 preprocessor=preprocessor,
                 cv=cv,
                 seed=seed,
-                sample_weights=sample_weights,
+                sample_weights=sw_train,
             )
             metrics[model_name]["cross_validation"] = cv_metrics
 
@@ -180,6 +311,37 @@ def train_models(
             model_path = artifacts.run_dir / f"model_{model_name}.joblib"
             dump(pipeline, model_path)
             logger.info("Saved model to %s", model_path)
+
+            _write_split_predictions(
+                split_name="train",
+                model_name=model_name,
+                pipeline=pipeline,
+                X_split=X_train,
+                y_split=y_train,
+                weights_split=sw_train,
+            )
+            _write_split_predictions(
+                split_name="test",
+                model_name=model_name,
+                pipeline=pipeline,
+                X_split=X_test,
+                y_split=y_test,
+                weights_split=sw_test,
+            )
+
+            cm = np.array(test_metrics["confusion_matrix"]["raw"], dtype=int)
+            fig, ax = plt.subplots(figsize=(5, 5))
+            disp = ConfusionMatrixDisplay(
+                confusion_matrix=cm,
+                display_labels=["No Reaction", "Reaction"],
+            )
+            disp.plot(ax=ax, cmap="Blues", values_format="d", colorbar=False)
+            ax.set_title(f"{model_name.upper()} Confusion Matrix (Test)")
+            fig.tight_layout()
+            cm_path = artifacts.run_dir / f"confusion_matrix_{model_name}.png"
+            fig.savefig(cm_path, dpi=300)
+            plt.close(fig)
+            logger.info("Saved confusion matrix plot to %s", cm_path)
 
     metrics_payload = {"models": metrics}
     if not dry_run:
