@@ -93,7 +93,8 @@ flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/
     --out /home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv
   ```
   The metadata JSON must contain a `metadata` (or `trials`) array with per-row descriptors (`dataset`, `fly`, `fly_number`, `trial_type`, `trial_label` – legacy exports may name this `testing_trial` and will be auto-renamed), an optional `layout` field (`trial_time_channel` or `trial_channel_time`), and optional `channel_prefixes` that match the prefixes passed via `--series-prefixes`.
-- The output keeps raw values with consistent 0-based frame indices per prefix, adds timing metadata, and can be fed directly to `flybehavior-response train --series-prefixes eye_x_f,eye_y_f,prob_x_f,prob_y_f`.
+- The output keeps raw values with consistent 0-based frame indices per prefix, adds timing metadata, and can be fed directly to `flybehavior-response train --raw-series` (or an explicit `--series-prefixes eye_x_f,eye_y_f,prob_x_f,prob_y_f` if you customise the channel order).
+- All subcommands (`prepare`, `train`, `eval`, `viz`, `predict`) accept `--raw-series` to prioritise the four eye/proboscis channels. When left unset, the loader still auto-detects the raw prefixes whenever `dir_val_` traces are absent, so legacy scripts continue to run unchanged.
 
 ## Label weighting and troubleshooting
 

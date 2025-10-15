@@ -6,11 +6,12 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import pandas as pd
 import typer
 
+from .config import PipelineConfig
 from .evaluate import evaluate_models, load_pipeline, save_metrics
 from .features import DEFAULT_FEATURES, parse_feature_list
 from .io import (
@@ -202,6 +203,18 @@ def _parse_series_prefixes(raw: str | None) -> List[str]:
     return prefixes
 
 
+def _select_trace_prefixes(
+    args: argparse.Namespace, *, fallback: Sequence[str] | None = None
+) -> List[str] | None:
+    if getattr(args, "raw_series", False):
+        return list(RAW_DEFAULT_PREFIXES)
+    if args.series_prefixes is not None:
+        return _parse_series_prefixes(args.series_prefixes)
+    if fallback:
+        return list(fallback)
+    return None
+
+
 def _configure_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fly behavior response modeling CLI")
 
@@ -217,8 +230,13 @@ def _configure_parser() -> argparse.ArgumentParser:
     common_parser.add_argument(
         "--series-prefixes",
         type=str,
-        default=",".join(DEFAULT_TRACE_PREFIXES),
-        help="Comma-separated list of time-series prefixes to load (default: dir_val_)",
+        default=None,
+        help="Comma-separated list of time-series prefixes to load",
+    )
+    common_parser.add_argument(
+        "--raw-series",
+        action="store_true",
+        help="Use the default raw coordinate prefixes (eye/proboscis channels)",
     )
     common_parser.add_argument(
         "--include-auc-before",
@@ -325,7 +343,7 @@ def _handle_prepare(args: argparse.Namespace) -> None:
     if not args.data_csv or not args.labels_csv:
         raise ValueError("--data-csv and --labels-csv are required for prepare")
     logger = get_logger("prepare", verbose=args.verbose)
-    prefixes = _parse_series_prefixes(args.series_prefixes)
+    prefixes = _select_trace_prefixes(args)
     dataset = load_and_merge(
         args.data_csv,
         args.labels_csv,
@@ -346,7 +364,7 @@ def _handle_train(args: argparse.Namespace) -> None:
     if not args.data_csv or not args.labels_csv:
         raise ValueError("--data-csv and --labels-csv are required for train")
     features = parse_feature_list(args.features, args.include_auc_before)
-    prefixes = _parse_series_prefixes(args.series_prefixes)
+    prefixes = _select_trace_prefixes(args)
     metrics = train_models(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,
@@ -384,7 +402,13 @@ def _handle_eval(args: argparse.Namespace) -> None:
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
     logger = get_logger("eval", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
-    prefixes = _parse_series_prefixes(args.series_prefixes)
+    config_prefixes: Sequence[str] | None = None
+    config_path = run_dir / "config.json"
+    if config_path.exists():
+        config = PipelineConfig.from_json(config_path)
+        if config.trace_series_prefixes:
+            config_prefixes = config.trace_series_prefixes
+    prefixes = _select_trace_prefixes(args, fallback=config_prefixes)
     dataset = load_and_merge(
         args.data_csv,
         args.labels_csv,
@@ -421,7 +445,13 @@ def _handle_viz(args: argparse.Namespace) -> None:
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
     logger = get_logger("viz", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
-    prefixes = _parse_series_prefixes(args.series_prefixes)
+    config_prefixes: Sequence[str] | None = None
+    config_path = run_dir / "config.json"
+    if config_path.exists():
+        config = PipelineConfig.from_json(config_path)
+        if config.trace_series_prefixes:
+            config_prefixes = config.trace_series_prefixes
+    prefixes = _select_trace_prefixes(args, fallback=config_prefixes)
     generate_visuals(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,

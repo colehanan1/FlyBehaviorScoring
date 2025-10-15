@@ -11,6 +11,7 @@ from typing import Any, Iterable, List, Sequence
 import numpy as np
 import pandas as pd
 
+from .io import RAW_TRACE_PREFIXES
 from .io_wide import find_series_columns
 from .logging_utils import get_logger
 
@@ -26,7 +27,7 @@ REQUIRED_METADATA_COLUMNS = [
 DEFAULT_OUTPUT_PATH = Path(
     "/home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv"
 )
-DEFAULT_PREFIXES = ["eye_x_f", "eye_y_f", "prob_x_f", "prob_y_f"]
+DEFAULT_PREFIXES = list(RAW_TRACE_PREFIXES)
 LABEL_COLUMN_CANDIDATES = [
     "user_score_odor",
     "label",
@@ -210,7 +211,7 @@ def _load_matrix_trials(
                 frame_df[column] = pd.to_numeric(frame_df[column], errors="raise")
         return frame_df, list(prefixes)
 
-    if matrix.dtype == object:
+    if matrix.dtype == object and matrix.ndim != 2:
         logger.warning(
             "Coercing object-dtype matrix from %s to a numeric array; ensure ragged trials are not present.",
             data_path,
