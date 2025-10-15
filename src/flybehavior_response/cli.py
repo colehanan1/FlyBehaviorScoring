@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import typer
@@ -34,14 +34,21 @@ DEFAULT_ARTIFACTS_DIR = Path("./artifacts")
 DEFAULT_PLOTS_DIR = DEFAULT_ARTIFACTS_DIR / "plots"
 
 
-prepare_raw_app = typer.Typer(add_completion=False, no_args_is_help=True)
+prepare_raw_app = typer.Typer(add_completion=False)
 
 
-@prepare_raw_app.command(name="prepare-raw")
+@prepare_raw_app.callback(invoke_without_command=True, no_args_is_help=True)
 def prepare_raw_cli(
+    data_csv_arg: Optional[Path] = typer.Argument(
+        None,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional positional path to per-trial raw coordinate CSV",
+    ),
     *,
-    data_csv: Path = typer.Option(
-        ...,
+    data_csv: Optional[Path] = typer.Option(
+        None,
         "--data-csv",
         exists=True,
         file_okay=True,
@@ -86,6 +93,17 @@ def prepare_raw_cli(
     ),
     verbose: bool = typer.Option(False, "--verbose/--no-verbose", help="Enable verbose logging"),
 ) -> None:
+    if data_csv is None:
+        if data_csv_arg is None:
+            raise typer.BadParameter(
+                "Provide --data-csv or a positional raw CSV path when invoking prepare-raw."
+            )
+        data_csv = data_csv_arg
+    elif data_csv_arg is not None:
+        raise typer.BadParameter(
+            "Received raw CSV as both positional argument and --data-csv. Specify it only once."
+        )
+
     prefixes = [item.strip() for item in series_prefixes.split(",") if item.strip()]
     if not prefixes:
         raise typer.BadParameter("Provide at least one series prefix.")
@@ -194,7 +212,7 @@ def _configure_parser() -> argparse.ArgumentParser:
         type=str,
         choices=["lda", "logreg", "mlp", "both", "all"],
         default="all",
-        help="Model to train/evaluate ('all' runs every supported model; 'both' keeps LDA+logreg")",
+        help="Model to train/evaluate ('all' runs every supported model; 'both' keeps LDA+logreg)",
     )
     common_parser.add_argument("--cv", type=int, default=0, help="Number of stratified folds for cross-validation")
     common_parser.add_argument(
@@ -408,10 +426,11 @@ def _handle_predict(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> None:
     raw_args = list(argv) if argv is not None else sys.argv[1:]
     if raw_args and raw_args[0] == "prepare-raw":
+        command_args = raw_args[1:]
         try:
             prepare_raw_app(
-                prog_name="flybehavior-response",
-                args=raw_args,
+                prog_name="flybehavior-response prepare-raw",
+                args=command_args,
                 standalone_mode=False,
             )
         except SystemExit as exc:  # pragma: no cover - delegated to Typer
