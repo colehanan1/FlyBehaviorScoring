@@ -58,17 +58,17 @@ make demo
 
 ```bash
 flypca fit-lag-pca \
-  --data /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --data data/manifest.csv \
   --config configs/default.yaml \
   --out artifacts/models/lagpca.joblib
 
 flypca project \
   --model artifacts/models/lagpca.joblib \
-  --data /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --data data/manifest.csv \
   --out artifacts/projections/
 
 flypca features \
-  --data /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --data data/manifest.csv \
   --config configs/default.yaml \
   --model artifacts/models/lagpca.joblib \
   --projections artifacts/projections/ \
@@ -80,7 +80,7 @@ flypca cluster \
   --projections-dir artifacts/projections/ \
   --method gmm \
   --out artifacts/cluster.csv \
-  --labels-path /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_BINARY.csv \
+  --labels-path data/labels.csv \
   --labels-column-name user_score_odor \
   --label-column user_score_odor
 
@@ -88,7 +88,7 @@ flypca report \
   --features artifacts/features.parquet \
   --clusters artifacts/cluster.csv \
   --model artifacts/models/lagpca.joblib \
-  --projections-dir artifacts/projections/ \
+  --projections artifacts/projections/ \
   --out-dir artifacts/
 ```
 

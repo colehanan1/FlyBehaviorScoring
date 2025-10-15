@@ -41,21 +41,21 @@ After installation, the `flybehavior-response` command becomes available. Common
 ### Examples
 
 ```bash
-flybehavior-response prepare --data-csv all_envelope_rows_wide.csv \
-  --labels-csv scoring_results_opto_new_BINARY.csv
+flybehavior-response prepare --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv
 
-flybehavior-response train --data-csv all_envelope_rows_wide.csv \
-  --labels-csv scoring_results_opto_new_BINARY.csv --model both --n-pcs 5
+flybehavior-response train --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv --model both --n-pcs 5
 
-flybehavior-response eval --data-csv all_envelope_rows_wide.csv \
-  --labels-csv scoring_results_opto_new_BINARY.csv
+flybehavior-response eval --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv
 
 # explicitly evaluate a past run directory
-flybehavior-response eval --data-csv all_envelope_rows_wide.csv \
-  --labels-csv scoring_results_opto_new_BINARY.csv --run-dir artifacts/2025-10-14T22-56-37Z
+flybehavior-response eval --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv --run-dir artifacts/2025-10-14T22-56-37Z
 
-flybehavior-response viz --data-csv all_envelope_rows_wide.csv \
-  --labels-csv scoring_results_opto_new_BINARY.csv --plots-dir artifacts/plots
+flybehavior-response viz --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv --plots-dir artifacts/plots
 
 flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/model_logreg.joblib \
   --output-csv artifacts/predictions.csv
