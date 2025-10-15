@@ -60,8 +60,20 @@ def train_models(
     )
     resolved_prefixes = list(dataset.trace_prefixes)
     logger.debug("Trace prefixes resolved to: %s", resolved_prefixes)
-    selected_features = validate_features(features, dataset.feature_columns, logger_name=__name__)
-    logger.debug("Selected features: %s", selected_features)
+    if dataset.feature_columns:
+        selected_features = validate_features(
+            features, dataset.feature_columns, logger_name=__name__
+        )
+        logger.debug("Selected features: %s", selected_features)
+    else:
+        if features:
+            logger.warning(
+                "Ignoring requested engineered features %s because the dataset does not "
+                "include any of the expected columns.",
+                sorted(features),
+            )
+        selected_features = []
+        logger.debug("Dataset does not contain engineered features; proceeding with trace-only preprocessing.")
     logger.debug("Trace columns count: %d", len(dataset.trace_columns))
 
     sample_weights = dataset.sample_weights

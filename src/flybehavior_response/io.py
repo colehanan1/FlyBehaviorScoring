@@ -129,9 +129,13 @@ def _filter_trace_columns(
     return ordered, adjusted_df, resolved_prefixes
 
 
-def validate_feature_columns(frame: pd.DataFrame) -> List[str]:
+def validate_feature_columns(
+    frame: pd.DataFrame, *, allow_empty: bool = False
+) -> List[str]:
     available = [col for col in frame.columns if col in FEATURE_COLUMNS]
     if not available:
+        if allow_empty:
+            return []
         raise DataValidationError(
             "No engineered feature columns detected. Expected columns include: "
             f"{sorted(FEATURE_COLUMNS)}"
@@ -209,7 +213,9 @@ def load_and_merge(
 
     requested_prefixes = list(trace_prefixes or DEFAULT_TRACE_PREFIXES)
     try:
-        trace_cols, data_df, resolved_prefixes = _filter_trace_columns(data_df, requested_prefixes)
+        trace_cols, data_df, resolved_prefixes = _filter_trace_columns(
+            data_df, requested_prefixes
+        )
     except ValueError as exc:
         raise DataValidationError(str(exc)) from exc
     if not trace_cols:
@@ -222,7 +228,14 @@ def load_and_merge(
             data_df = data_df.drop(columns=dropped)
             logger.info("Dropped %d trace columns outside %s", len(dropped), TRACE_RANGE)
 
-    feature_cols = validate_feature_columns(data_df)
+    allow_empty_features = resolved_prefixes != DEFAULT_TRACE_PREFIXES
+    feature_cols = validate_feature_columns(
+        data_df, allow_empty=allow_empty_features
+    )
+    if not feature_cols and allow_empty_features:
+        logger.info(
+            "No engineered feature columns detected; continuing with trace-only dataset."
+        )
     merged = pd.merge(
         data_df,
         labels_df[[*MERGE_KEYS, LABEL_COLUMN]],

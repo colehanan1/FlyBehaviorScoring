@@ -96,6 +96,38 @@ flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/
 - The output keeps raw values with consistent 0-based frame indices per prefix, adds timing metadata, and can be fed directly to `flybehavior-response train --raw-series` (or an explicit `--series-prefixes eye_x_f,eye_y_f,prob_x_f,prob_y_f` if you customise the channel order).
 - All subcommands (`prepare`, `train`, `eval`, `viz`, `predict`) accept `--raw-series` to prioritise the four eye/proboscis channels. When left unset, the loader still auto-detects the raw prefixes whenever `dir_val_` traces are absent, so legacy scripts continue to run unchanged.
 
+### Running the modeling pipeline on raw coordinates
+
+Once you have a wide table of raw coordinates, enable the raw channel handling on every CLI entry point with `--raw-series` (or supply an explicit `--series-prefixes` string if you re-ordered the channels):
+
+```bash
+# train all models on raw coordinates (engineered feature list is ignored automatically)
+flybehavior-response train --raw-series \
+  --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
+  --model all --n-pcs 5
+
+# evaluate an existing run against the same raw inputs
+flybehavior-response eval --raw-series \
+  --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
+  --run-dir artifacts/<timestamp>
+
+# regenerate confusion matrices and PCA/ROC plots for the raw-trained models
+flybehavior-response viz --raw-series \
+  --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
+  --run-dir artifacts/<timestamp>
+
+# score new raw trials with a saved pipeline
+flybehavior-response predict --raw-series \
+  --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.csv \
+  --model-path artifacts/<timestamp>/model_logreg.joblib \
+  --output-csv artifacts/<timestamp>/raw_predictions.csv
+```
+
+During training the loader automatically recognises that engineered features are absent and logs that it is proceeding in a trace-only configuration. Keep PCA enabled (`--use-raw-pca`, the default) to derive compact principal components from the four coordinate streams.
+
 ## Label weighting and troubleshooting
 
 - Ensure trace columns follow contiguous 0-based numbering for each prefix (default `dir_val_`). Columns beyond `dir_val_3600` are trimmed automatically for legacy datasets.

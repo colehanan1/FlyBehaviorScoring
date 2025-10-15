@@ -179,3 +179,35 @@ def test_load_and_merge_detects_raw_prefixes(tmp_path: Path) -> None:
 
     assert dataset.trace_prefixes == list(RAW_TRACE_PREFIXES)
     assert dataset.trace_columns[:4] == [f"{RAW_TRACE_PREFIXES[0]}0", f"{RAW_TRACE_PREFIXES[0]}1", f"{RAW_TRACE_PREFIXES[1]}0", f"{RAW_TRACE_PREFIXES[1]}1"]
+
+
+def test_load_and_merge_allows_trace_only_inputs(tmp_path: Path) -> None:
+    frames = {
+        "dataset": ["d", "d"],
+        "fly": ["f1", "f2"],
+        "fly_number": [1, 2],
+        "trial_label": ["t1", "t2"],
+        "trial_type": ["testing", "testing"],
+    }
+    for prefix in RAW_TRACE_PREFIXES:
+        frames[f"{prefix}0"] = [0.1, 0.2]
+        frames[f"{prefix}1"] = [0.3, 0.4]
+    data = pd.DataFrame(frames)
+    labels = pd.DataFrame(
+        {
+            "dataset": ["d", "d"],
+            "fly": ["f1", "f2"],
+            "fly_number": [1, 2],
+            "trial_label": ["t1", "t2"],
+            LABEL_COLUMN: [0, 1],
+        }
+    )
+    data_path = tmp_path / "trace_only.csv"
+    labels_path = tmp_path / "trace_only_labels.csv"
+    data.to_csv(data_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    dataset = load_and_merge(data_path, labels_path, trace_prefixes=RAW_TRACE_PREFIXES)
+
+    assert dataset.trace_prefixes == list(RAW_TRACE_PREFIXES)
+    assert dataset.feature_columns == []
