@@ -8,6 +8,114 @@ This package trains, evaluates, and visualizes supervised models that predict fl
 pip install -e .
 ```
 
+### Using this package from another repository
+
+- **Pin it as a dependency.** In the consuming project (e.g. [`Ramanlab-Auto-Data-Analysis`](https://github.com/colehanan1/Ramanlab-Auto-Data-Analysis)), add the git URL to your dependency file so the environment always installs the latest revision of this project:
+
+  ```text
+  # requirements.txt inside Ramanlab-Auto-Data-Analysis
+  flybehavior-response @ git+https://github.com/colehanan1/FlyBehaviorScoring.git
+  ```
+
+  Pip normalizes hyphens and underscores, so `flybehavior-response` is the canonical project name exported by `pyproject.toml`. Older guidance that used `flypca` or `flybehavior_response` will fail with a metadata mismatch error because the installer pulls a distribution named differently from the requested requirement. Update the dependency string as shown above.
+
+  With `pip>=22`, this syntax works for `requirements.txt`, `pyproject.toml` (PEP 621 `dependencies`), and `setup.cfg`.
+
+  To confirm the dependency resolves correctly, install from git in a clean environment and inspect the resulting metadata:
+
+  ```bash
+  python -m pip install "git+https://github.com/colehanan1/FlyBehaviorScoring.git#egg=flybehavior-response"
+  python -m pip show flybehavior-response
+  ```
+
+  The `#egg=` fragment is optional for modern pip but keeps older tooling happy when parsing the distribution name from the URL.
+
+- **Install together with the automation repo.** Once the dependency is listed, a regular `pip install -r requirements.txt` (or `pip install -e .` if the other repo itself is editable) pulls in this package exactly once—no manual reinstall inside each checkout is required.
+
+- **Call the CLI from jobs or notebooks.** After installation, the `flybehavior-response` entry point is on `PATH`. Automation workflows can invoke it via shell scripts or Python:
+
+  ```python
+  import subprocess
+
+  subprocess.run(
+      [
+          "flybehavior-response",
+          "predict",
+          "--data-csv",
+          "/path/to/wide.csv",
+          "--model-path",
+          "/path/to/model_mlp.joblib",
+          "--output-csv",
+          "artifacts/predictions.csv",
+      ],
+      check=True,
+  )
+  ```
+
+- **Import the building blocks directly.** When you need finer control than the CLI offers, import the core helpers:
+
+  ```python
+  from flybehavior_response.evaluate import load_pipeline
+
+  pipeline = load_pipeline("/path/to/model_mlp.joblib")
+  # df is a pandas DataFrame shaped like the merged training data
+  predictions = pipeline.predict(df)
+  ```
+
+  The `flybehavior_response.io.load_and_merge` helper mirrors the CLI’s CSV merging logic so scheduled jobs can stay fully programmatic.
+
+## Building and publishing the package
+
+Follow these steps when you need a distributable artifact instead of an editable install or git reference:
+
+1. Create a clean environment and install the build backend once:
+   ```bash
+   python -m pip install --upgrade pip build twine
+   ```
+2. Produce both wheel and source distributions:
+   ```bash
+   python -m build
+   ```
+   The artifacts land under `dist/` (for example, `dist/flybehavior-response-0.1.0-py3-none-any.whl`).
+3. Upload to an index (test or production) with Twine:
+   ```bash
+   twine upload dist/*
+   ```
+   Replace the repository URL or credentials as needed (`--repository testpypi`).
+
+Once published, downstream projects can depend on the released version instead of a git SHA:
+```text
+flybehavior-response==0.1.0
+```
+
+If you only need automation machines to consume the latest commit, prefer the git dependency shown earlier—publishing is optional.
+
+### Publishing straight from Git
+
+You do **not** have to cut a wheel to exercise the package from a private repo. Git-based installs work as long as the repository exposes a valid `pyproject.toml` (which this project does). Pick the option that matches your workflow:
+
+1. **Pin the main branch head** for fast iteration:
+   ```text
+   flybehavior-response @ git+https://github.com/colehanan1/FlyBehaviorScoring.git
+   ```
+
+2. **Lock to a tag or commit** for reproducible automation:
+   ```text
+   flybehavior-response @ git+https://github.com/colehanan1/FlyBehaviorScoring.git@v0.1.0
+   # or
+   flybehavior-response @ git+https://github.com/colehanan1/FlyBehaviorScoring.git@<commit-sha>
+   ```
+
+3. **Reference a subdirectory** if you reorganize the repo later (pip needs the leading `src/` layout path):
+   ```text
+   flybehavior-response @ git+https://github.com/colehanan1/FlyBehaviorScoring.git#subdirectory=.
+   ```
+
+   The `src/` layout is already wired into `pyproject.toml`, so no extra flags are necessary today. Keep the `#subdirectory` fragment in mind if you move the project under a monorepo path.
+
+Regardless of which selector you use, `pip show flybehavior-response` should list the install location under the environment’s site-packages directory. If it does not, check that your requirements file matches the casing and punctuation above and that you do not have an older `flypca` editable install overshadowing it on `sys.path`.
+
+
 ## Command Line Interface
 
 After installation, the `flybehavior-response` command becomes available. Common arguments:
