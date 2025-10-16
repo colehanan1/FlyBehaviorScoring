@@ -14,8 +14,10 @@ pip install -e .
 
   ```text
   # requirements.txt inside Ramanlab-Auto-Data-Analysis
-  flypca @ git+https://github.com/colehanan1/FlyBehaviorScoring.git
+  flybehavior-response @ git+https://github.com/colehanan1/FlyBehaviorScoring.git
   ```
+
+  Pip normalizes hyphens and underscores, so `flybehavior-response` is the canonical project name exported by `pyproject.toml`. Older guidance that used `flypca` or `flybehavior_response` will fail with a metadata mismatch error because the installer pulls a distribution named differently from the requested requirement. Update the dependency string as shown above.
 
   With `pip>=22`, this syntax works for `requirements.txt`, `pyproject.toml` (PEP 621 `dependencies`), and `setup.cfg`.
 
@@ -52,6 +54,33 @@ pip install -e .
   ```
 
   The `flybehavior_response.io.load_and_merge` helper mirrors the CLI’s CSV merging logic so scheduled jobs can stay fully programmatic.
+
+## Building and publishing the package
+
+Follow these steps when you need a distributable artifact instead of an editable install or git reference:
+
+1. Create a clean environment and install the build backend once:
+   ```bash
+   python -m pip install --upgrade pip build twine
+   ```
+2. Produce both wheel and source distributions:
+   ```bash
+   python -m build
+   ```
+   The artifacts land under `dist/` (for example, `dist/flybehavior-response-0.1.0-py3-none-any.whl`).
+3. Upload to an index (test or production) with Twine:
+   ```bash
+   twine upload dist/*
+   ```
+   Replace the repository URL or credentials as needed (`--repository testpypi`).
+
+Once published, downstream projects can depend on the released version instead of a git SHA:
+```text
+flybehavior-response==0.1.0
+```
+
+If you only need automation machines to consume the latest commit, prefer the git dependency shown earlier—publishing is optional.
+
 
 ## Command Line Interface
 
