@@ -15,16 +15,16 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 dependencies = [
-  "numpy",
-  "scipy",
-  "pandas",
-  "scikit-learn",
-  "matplotlib",
-  "typer[all]",
-  "joblib",
-  "hdbscan",
-  "umap-learn",
-  "pyyaml"
+  "numpy>=1.23,<2.0",
+  "scipy>=1.9,<1.13",
+  "pandas>=1.5,<3.0",
+  "scikit-learn>=1.2,<1.5",
+  "matplotlib>=3.6,<3.10",
+  "typer[all]>=0.9,<1.0",
+  "joblib>=1.2,<1.6",
+  "hdbscan>=0.8,<0.9",
+  "umap-learn>=0.5,<0.6",
+  "pyyaml>=6.0,<7.0"
 ]
 
 [project.urls]

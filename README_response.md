@@ -64,6 +64,16 @@ pip install -e .
 
   The `flybehavior_response.io.load_and_merge` helper mirrors the CLI’s CSV merging logic so scheduled jobs can stay fully programmatic.
 
+- **Match the NumPy major version with saved artifacts.** Models trained with NumPy 1.x store their random state differently from
+  NumPy 2.x. Loading those joblib files inside an environment that already upgraded to NumPy 2.x raises:
+
+  ```text
+  ValueError: state is not a legacy MT19937 state
+  ```
+
+  Install `numpy<2.0` (already enforced by this package’s dependency pins) or rebuild the model artifact under the newer stack
+  before invoking `flybehavior-response predict` inside automation repos.
+
 ## Building and publishing the package
 
 Follow these steps when you need a distributable artifact instead of an editable install or git reference:
