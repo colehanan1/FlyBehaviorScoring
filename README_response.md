@@ -8,6 +8,51 @@ This package trains, evaluates, and visualizes supervised models that predict fl
 pip install -e .
 ```
 
+### Using this package from another repository
+
+- **Pin it as a dependency.** In the consuming project (e.g. [`Ramanlab-Auto-Data-Analysis`](https://github.com/colehanan1/Ramanlab-Auto-Data-Analysis)), add the git URL to your dependency file so the environment always installs the latest revision of this project:
+
+  ```text
+  # requirements.txt inside Ramanlab-Auto-Data-Analysis
+  flypca @ git+https://github.com/colehanan1/FlyBehaviorScoring.git
+  ```
+
+  With `pip>=22`, this syntax works for `requirements.txt`, `pyproject.toml` (PEP 621 `dependencies`), and `setup.cfg`.
+
+- **Install together with the automation repo.** Once the dependency is listed, a regular `pip install -r requirements.txt` (or `pip install -e .` if the other repo itself is editable) pulls in this package exactly once—no manual reinstall inside each checkout is required.
+
+- **Call the CLI from jobs or notebooks.** After installation, the `flybehavior-response` entry point is on `PATH`. Automation workflows can invoke it via shell scripts or Python:
+
+  ```python
+  import subprocess
+
+  subprocess.run(
+      [
+          "flybehavior-response",
+          "predict",
+          "--data-csv",
+          "/path/to/wide.csv",
+          "--model-path",
+          "/path/to/model_mlp.joblib",
+          "--output-csv",
+          "artifacts/predictions.csv",
+      ],
+      check=True,
+  )
+  ```
+
+- **Import the building blocks directly.** When you need finer control than the CLI offers, import the core helpers:
+
+  ```python
+  from flybehavior_response.evaluate import load_pipeline
+
+  pipeline = load_pipeline("/path/to/model_mlp.joblib")
+  # df is a pandas DataFrame shaped like the merged training data
+  predictions = pipeline.predict(df)
+  ```
+
+  The `flybehavior_response.io.load_and_merge` helper mirrors the CLI’s CSV merging logic so scheduled jobs can stay fully programmatic.
+
 ## Command Line Interface
 
 After installation, the `flybehavior-response` command becomes available. Common arguments:
