@@ -21,6 +21,15 @@ pip install -e .
 
   With `pip>=22`, this syntax works for `requirements.txt`, `pyproject.toml` (PEP 621 `dependencies`), and `setup.cfg`.
 
+  To confirm the dependency resolves correctly, install from git in a clean environment and inspect the resulting metadata:
+
+  ```bash
+  python -m pip install "git+https://github.com/colehanan1/FlyBehaviorScoring.git#egg=flybehavior-response"
+  python -m pip show flybehavior-response
+  ```
+
+  The `#egg=` fragment is optional for modern pip but keeps older tooling happy when parsing the distribution name from the URL.
+
 - **Install together with the automation repo.** Once the dependency is listed, a regular `pip install -r requirements.txt` (or `pip install -e .` if the other repo itself is editable) pulls in this package exactly once—no manual reinstall inside each checkout is required.
 
 - **Call the CLI from jobs or notebooks.** After installation, the `flybehavior-response` entry point is on `PATH`. Automation workflows can invoke it via shell scripts or Python:
@@ -80,6 +89,31 @@ flybehavior-response==0.1.0
 ```
 
 If you only need automation machines to consume the latest commit, prefer the git dependency shown earlier—publishing is optional.
+
+### Publishing straight from Git
+
+You do **not** have to cut a wheel to exercise the package from a private repo. Git-based installs work as long as the repository exposes a valid `pyproject.toml` (which this project does). Pick the option that matches your workflow:
+
+1. **Pin the main branch head** for fast iteration:
+   ```text
+   flybehavior-response @ git+https://github.com/colehanan1/FlyBehaviorScoring.git
+   ```
+
+2. **Lock to a tag or commit** for reproducible automation:
+   ```text
+   flybehavior-response @ git+https://github.com/colehanan1/FlyBehaviorScoring.git@v0.1.0
+   # or
+   flybehavior-response @ git+https://github.com/colehanan1/FlyBehaviorScoring.git@<commit-sha>
+   ```
+
+3. **Reference a subdirectory** if you reorganize the repo later (pip needs the leading `src/` layout path):
+   ```text
+   flybehavior-response @ git+https://github.com/colehanan1/FlyBehaviorScoring.git#subdirectory=.
+   ```
+
+   The `src/` layout is already wired into `pyproject.toml`, so no extra flags are necessary today. Keep the `#subdirectory` fragment in mind if you move the project under a monorepo path.
+
+Regardless of which selector you use, `pip show flybehavior-response` should list the install location under the environment’s site-packages directory. If it does not, check that your requirements file matches the casing and punctuation above and that you do not have an older `flypca` editable install overshadowing it on `sys.path`.
 
 
 ## Command Line Interface
