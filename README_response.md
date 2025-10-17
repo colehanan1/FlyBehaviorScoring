@@ -73,6 +73,15 @@ pip install -e .
 
   Install `numpy<2.0` (already enforced by this package’s dependency pins) or rebuild the model artifact under the newer stack
   before invoking `flybehavior-response predict` inside automation repos.
+  If you previously added a `sitecustomize.py` shim to coerce the MT19937 payload, remove it—the shim now runs even though NumPy
+  is downgraded and corrupts the state with the following error:
+
+  ```text
+  TypeError: unhashable type: 'dict'
+  ```
+
+  Delete or update the shim so it gracefully handles dictionary payloads. With NumPy 1.x the extra hook is unnecessary, and the
+  loader will succeed without further tweaks.
 
 ## Building and publishing the package
 
