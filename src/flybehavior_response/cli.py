@@ -260,7 +260,7 @@ def _configure_parser() -> argparse.ArgumentParser:
     common_parser.add_argument(
         "--model",
         type=str,
-        choices=["lda", "logreg", "mlp", "mlp_adam", "both", "all"],
+        choices=["lda", "logreg", "mlp", "both", "all"],
         default="all",
         help="Model to train/evaluate ('all' runs every supported model; 'both' keeps LDA+logreg)",
     )

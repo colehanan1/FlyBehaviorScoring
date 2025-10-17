@@ -4,16 +4,14 @@ from __future__ import annotations
 
 from typing import Iterable
 
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
-
-from .sample_weighted_lda import SampleWeightedLDA
-from .sample_weighted_mlp import SampleWeightedMLPClassifier
 
 MODEL_LDA = "lda"
 MODEL_LOGREG = "logreg"
 MODEL_MLP = "mlp"
-MODEL_MLP_ADAM = "mlp_adam"
 
 
 def create_estimator(
@@ -24,7 +22,7 @@ def create_estimator(
     logreg_max_iter: int = 1000,
 ) -> object:
     if model_type == MODEL_LDA:
-        return SampleWeightedLDA()
+        return LinearDiscriminantAnalysis()
     if model_type == MODEL_LOGREG:
         if logreg_solver not in {"lbfgs", "liblinear", "saga"}:
             raise ValueError(f"Unsupported logistic regression solver: {logreg_solver}")
@@ -34,23 +32,9 @@ def create_estimator(
             random_state=seed,
         )
     if model_type == MODEL_MLP:
-        return SampleWeightedMLPClassifier(
-            hidden_layer_sizes=(256,),
-            learning_rate=5e-4,
-            max_iter=400,
-            batch_size=128,
-            tol=1e-5,
-            l2=1e-4,
-            random_state=seed,
-        )
-    if model_type == MODEL_MLP_ADAM:
-        return SampleWeightedMLPClassifier(
-            hidden_layer_sizes=(512, 256, 64),
-            learning_rate=1e-3,
-            max_iter=800,
-            batch_size=128,
-            tol=5e-5,
-            l2=1e-4,
+        return MLPClassifier(
+            hidden_layer_sizes=20000,
+            max_iter=1000,
             random_state=seed,
         )
     raise ValueError(f"Unsupported model type: {model_type}")
@@ -78,4 +62,4 @@ def build_model_pipeline(
 
 
 def supported_models() -> Iterable[str]:
-    return [MODEL_LDA, MODEL_LOGREG, MODEL_MLP, MODEL_MLP_ADAM]
+    return [MODEL_LDA, MODEL_LOGREG, MODEL_MLP]

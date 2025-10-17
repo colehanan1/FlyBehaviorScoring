@@ -11,7 +11,6 @@ import numpy as np
 from joblib import dump
 from sklearn.metrics import ConfusionMatrixDisplay
 from sklearn.model_selection import train_test_split
-from sklearn.utils.validation import has_fit_parameter
 
 from .config import PipelineConfig, compute_class_balance, hash_file, make_run_artifacts
 from .evaluate import evaluate_models, perform_cross_validation, save_metrics
@@ -21,9 +20,11 @@ from .logging_utils import get_logger
 from .modeling import (
     MODEL_LDA,
     MODEL_LOGREG,
+    MODEL_MLP,
     build_model_pipeline,
     supported_models,
 )
+from .weights import expand_samples_by_weight
 
 
 def _set_seeds(seed: int) -> None:
@@ -232,18 +233,18 @@ def train_models(
             logreg_solver=logreg_solver,
             logreg_max_iter=logreg_max_iter,
         )
-        estimator = pipeline.named_steps["model"]
-        if not has_fit_parameter(estimator, "sample_weight"):
-            raise TypeError(
-                "Model '%s' does not accept sample_weight. Select a supported estimator via --models."
-                % model_name
+        if model_name == MODEL_LDA:
+            X_fit, y_fit = expand_samples_by_weight(X_train, y_train, sw_train)
+            pipeline.fit(X_fit, y_fit)
+        else:
+            fit_kwargs = {}
+            if model_name in {MODEL_LOGREG, MODEL_MLP}:
+                fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
+            pipeline.fit(
+                X_train,
+                y_train,
+                **fit_kwargs,
             )
-
-        pipeline.fit(
-            X_train,
-            y_train,
-            model__sample_weight=sw_train.to_numpy(),
-        )
 
         train_metrics = evaluate_models(
             {model_name: pipeline},

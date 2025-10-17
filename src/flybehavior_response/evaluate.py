@@ -11,15 +11,9 @@ import pandas as pd
 from joblib import load
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
 from sklearn.model_selection import StratifiedKFold
-from sklearn.utils.validation import has_fit_parameter
 
-from .modeling import (
-    MODEL_LDA,
-    MODEL_LOGREG,
-    MODEL_MLP,
-    MODEL_MLP_ADAM,
-    build_model_pipeline,
-)
+from .modeling import MODEL_LDA, MODEL_LOGREG, MODEL_MLP, build_model_pipeline
+from .weights import expand_samples_by_weight
 
 
 def _serialize_confusion(matrix: np.ndarray) -> List[List[float]]:
@@ -45,7 +39,7 @@ def compute_metrics(
         "raw": _serialize_confusion(raw_cm),
         "normalized": _serialize_confusion(norm_cm),
     }
-    if model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_MLP_ADAM} and proba is not None:
+    if model_type in {MODEL_LOGREG, MODEL_MLP} and proba is not None:
         metrics["roc_auc"] = float(roc_auc_score(y_true, proba[:, 1]))
     else:
         metrics["roc_auc"] = None
@@ -76,7 +70,7 @@ def compute_metrics(
             "raw": _serialize_confusion(weighted_raw),
             "normalized": _serialize_confusion(weighted_norm),
         }
-        if model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_MLP_ADAM} and proba is not None:
+        if model_type in {MODEL_LOGREG, MODEL_MLP} and proba is not None:
             weighted_metrics["roc_auc"] = float(
                 roc_auc_score(y_true, proba[:, 1], sample_weight=sample_weight)
             )
@@ -130,19 +124,16 @@ def perform_cross_validation(
         aggregate_weighted_raw = np.zeros((2, 2), dtype=float)
     for train_idx, test_idx in splitter.split(data, labels):
         model = build_model_pipeline(preprocessor, model_type=model_type, seed=seed)
-        train_data = data.iloc[train_idx]
-        train_labels = labels.iloc[train_idx]
-        fit_kwargs = {}
-        if sample_weights is not None:
-            train_weights = sample_weights.iloc[train_idx]
-            estimator = model.named_steps["model"]
-            if not has_fit_parameter(estimator, "sample_weight"):
-                raise TypeError(
-                    "Estimator '%s' in model '%s' does not support sample_weight."
-                    % (type(estimator).__name__, model_type)
-                )
-            fit_kwargs["model__sample_weight"] = train_weights.to_numpy()
-        model.fit(train_data, train_labels, **fit_kwargs)
+        if sample_weights is not None and model_type == MODEL_LDA:
+            train_data, train_labels = expand_samples_by_weight(
+                data.iloc[train_idx], labels.iloc[train_idx], sample_weights.iloc[train_idx]
+            )
+            model.fit(train_data, train_labels)
+        else:
+            fit_kwargs = {}
+            if sample_weights is not None:
+                fit_kwargs["model__sample_weight"] = sample_weights.iloc[train_idx].to_numpy()
+            model.fit(data.iloc[train_idx], labels.iloc[train_idx], **fit_kwargs)
         fold_sample_weight = None
         if sample_weights is not None:
             fold_sample_weight = sample_weights.iloc[test_idx]
@@ -156,14 +147,14 @@ def perform_cross_validation(
         aggregate_raw += np.array(fold_metrics["confusion_matrix"]["raw"], dtype=float)
         for key in ["accuracy", "f1_macro", "f1_binary"]:
             metrics_accum[key].append(float(fold_metrics[key]))
-        if model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_MLP_ADAM} and fold_metrics.get("roc_auc") is not None:
+        if model_type in {MODEL_LOGREG, MODEL_MLP} and fold_metrics.get("roc_auc") is not None:
             metrics_accum["roc_auc"].append(float(fold_metrics["roc_auc"]))
         if weighted_accum is not None and "weighted" in fold_metrics:
             weighted = fold_metrics["weighted"]
             aggregate_weighted_raw += np.array(weighted["confusion_matrix"]["raw"], dtype=float)
             for key in ["accuracy", "f1_macro", "f1_binary"]:
                 weighted_accum[key].append(float(weighted[key]))
-            if model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_MLP_ADAM} and weighted.get("roc_auc") is not None:
+            if model_type in {MODEL_LOGREG, MODEL_MLP} and weighted.get("roc_auc") is not None:
                 weighted_accum["roc_auc"].append(float(weighted["roc_auc"]))
     averaged = {key: float(np.mean(values)) if values else None for key, values in metrics_accum.items()}
     normalized = np.divide(

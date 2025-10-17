@@ -11,13 +11,10 @@ from flybehavior_response.modeling import (
     MODEL_LDA,
     MODEL_LOGREG,
     MODEL_MLP,
-    MODEL_MLP_ADAM,
     build_model_pipeline,
-    supported_models,
 )
-from flybehavior_response.sample_weighted_lda import SampleWeightedLDA
-from flybehavior_response.sample_weighted_mlp import SampleWeightedMLPClassifier
 from flybehavior_response.train import train_models
+from flybehavior_response.weights import expand_samples_by_weight
 
 
 def _create_dataset(tmp_path: Path) -> tuple[Path, Path]:
@@ -65,11 +62,8 @@ def test_model_pipelines_fit(tmp_path: Path) -> None:
     X = dataset.frame.drop(columns=[LABEL_COLUMN, LABEL_INTENSITY_COLUMN])
     y = dataset.frame[LABEL_COLUMN].astype(int)
     lda_pipeline = build_model_pipeline(preprocessor, model_type=MODEL_LDA, seed=42)
-    lda_pipeline.fit(
-        X,
-        y,
-        model__sample_weight=dataset.sample_weights.to_numpy(),
-    )
+    X_expanded, y_expanded = expand_samples_by_weight(X, y, dataset.sample_weights)
+    lda_pipeline.fit(X_expanded, y_expanded)
     assert lda_pipeline.predict(X).shape == (6,)
     logreg_pipeline = build_model_pipeline(preprocessor, model_type=MODEL_LOGREG, seed=42)
     logreg_pipeline.fit(X, y, model__sample_weight=dataset.sample_weights.to_numpy())
@@ -85,44 +79,6 @@ def test_model_pipelines_fit(tmp_path: Path) -> None:
     )
     liblinear_pipeline.fit(X, y, model__sample_weight=dataset.sample_weights.to_numpy())
     assert liblinear_pipeline.predict(X).shape == (6,)
-
-
-def test_sample_weighted_mlp_supports_sample_weight() -> None:
-    rng = np.random.default_rng(2)
-    X = rng.normal(size=(60, 4))
-    y = (X[:, 0] + 0.3 * X[:, 1] > 0).astype(int)
-    weights = np.linspace(0.5, 2.0, num=60)
-    clf = SampleWeightedMLPClassifier(
-        hidden_layer_sizes=(16,),
-        learning_rate=5e-3,
-        max_iter=300,
-        batch_size=32,
-        random_state=0,
-    )
-    clf.fit(X, y, sample_weight=weights)
-    proba = clf.predict_proba(X)
-    assert proba.shape == (60, 2)
-    preds = clf.predict(X)
-    assert preds.shape == (60,)
-
-
-def test_sample_weighted_lda_supports_sample_weight() -> None:
-    X = np.array(
-        [
-            [0.0, 0.0],
-            [0.2, 0.1],
-            [2.0, 2.1],
-            [2.2, 2.0],
-        ]
-    )
-    y = np.array([0, 0, 1, 1])
-    weights = np.array([1.0, 2.0, 1.0, 3.0])
-    clf = SampleWeightedLDA(reg=1e-5)
-    clf.fit(X, y, sample_weight=weights)
-    probs = clf.predict_proba(X)
-    assert probs.shape == (4, 2)
-    preds = clf.predict(X)
-    assert np.array_equal(preds, np.array([0, 0, 1, 1]))
 
 
 def test_train_models_returns_metrics(tmp_path: Path) -> None:
@@ -156,7 +112,7 @@ def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
         features=["AUC-During", "TimeToPeak-During", "Peak-Value"],
         use_raw_pca=True,
         n_pcs=2,
-        models=list(supported_models()),
+        models=[MODEL_LDA, MODEL_LOGREG, MODEL_MLP],
         artifacts_dir=artifacts_dir,
         cv=0,
         seed=0,
@@ -164,7 +120,7 @@ def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
         dry_run=False,
     )
 
-    assert set(metrics["models"].keys()) == set(supported_models())
+    assert set(metrics["models"].keys()) == {MODEL_LDA, MODEL_LOGREG, MODEL_MLP}
 
     run_dirs = [path for path in artifacts_dir.iterdir() if path.is_dir()]
     assert run_dirs, "Expected at least one run directory with artifacts"
@@ -177,8 +133,6 @@ def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
         latest_run / f"predictions_{MODEL_LOGREG}_test.csv",
         latest_run / f"predictions_{MODEL_MLP}_train.csv",
         latest_run / f"predictions_{MODEL_MLP}_test.csv",
-        latest_run / f"predictions_{MODEL_MLP_ADAM}_train.csv",
-        latest_run / f"predictions_{MODEL_MLP_ADAM}_test.csv",
     }
     for path in expected_files:
         assert path.exists(), f"Missing predictions export: {path}"
