@@ -81,8 +81,17 @@ pip install -e .
   ```
 
   Delete or update the shim so it gracefully handles dictionary payloads. With NumPy 1.x the extra hook is unnecessary, and the
-  loader will succeed without further tweaks. If other tools in the same environment still require the compatibility layer,
-  replace the file with a guarded variant that short-circuits on NumPy < 2.0 and normalises dictionary payloads safely:
+  loader will succeed without further tweaks. If the shim keeps calling into NumPy, but returns a class object instead of the
+  literal string `"MT19937"`, the loader fails with:
+
+  ```text
+  ValueError: <class 'numpy.random._mt19937.MT19937'> is not a known BitGenerator module.
+  ```
+
+  Update the shim so it returns `"MT19937"` when NumPy requests a bit generator by name, or guard the entire file behind a
+  `numpy>=2` check. With NumPy 1.x the extra hook is unnecessary, and the loader will succeed without further tweaks. If other
+  tools in the same environment still require the compatibility layer, replace the file with a guarded variant that short-circuits
+  on NumPy < 2.0 and normalises dictionary payloads safely:
 
   ```python
   """Runtime compatibility shims for external tools invoked by the pipeline."""

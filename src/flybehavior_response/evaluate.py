@@ -196,6 +196,13 @@ def load_pipeline(path: Path):
                 "Install NumPy < 2.0 in the runtime environment and retry, or rebuild the "
                 "model artifact with the newer dependency stack."
             ) from exc
+        if "is not a known BitGenerator module" in message:
+            raise RuntimeError(
+                "A sitecustomize shim attempted to coerce NumPy's MT19937 bit generator but "
+                "returned an invalid identifier. Remove that shim (it is only required when "
+                "running under NumPy 2.x) or update it to return the string 'MT19937' so "
+                "joblib can reconstruct the legacy random state."
+            ) from exc
         raise
     except TypeError as exc:
         message = str(exc)
