@@ -6,8 +6,9 @@ from typing import Iterable
 
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
-from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
+
+from .sample_weighted_mlp import SampleWeightedMLPClassifier
 
 MODEL_LDA = "lda"
 MODEL_LOGREG = "logreg"
@@ -32,8 +33,8 @@ def create_estimator(
             random_state=seed,
         )
     if model_type == MODEL_MLP:
-        return MLPClassifier(
-            hidden_layer_sizes=20000,
+        return SampleWeightedMLPClassifier(
+            hidden_layer_sizes=10000,
             max_iter=1000,
             random_state=seed,
         )
