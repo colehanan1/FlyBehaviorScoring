@@ -25,7 +25,6 @@ from .modeling import (
     build_model_pipeline,
     supported_models,
 )
-from .weights import expand_samples_by_weight
 
 
 def _set_seeds(seed: int) -> None:
@@ -242,12 +241,11 @@ def train_models(
                 model__sample_weight=sw_train.to_numpy(),
             )
         else:
-            logger.debug(
-                "Estimator %s does not support sample_weight; expanding samples by weight.",
+            logger.warning(
+                "Estimator %s does not support sample_weight; training without weighting.",
                 type(estimator).__name__,
             )
-            X_fit, y_fit = expand_samples_by_weight(X_train, y_train, sw_train)
-            pipeline.fit(X_fit, y_fit)
+            pipeline.fit(X_train, y_train)
 
         train_metrics = evaluate_models(
             {model_name: pipeline},
