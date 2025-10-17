@@ -21,11 +21,9 @@ from .logging_utils import get_logger
 from .modeling import (
     MODEL_LDA,
     MODEL_LOGREG,
-    MODEL_MLP,
     build_model_pipeline,
     supported_models,
 )
-from .weights import expand_samples_by_weight
 
 
 def _set_seeds(seed: int) -> None:
@@ -235,36 +233,17 @@ def train_models(
             logreg_max_iter=logreg_max_iter,
         )
         estimator = pipeline.named_steps["model"]
-        if has_fit_parameter(estimator, "sample_weight"):
-            pipeline.fit(
-                X_train,
-                y_train,
-                model__sample_weight=sw_train.to_numpy(),
+        if not has_fit_parameter(estimator, "sample_weight"):
+            raise TypeError(
+                "Model '%s' does not accept sample_weight. Select a supported estimator via --models."
+                % model_name
             )
-        else:
-            target_size = max(len(X_train), int(np.round(sw_train.sum())))
-            try:
-                expanded_X, expanded_y = expand_samples_by_weight(
-                    X_train,
-                    y_train,
-                    sw_train,
-                    target_size=target_size,
-                )
-            except ValueError as exc:
-                logger.warning(
-                    "Estimator %s lacks sample_weight but weights could not be expanded (%s); training without weighting.",
-                    type(estimator).__name__,
-                    exc,
-                )
-                pipeline.fit(X_train, y_train)
-            else:
-                logger.warning(
-                    "Estimator %s lacks sample_weight; expanded training set from %d to %d samples to approximate weighting.",
-                    type(estimator).__name__,
-                    len(X_train),
-                    len(expanded_X),
-                )
-                pipeline.fit(expanded_X, expanded_y)
+
+        pipeline.fit(
+            X_train,
+            y_train,
+            model__sample_weight=sw_train.to_numpy(),
+        )
 
         train_metrics = evaluate_models(
             {model_name: pipeline},

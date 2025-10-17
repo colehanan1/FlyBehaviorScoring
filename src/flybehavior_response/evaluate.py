@@ -20,7 +20,6 @@ from .modeling import (
     MODEL_MLP_ADAM,
     build_model_pipeline,
 )
-from .weights import expand_samples_by_weight
 
 
 def _serialize_confusion(matrix: np.ndarray) -> List[List[float]]:
@@ -137,19 +136,12 @@ def perform_cross_validation(
         if sample_weights is not None:
             train_weights = sample_weights.iloc[train_idx]
             estimator = model.named_steps["model"]
-            if has_fit_parameter(estimator, "sample_weight"):
-                fit_kwargs["model__sample_weight"] = train_weights.to_numpy()
-            else:
-                target_size = max(len(train_data), int(np.round(train_weights.sum())))
-                try:
-                    train_data, train_labels = expand_samples_by_weight(
-                        train_data,
-                        train_labels,
-                        train_weights,
-                        target_size=target_size,
-                    )
-                except ValueError:
-                    pass
+            if not has_fit_parameter(estimator, "sample_weight"):
+                raise TypeError(
+                    "Estimator '%s' in model '%s' does not support sample_weight."
+                    % (type(estimator).__name__, model_type)
+                )
+            fit_kwargs["model__sample_weight"] = train_weights.to_numpy()
         model.fit(train_data, train_labels, **fit_kwargs)
         fold_sample_weight = None
         if sample_weights is not None:

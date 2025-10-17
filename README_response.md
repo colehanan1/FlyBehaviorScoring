@@ -224,6 +224,7 @@ After installation, the `flybehavior-response` command becomes available. Common
 - `--dry-run`: Validate pipeline without saving artifacts.
 - `--verbose`: Enable DEBUG logging.
 - `--fly`, `--fly-number`, `--trial-label`/`--testing-trial` (predict only): Filter predictions to a single trial.
+- All shipped estimators consume `sample_weight`. If you plug in a custom pipeline stage that drops that argument, the CLI now fails fast so you can address the mismatch immediately.
 
 ### Subcommands
 
@@ -267,10 +268,9 @@ flybehavior-response predict --data-csv /home/ramanlab/Documents/cole/Data/Opto/
 
 - `--model all` trains LDA, logistic regression, and the new MLP classifier using a shared stratified 80/20 split and writes per-model confusion matrices into the run directory.
 - Each training run now exports `predictions_<model>_{train,test}.csv` so you can audit which trials were classified correctly, along with their reaction probabilities and sample weights.
-- `--model mlp` isolates the legacy single-layer network if you want to iterate quickly without re-fitting the classical baselines.
-- The `mlp` option instantiates scikit-learn's `MLPClassifier` with a very wide hidden layer (`hidden_layer_sizes=20000`) to mirror the historical configuration shipped with the lab notebooks.
-- `--model mlp_adam` enables a deeper Adam-optimized network (`hidden_layer_sizes=(512, 256, 64)`, ReLU activations, higher iteration budget) so you can scale capacity gradually rather than jumping straight to the legacy 20k-unit slab.
-- Neither neural-network variant natively honors `sample_weight`. The training loop now expands the stratified training split proportionally to the provided weights before calling `.fit`, so every neural model still experiences the intended label-intensity emphasis.
+- `--model mlp` isolates a single-hidden-layer neural network that now honours per-sample weights. It mirrors the older layout but uses a streamlined Adam trainer so the weighted loss stays faithful to the intensity-derived targets.
+- `--model mlp_adam` enables a deeper Adam-optimized network (`hidden_layer_sizes=(512, 256, 64)`) that also consumes `sample_weight` directly. Use it when you want a modest capacity bump over the baseline MLP without abandoning the CLI’s weighting strategy.
+- All built-in estimators natively honor `sample_weight`. If you swap in a custom estimator, make sure it exposes that argument or the CLI will fail instead of silently training on unweighted data.
 - Existing scripts that still pass `--model both` continue to run LDA + logistic regression only; update them to `--model all` to include the MLP.
 - Inspect `metrics.json` for `test` entries to verify held-out accuracy/F1 scores, and review `confusion_matrix_<model>.png` in the run directory for quick diagnostics.
 
