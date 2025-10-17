@@ -11,7 +11,9 @@ from flybehavior_response.modeling import (
     MODEL_LDA,
     MODEL_LOGREG,
     MODEL_MLP,
+    MODEL_MLP_ADAM,
     build_model_pipeline,
+    supported_models,
 )
 from flybehavior_response.train import train_models
 from flybehavior_response.weights import expand_samples_by_weight
@@ -112,7 +114,7 @@ def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
         features=["AUC-During", "TimeToPeak-During", "Peak-Value"],
         use_raw_pca=True,
         n_pcs=2,
-        models=[MODEL_LDA, MODEL_LOGREG, MODEL_MLP],
+        models=list(supported_models()),
         artifacts_dir=artifacts_dir,
         cv=0,
         seed=0,
@@ -120,7 +122,7 @@ def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
         dry_run=False,
     )
 
-    assert set(metrics["models"].keys()) == {MODEL_LDA, MODEL_LOGREG, MODEL_MLP}
+    assert set(metrics["models"].keys()) == set(supported_models())
 
     run_dirs = [path for path in artifacts_dir.iterdir() if path.is_dir()]
     assert run_dirs, "Expected at least one run directory with artifacts"
@@ -133,6 +135,8 @@ def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
         latest_run / f"predictions_{MODEL_LOGREG}_test.csv",
         latest_run / f"predictions_{MODEL_MLP}_train.csv",
         latest_run / f"predictions_{MODEL_MLP}_test.csv",
+        latest_run / f"predictions_{MODEL_MLP_ADAM}_train.csv",
+        latest_run / f"predictions_{MODEL_MLP_ADAM}_test.csv",
     }
     for path in expected_files:
         assert path.exists(), f"Missing predictions export: {path}"

@@ -214,7 +214,7 @@ After installation, the `flybehavior-response` command becomes available. Common
 - `--include-auc-before`: Adds `AUC-Before` to the feature set.
 - `--use-raw-pca` / `--no-use-raw-pca`: Toggle raw trace PCA (default enabled).
 - `--n-pcs`: Number of PCA components (default 5).
-- `--model`: `lda`, `logreg`, `mlp`, `both`, or `all` (default `all`).
+- `--model`: `lda`, `logreg`, `mlp`, `mlp_adam`, `both`, or `all` (default `all`).
 - `--logreg-solver`: Logistic regression solver (`lbfgs`, `liblinear`, `saga`; default `lbfgs`).
 - `--logreg-max-iter`: Iteration cap for logistic regression (default `1000`; increase if convergence warnings appear).
 - `--cv`: Stratified folds for cross-validation (default 0 for none).
@@ -263,12 +263,14 @@ flybehavior-response predict --data-csv /home/ramanlab/Documents/cole/Data/Opto/
   --output-csv artifacts/predictions_envelope_t2.csv
 ```
 
-## Training with the MLP classifier
+## Training with the neural network classifiers
 
 - `--model all` trains LDA, logistic regression, and the new MLP classifier using a shared stratified 80/20 split and writes per-model confusion matrices into the run directory.
 - Each training run now exports `predictions_<model>_{train,test}.csv` so you can audit which trials were classified correctly, along with their reaction probabilities and sample weights.
-- `--model mlp` isolates the neural network if you want to iterate quickly without re-fitting the classical baselines.
-- The `mlp` option instantiates scikit-learn's `MLPClassifier` with a single hidden layer of 100 neurons sandwiched between the input features (raw PCA scores plus any engineered features you kept) and the two-unit output layer for the binary reaction task. This structure mirrors the default `hidden_layer_sizes=(100,)`, so you effectively have three layers end-to-end: an input layer sized to your feature count, one hidden representation, and an output layer producing the reaction logits.
+- `--model mlp` isolates the legacy single-layer network if you want to iterate quickly without re-fitting the classical baselines.
+- The `mlp` option instantiates scikit-learn's `MLPClassifier` with a very wide hidden layer (`hidden_layer_sizes=20000`) to mirror the historical configuration shipped with the lab notebooks.
+- `--model mlp_adam` enables a deeper Adam-optimized network (`hidden_layer_sizes=(512, 256, 64)`, ReLU activations, higher iteration budget) so you can scale capacity gradually rather than jumping straight to the legacy 20k-unit slab.
+- Neither neural-network variant natively honors `sample_weight`. The training loop now expands the stratified training split proportionally to the provided weights before calling `.fit`, so every neural model still experiences the intended label-intensity emphasis.
 - Existing scripts that still pass `--model both` continue to run LDA + logistic regression only; update them to `--model all` to include the MLP.
 - Inspect `metrics.json` for `test` entries to verify held-out accuracy/F1 scores, and review `confusion_matrix_<model>.png` in the run directory for quick diagnostics.
 

@@ -12,6 +12,7 @@ from sklearn.pipeline import Pipeline
 MODEL_LDA = "lda"
 MODEL_LOGREG = "logreg"
 MODEL_MLP = "mlp"
+MODEL_MLP_ADAM = "mlp_adam"
 
 
 def create_estimator(
@@ -35,6 +36,17 @@ def create_estimator(
         return MLPClassifier(
             hidden_layer_sizes=20000,
             max_iter=1000,
+            random_state=seed,
+        )
+    if model_type == MODEL_MLP_ADAM:
+        return MLPClassifier(
+            hidden_layer_sizes=(512, 256, 64),
+            activation="relu",
+            solver="adam",
+            alpha=1e-4,
+            learning_rate_init=1e-3,
+            max_iter=1500,
+            early_stopping=False,
             random_state=seed,
         )
     raise ValueError(f"Unsupported model type: {model_type}")
@@ -62,4 +74,4 @@ def build_model_pipeline(
 
 
 def supported_models() -> Iterable[str]:
-    return [MODEL_LDA, MODEL_LOGREG, MODEL_MLP]
+    return [MODEL_LDA, MODEL_LOGREG, MODEL_MLP, MODEL_MLP_ADAM]
