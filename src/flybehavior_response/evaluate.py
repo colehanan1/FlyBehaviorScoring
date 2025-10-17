@@ -186,7 +186,27 @@ def perform_cross_validation(
 
 
 def load_pipeline(path: Path):
-    return load(path)
+    try:
+        return load(path)
+    except ValueError as exc:
+        message = str(exc)
+        if "legacy MT19937 state" in message:
+            raise RuntimeError(
+                "Failed to load model artifact due to NumPy random-state incompatibility. "
+                "Install NumPy < 2.0 in the runtime environment and retry, or rebuild the "
+                "model artifact with the newer dependency stack."
+            ) from exc
+        raise
+    except TypeError as exc:
+        message = str(exc)
+        if "unhashable type: 'dict'" in message:
+            raise RuntimeError(
+                "A custom sitecustomize hook intercepted NumPy's MT19937 state and "
+                "malformed it while attempting to patch legacy joblib artifacts. Remove "
+                "the hook (it is unnecessary when NumPy < 2.0 is installed) or update it "
+                "to accept dictionary payloads."
+            ) from exc
+        raise
 
 
 def save_metrics(metrics: Mapping[str, object], path: Path) -> None:
