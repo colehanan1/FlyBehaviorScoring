@@ -2,6 +2,31 @@
 
 This package trains, evaluates, and visualizes supervised models that predict fly odor responses from proboscis traces and engineered features.
 
+### Synthetic fly generation and gating
+
+`flybehavior-response train` now supports deterministic synthetic augmentation that mirrors the production metric pipeline. Enable it with `--use-synthetics` to synthesize per-fly replicas prior to fitting:
+
+```bash
+flybehavior-response \
+  --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/labels.csv \
+  --model mlp \
+  --use-synthetics \
+  --synthetic-fly-ratio 0.25 \
+  --synthetic-ops jitter,scale,time_shift,crop_resize,mixup_same_class \
+  --preview-synthetics 12 \
+  train
+```
+
+Key behaviours:
+
+- Metrics for the synthetic CSV (`AUC-*`, `TimeToPeak-During`, `Peak-Value`) are recomputed via the same BEFORE/DURING/AFTER windowing and threshold rule (`mean_before_fly + 4×std_before_trial`).
+- Synthetic trials inherit trace schema automatically: `dir_val_<frame>` columns are detected, sorted, and stacked without manual configuration.
+- The preview gate renders a Matplotlib grid of selected trials (per-class cap controlled by `--preview-synthetics`), overlays the per-trial threshold, and accepts keyboard decisions (`k` keep, `d` drop, `0`/`1` relabel).
+- Optional auto-filtering (`--auto-filter-threshold`) and probability scoring (`--preview-score-checkpoint`) pre-tag conflicts before the manual review.
+- Approved synthetics are appended only to the training fold derived from a fly-level `GroupKFold` split. Validation and test folds remain untouched.
+- Provenance fields (e.g. `is_synthetic`, `synthetic_fly_id`, `parent_trial_ids`, `decision`, `final_label`) accompany every synthetic row, and an aligned manifest plus preview PNG land in `--save-synthetics-dir`.
+
 ## Installation
 
 ```bash

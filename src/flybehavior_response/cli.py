@@ -28,6 +28,7 @@ from .prepare_raw import (
     DEFAULT_PREFIXES as RAW_DEFAULT_PREFIXES,
     prepare_raw,
 )
+from .synthetic_fly import SyntheticConfig
 from .train import train_models
 from .visualize import generate_visuals
 
@@ -309,6 +310,59 @@ def _configure_parser() -> argparse.ArgumentParser:
         default=1000,
         help="Maximum iterations for logistic regression; increase if convergence warnings occur",
     )
+    train_parser.add_argument(
+        "--use-synthetics",
+        action="store_true",
+        help="Enable synthetic fly generation before training",
+    )
+    train_parser.add_argument(
+        "--synthetic-fly-ratio",
+        type=float,
+        default=0.25,
+        help="Ceiling multiplier for synthetic flies per real fly",
+    )
+    train_parser.add_argument(
+        "--synthetic-ops",
+        type=str,
+        default="jitter,scale,time_shift,crop_resize,mixup_same_class",
+        help="Comma-separated list of augmentation ops to sample",
+    )
+    train_parser.add_argument(
+        "--mixup-alpha",
+        type=float,
+        default=0.2,
+        help="Beta distribution alpha for MixUp",
+    )
+    train_parser.add_argument(
+        "--preview-synthetics",
+        type=int,
+        default=12,
+        help="Number of synthetic trials per class to preview interactively",
+    )
+    train_parser.add_argument(
+        "--preview-score-checkpoint",
+        type=Path,
+        help="Optional trained model pipeline to score synthetic previews",
+    )
+    train_parser.add_argument(
+        "--auto-filter-threshold",
+        type=float,
+        default=0.0,
+        help="Probability-vs-label margin for auto-flagging synthetics",
+    )
+    train_parser.add_argument(
+        "--save-synthetics-dir",
+        type=Path,
+        default=Path("./synthetics"),
+        help="Directory to store synthetic CSVs and manifests",
+    )
+    train_parser.add_argument(
+        "--missing-ttpd-policy",
+        type=str,
+        choices=["zero", "nan"],
+        default="zero",
+        help="Policy for TimeToPeak-During when peak is outside window",
+    )
     subparsers.add_parser(
         "eval",
         parents=[common_parser],
@@ -381,6 +435,19 @@ def _handle_train(args: argparse.Namespace) -> None:
         raise ValueError("--data-csv and --labels-csv are required for train")
     features = parse_feature_list(args.features, args.include_auc_before)
     prefixes = _select_trace_prefixes(args)
+    ops = [item.strip() for item in (args.synthetic_ops or "").split(",") if item.strip()]
+    synthetic_config = SyntheticConfig(
+        use_synthetics=args.use_synthetics,
+        synthetic_fly_ratio=args.synthetic_fly_ratio,
+        synthetic_ops=ops or ("jitter", "scale", "time_shift", "crop_resize", "mixup_same_class"),
+        mixup_alpha=args.mixup_alpha,
+        preview_synthetics=args.preview_synthetics,
+        preview_score_checkpoint=args.preview_score_checkpoint,
+        auto_filter_threshold=args.auto_filter_threshold,
+        save_synthetics_dir=args.save_synthetics_dir,
+        missing_ttpd_policy=args.missing_ttpd_policy,
+        seed=args.seed,
+    )
     metrics = train_models(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,
@@ -396,6 +463,7 @@ def _handle_train(args: argparse.Namespace) -> None:
         logreg_solver=args.logreg_solver,
         logreg_max_iter=args.logreg_max_iter,
         trace_prefixes=prefixes,
+        synthetic_config=synthetic_config,
     )
     logger = get_logger("train", verbose=args.verbose)
     logger.info("Training metrics: %s", json.dumps(metrics))

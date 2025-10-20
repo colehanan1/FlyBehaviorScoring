@@ -8,9 +8,11 @@ from typing import Dict, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from joblib import dump
+from joblib import load
 from sklearn.metrics import ConfusionMatrixDisplay
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupKFold
 
 from .config import PipelineConfig, compute_class_balance, hash_file, make_run_artifacts
 from .evaluate import evaluate_models, perform_cross_validation, save_metrics
@@ -23,6 +25,12 @@ from .modeling import (
     MODEL_MLP,
     build_model_pipeline,
     supported_models,
+)
+from .metrics import detect_fly_column
+from .synthetic_fly import (
+    SyntheticConfig,
+    SyntheticFlyGenerator,
+    save_synthetic_artifacts,
 )
 from .weights import expand_samples_by_weight
 
@@ -48,9 +56,13 @@ def train_models(
     logreg_solver: str = "lbfgs",
     logreg_max_iter: int = 1000,
     trace_prefixes: Sequence[str] | None = None,
+    synthetic_config: SyntheticConfig | None = None,
 ) -> Dict[str, Dict[str, object]]:
     logger = get_logger(__name__, verbose=verbose)
     _set_seeds(seed)
+
+    if synthetic_config is None:
+        synthetic_config = SyntheticConfig()
 
     dataset = load_and_merge(
         data_csv,
@@ -75,6 +87,25 @@ def train_models(
         selected_features = []
         logger.debug("Dataset does not contain engineered features; proceeding with trace-only preprocessing.")
     logger.debug("Trace columns count: %d", len(dataset.trace_columns))
+
+    fly_column = detect_fly_column(dataset.frame)
+
+    provenance_defaults = {
+        "is_synthetic": 0,
+        "synthetic_fly_id": "",
+        "synthetic_trial_id": dataset.frame.get("trial_label", dataset.frame.index.astype(str)).astype(str),
+        "parent_fly_id": dataset.frame[fly_column].astype(str),
+        "parent_trial_ids": dataset.frame.get("trial_label", dataset.frame.index.astype(str)).astype(str),
+        "aug_op": "",
+        "seed": np.nan,
+        "conflict_flag": False,
+        "pred_prob": np.nan,
+        "decision": "real",
+        "final_label": dataset.frame[LABEL_COLUMN].astype(int),
+    }
+    for column, default in provenance_defaults.items():
+        if column not in dataset.frame.columns:
+            dataset.frame[column] = default
 
     sample_weights = dataset.sample_weights
     logger.info(
@@ -166,13 +197,38 @@ def train_models(
     X = dataset.frame.drop(columns=drop_columns)
     y = dataset.frame[LABEL_COLUMN].astype(int)
 
-    X_train, X_test, y_train, y_test, sw_train, sw_test = train_test_split(
-        X,
-        y,
-        sample_weights,
-        test_size=0.2,
-        stratify=y,
-        random_state=seed,
+    groups = dataset.frame[fly_column].astype(str)
+    unique_groups = groups.drop_duplicates()
+    if unique_groups.empty:
+        raise ValueError("GroupKFold requires at least one fly identifier.")
+    n_splits = min(5, len(unique_groups))
+    if n_splits < 2:
+        raise ValueError("At least two unique flies required for grouped split.")
+
+    shuffled_indices = np.arange(len(dataset.frame))
+    rng = np.random.default_rng(seed)
+    rng.shuffle(shuffled_indices)
+    X_shuffled = X.iloc[shuffled_indices]
+    y_shuffled = y.iloc[shuffled_indices]
+    groups_shuffled = groups.iloc[shuffled_indices]
+
+    gkf = GroupKFold(n_splits=n_splits)
+    train_idx_shuff, test_idx_shuff = next(gkf.split(X_shuffled, y_shuffled, groups=groups_shuffled))
+    train_indices = shuffled_indices[train_idx_shuff]
+    test_indices = shuffled_indices[test_idx_shuff]
+
+    X_train = X.iloc[train_indices]
+    X_test = X.iloc[test_indices]
+    y_train = y.iloc[train_indices]
+    y_test = y.iloc[test_indices]
+    sw_train = sample_weights.iloc[train_indices]
+    sw_test = sample_weights.iloc[test_indices]
+
+    logger.info(
+        "GroupKFold split (n_splits=%d) produced %d training flies and %d test flies.",
+        n_splits,
+        groups.iloc[train_indices].nunique(),
+        groups.iloc[test_indices].nunique(),
     )
 
     logger.info(
@@ -182,6 +238,69 @@ def train_models(
         len(y_test),
         float(y_test.mean()),
     )
+
+    if synthetic_config.use_synthetics:
+        logger.info("Generating synthetic flies (ratio=%.2f)", synthetic_config.synthetic_fly_ratio)
+        generator = SyntheticFlyGenerator(config=synthetic_config, logger=logger)
+        preview_pipeline = None
+        if synthetic_config.preview_score_checkpoint is not None:
+            try:
+                preview_pipeline = load(synthetic_config.preview_score_checkpoint)
+            except Exception as exc:  # pragma: no cover - optional dependency
+                logger.warning("Failed to load preview checkpoint %s: %s", synthetic_config.preview_score_checkpoint, exc)
+        training_frame = dataset.frame.iloc[train_indices]
+        synthetic_result = generator.generate(
+            training_frame,
+            trace_columns=dataset.trace_columns,
+            fly_column=fly_column,
+            preview_pipeline=preview_pipeline,
+        )
+
+        conflict_total = int(synthetic_result.manifest.get("conflict_flag", pd.Series(dtype=bool)).sum()) if not synthetic_result.manifest.empty else 0
+        logger.info("Synthetic conflicts flagged: %d", conflict_total)
+
+        if not dry_run:
+            csv_path, manifest_path = save_synthetic_artifacts(
+                synthetic_result,
+                config=synthetic_config,
+            )
+            logger.info("Saved synthetic CSV to %s and manifest to %s", csv_path, manifest_path)
+            if synthetic_result.manifest.empty:
+                logger.info("Synthetic manifest is empty; no trials were generated.")
+            if synthetic_result.preview_image is not None:
+                logger.info("Saved synthetic preview grid to %s", synthetic_result.preview_image)
+
+        if synthetic_result.kept_indices:
+            kept_df = synthetic_result.dataframe.iloc[synthetic_result.kept_indices].copy()
+            kept_df.index = kept_df["synthetic_trial_id"].astype(str)
+            kept_df[LABEL_COLUMN] = kept_df["final_label"].astype(int)
+            if LABEL_INTENSITY_COLUMN in kept_df.columns:
+                intensities = kept_df[LABEL_INTENSITY_COLUMN].astype(float)
+                intensities.loc[kept_df[LABEL_COLUMN] == 0] = 0.0
+                intensities.loc[(kept_df[LABEL_COLUMN] == 1) & (intensities <= 0)] = 1.0
+                kept_df[LABEL_INTENSITY_COLUMN] = intensities
+            else:
+                kept_df[LABEL_INTENSITY_COLUMN] = kept_df[LABEL_COLUMN].astype(float)
+
+            synth_features = kept_df.drop(columns=drop_columns, errors="ignore")
+            synth_labels = kept_df[LABEL_COLUMN].astype(int)
+            synth_weights = pd.Series(1.0, index=kept_df.index, dtype=float)
+            positive_mask = kept_df[LABEL_INTENSITY_COLUMN] > 0
+            synth_weights.loc[positive_mask] = kept_df.loc[positive_mask, LABEL_INTENSITY_COLUMN].astype(float)
+
+            X_train = pd.concat([X_train, synth_features], axis=0)
+            y_train = pd.concat([y_train, synth_labels], axis=0)
+            sw_train = pd.concat([sw_train, synth_weights], axis=0)
+
+            kept_counts = synth_labels.value_counts().to_dict()
+            logger.info(
+                "Synthetic trials proposed=%d kept=%d | kept class distribution: %s",
+                len(synthetic_result.dataframe),
+                len(kept_df),
+                kept_counts,
+            )
+        else:
+            logger.info("No synthetic trials were retained after gating.")
 
     metrics: Dict[str, Dict[str, object]] = {}
 
@@ -295,16 +414,21 @@ def train_models(
                 )
         if cv >= 2:
             logger.info("Running %d-fold CV for %s", cv, model_name)
-            cv_metrics = perform_cross_validation(
-                X_train,
-                y_train,
-                model_type=model_name,
-                preprocessor=preprocessor,
-                cv=cv,
-                seed=seed,
-                sample_weights=sw_train,
-            )
-            metrics[model_name]["cross_validation"] = cv_metrics
+            try:
+                cv_metrics = perform_cross_validation(
+                    X_train,
+                    y_train,
+                    model_type=model_name,
+                    preprocessor=preprocessor,
+                    cv=cv,
+                    seed=seed,
+                    sample_weights=sw_train,
+                )
+            except ValueError as exc:
+                logger.warning("Skipping cross-validation for %s due to: %s", model_name, exc)
+                metrics[model_name]["cross_validation"] = None
+            else:
+                metrics[model_name]["cross_validation"] = cv_metrics
 
         if not dry_run:
             assert artifacts is not None
