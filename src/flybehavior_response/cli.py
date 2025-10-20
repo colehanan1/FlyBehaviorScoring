@@ -309,6 +309,52 @@ def _configure_parser() -> argparse.ArgumentParser:
         default=1000,
         help="Maximum iterations for logistic regression; increase if convergence warnings occur",
     )
+    train_parser.add_argument(
+        "--use-synthetics",
+        action="store_true",
+        help="Enable synthetic data generation for the training fold",
+    )
+    train_parser.add_argument(
+        "--synthetic-ratio",
+        type=float,
+        default=0.5,
+        help="Target ratio of synthetic to real samples in the training fold",
+    )
+    train_parser.add_argument(
+        "--synthetic-ops",
+        type=str,
+        default="jitter,scale,time_shift,crop_resize,mixup_same_class",
+        help="Comma-separated augmentation operations for synthetic generation",
+    )
+    train_parser.add_argument(
+        "--mixup-alpha",
+        type=float,
+        default=0.2,
+        help="Beta distribution alpha for mixup_same_class operation",
+    )
+    train_parser.add_argument(
+        "--preview-synthetics",
+        type=int,
+        default=12,
+        help="Number of synthetic samples per class to preview interactively",
+    )
+    train_parser.add_argument(
+        "--preview-score-checkpoint",
+        type=Path,
+        help="Optional trained model checkpoint used to score synthetics during preview",
+    )
+    train_parser.add_argument(
+        "--auto-filter-threshold",
+        type=float,
+        default=0.0,
+        help="Probability margin for auto-drop decisions when preview scoring is enabled",
+    )
+    train_parser.add_argument(
+        "--save-synthetics-dir",
+        type=Path,
+        default=Path("./synthetics"),
+        help="Directory to store generated synthetic artifacts",
+    )
     subparsers.add_parser(
         "eval",
         parents=[common_parser],
@@ -381,6 +427,11 @@ def _handle_train(args: argparse.Namespace) -> None:
         raise ValueError("--data-csv and --labels-csv are required for train")
     features = parse_feature_list(args.features, args.include_auc_before)
     prefixes = _select_trace_prefixes(args)
+    synthetic_ops = (
+        [item.strip() for item in args.synthetic_ops.split(",") if item.strip()]
+        if getattr(args, "synthetic_ops", None)
+        else None
+    )
     metrics = train_models(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,
@@ -396,6 +447,14 @@ def _handle_train(args: argparse.Namespace) -> None:
         logreg_solver=args.logreg_solver,
         logreg_max_iter=args.logreg_max_iter,
         trace_prefixes=prefixes,
+        use_synthetics=args.use_synthetics,
+        synthetic_ratio=args.synthetic_ratio,
+        synthetic_ops=synthetic_ops,
+        mixup_alpha=args.mixup_alpha,
+        preview_synthetics=args.preview_synthetics,
+        preview_score_checkpoint=args.preview_score_checkpoint,
+        auto_filter_threshold=args.auto_filter_threshold,
+        save_synthetics_dir=args.save_synthetics_dir,
     )
     logger = get_logger("train", verbose=args.verbose)
     logger.info("Training metrics: %s", json.dumps(metrics))

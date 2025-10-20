@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from joblib import dump
 from sklearn.metrics import ConfusionMatrixDisplay
 from sklearn.model_selection import train_test_split
@@ -24,12 +25,83 @@ from .modeling import (
     build_model_pipeline,
     supported_models,
 )
+from .synthetic import (
+    SyntheticConfig,
+    make_synthetics,
+    preview_and_gate,
+    score_synthetics,
+)
 from .weights import expand_samples_by_weight
 
 
 def _set_seeds(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
+
+
+def _sorted_trace_columns(
+    trace_columns: Sequence[str],
+    trace_prefixes: Sequence[str],
+) -> List[List[str]]:
+    ordered_groups: List[List[str]] = []
+    used: set[str] = set()
+    prefixes = list(trace_prefixes) if trace_prefixes else []
+    if not prefixes:
+        prefixes = []
+        if trace_columns:
+            common_prefix = "".join(ch for ch in trace_columns[0] if not ch.isdigit())
+            prefixes.append(common_prefix)
+    for prefix in prefixes:
+        group = [col for col in trace_columns if col.startswith(prefix)]
+        if not group:
+            continue
+        group.sort(key=lambda name: int("".join(filter(str.isdigit, name)) or 0))
+        ordered_groups.append(group)
+        used.update(group)
+    remaining = [col for col in trace_columns if col not in used]
+    if remaining:
+        remaining.sort(key=lambda name: int("".join(filter(str.isdigit, name)) or 0))
+        ordered_groups.append(remaining)
+    return ordered_groups
+
+
+def _build_trace_tensor(
+    df: pd.DataFrame,
+    trace_columns: Sequence[str],
+    trace_prefixes: Sequence[str],
+) -> tuple[np.ndarray, List[List[str]]]:
+    if not trace_columns:
+        raise ValueError("Trace columns are required for synthetic generation.")
+    column_groups = _sorted_trace_columns(trace_columns, trace_prefixes)
+    lengths = {len(group) for group in column_groups if group}
+    if len(lengths) != 1:
+        raise ValueError("Trace columns must share a consistent time dimension.")
+    if not lengths:
+        raise ValueError("Unable to infer trace column grouping.")
+    time_steps = lengths.pop()
+    order = [col for group in column_groups for col in group]
+    values = df.loc[:, order].to_numpy(dtype=np.float32)
+    tensor = values.reshape(len(df), len(column_groups), time_steps)
+    tensor = np.transpose(tensor, (0, 2, 1))
+    return tensor, column_groups
+
+
+def _series_to_row(series: np.ndarray, column_groups: Sequence[Sequence[str]]) -> dict[str, float]:
+    row: dict[str, float] = {}
+    for channel_idx, columns in enumerate(column_groups):
+        values = series[:, channel_idx]
+        for column, value in zip(columns, values):
+            row[column] = float(value)
+    return row
+
+
+def _compose_identifier(row: pd.Series) -> str:
+    dataset_name = str(row.get("dataset", "dataset"))
+    fly = str(row.get("fly", "fly"))
+    fly_number = row.get("fly_number")
+    fly_number_text = f"|flynum={fly_number}" if pd.notna(fly_number) else ""
+    trial = str(row.get("trial_label", "trial"))
+    return f"{dataset_name}|fly={fly}{fly_number_text}|trial={trial}"
 
 
 def train_models(
@@ -48,6 +120,14 @@ def train_models(
     logreg_solver: str = "lbfgs",
     logreg_max_iter: int = 1000,
     trace_prefixes: Sequence[str] | None = None,
+    use_synthetics: bool = False,
+    synthetic_ratio: float = 0.5,
+    synthetic_ops: Sequence[str] | None = None,
+    mixup_alpha: float = 0.2,
+    preview_synthetics: int = 12,
+    preview_score_checkpoint: Path | None = None,
+    auto_filter_threshold: float = 0.0,
+    save_synthetics_dir: Path | None = None,
 ) -> Dict[str, Dict[str, object]]:
     logger = get_logger(__name__, verbose=verbose)
     _set_seeds(seed)
@@ -182,6 +262,109 @@ def train_models(
         len(y_test),
         float(y_test.mean()),
     )
+
+    if use_synthetics:
+        ops_to_use = tuple(synthetic_ops) if synthetic_ops is not None else SyntheticConfig().synthetic_ops
+        save_dir = Path(save_synthetics_dir) if save_synthetics_dir is not None else Path("./synthetics")
+        syn_config = SyntheticConfig(
+            synthetic_ratio=synthetic_ratio,
+            synthetic_ops=ops_to_use,
+            mixup_alpha=mixup_alpha,
+            preview_synthetics=preview_synthetics,
+            preview_score_checkpoint=preview_score_checkpoint,
+            auto_filter_threshold=auto_filter_threshold,
+            save_synthetics_dir=save_dir,
+            seed=seed,
+        )
+        logger.info(
+            "Synthetic generation enabled: ratio=%.3f ops=%s preview=%d",
+            synthetic_ratio,
+            ",".join(ops_to_use),
+            preview_synthetics,
+        )
+        trace_tensor, column_groups = _build_trace_tensor(X_train, dataset.trace_columns, dataset.trace_prefixes)
+        train_meta = dataset.frame.loc[X_train.index]
+        ids_train = [_compose_identifier(row) for _, row in train_meta.iterrows()]
+        class_names = sorted({int(val) for val in y_train.to_numpy()})
+        X_syn_ts, y_syn, syn_parents, syn_ops, syn_seeds = make_synthetics(
+            trace_tensor,
+            y_train.to_numpy(),
+            ids_train,
+            class_names,
+            syn_config,
+        )
+        if len(X_syn_ts):
+            non_trace_columns = [col for col in X_train.columns if col not in dataset.trace_columns]
+            id_to_index = {syn_id: idx for syn_id, idx in zip(ids_train, X_train.index)}
+            synthetic_index = [f"synthetic_{i:05d}" for i in range(len(X_syn_ts))]
+            synthetic_rows: List[dict[str, float]] = []
+            synthetic_weights: List[float] = []
+            for idx, series in enumerate(X_syn_ts):
+                parent_id = syn_parents[idx][0]
+                parent_index = id_to_index[parent_id]
+                parent_row = X_train.loc[parent_index]
+                row_dict = {col: float(parent_row[col]) for col in non_trace_columns}
+                row_dict.update(_series_to_row(series, column_groups))
+                synthetic_rows.append(row_dict)
+                if parent_index in sw_train.index:
+                    synthetic_weights.append(float(sw_train.loc[parent_index]))
+                else:
+                    synthetic_weights.append(1.0)
+            syn_df = pd.DataFrame(synthetic_rows, index=synthetic_index)
+            syn_df = syn_df.reindex(columns=X_train.columns)
+            syn_weights = pd.Series(synthetic_weights, index=synthetic_index, dtype=float)
+            syn_weights.name = sw_train.name
+            syn_labels = pd.Series(y_syn, index=synthetic_index, dtype=int)
+            syn_labels.name = y_train.name
+            try:
+                probs = score_synthetics(syn_config.preview_score_checkpoint, syn_df)
+            except FileNotFoundError:
+                raise
+            except Exception as exc:  # pragma: no cover - resilience
+                logger.exception("Failed to score synthetics; proceeding without probabilities: %s", exc)
+                probs = None
+            mask_keep, final_labels, _ = preview_and_gate(
+                syn_ids=synthetic_index,
+                X_syn=X_syn_ts,
+                y_syn=y_syn,
+                parents=syn_parents,
+                ops=syn_ops,
+                seeds=syn_seeds,
+                class_names=class_names,
+                config=syn_config,
+                probs=probs,
+            )
+            y_syn_final = np.asarray(final_labels, dtype=int)
+            syn_labels[:] = y_syn_final
+            kept_idx = np.where(mask_keep)[0]
+            dropped = int(len(X_syn_ts) - len(kept_idx))
+            relabel_zero = int(np.sum((mask_keep) & (y_syn_final == 0) & (y_syn != 0)))
+            relabel_one = int(np.sum((mask_keep) & (y_syn_final == 1) & (y_syn != 1)))
+            logger.info(
+                "Synthetic gating results -> proposed=%d kept=%d dropped=%d relabel0=%d relabel1=%d",
+                len(X_syn_ts),
+                len(kept_idx),
+                dropped,
+                relabel_zero,
+                relabel_one,
+            )
+            if kept_idx.size:
+                kept_df = syn_df.iloc[kept_idx]
+                kept_labels = syn_labels.iloc[kept_idx]
+                kept_weights = syn_weights.iloc[kept_idx]
+                approved_npz = syn_config.save_synthetics_dir / "X_syn_approved.npz"
+                approved_npy = syn_config.save_synthetics_dir / "y_syn_approved.npy"
+                np.savez(approved_npz, X=X_syn_ts[kept_idx].astype(np.float32))
+                np.save(approved_npy, kept_labels.to_numpy(dtype=int))
+                logger.info("Saved approved synthetic traces to %s", approved_npz.resolve())
+                logger.info("Saved approved synthetic labels to %s", approved_npy.resolve())
+                X_train = pd.concat([X_train, kept_df])
+                y_train = pd.concat([y_train, kept_labels])
+                sw_train = pd.concat([sw_train, kept_weights])
+            else:
+                logger.info("No synthetic samples approved after gating.")
+        else:
+            logger.info("No synthetic samples generated; proceeding without augmentation.")
 
     metrics: Dict[str, Dict[str, object]] = {}
 
