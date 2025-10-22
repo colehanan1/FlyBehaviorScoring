@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -239,6 +239,8 @@ def train_models(
         float(y_test.mean()),
     )
 
+    synthetic_store: List[pd.DataFrame] = []
+
     if synthetic_config.use_synthetics:
         logger.info("Generating synthetic flies (ratio=%.2f)", synthetic_config.synthetic_fly_ratio)
         generator = SyntheticFlyGenerator(config=synthetic_config, logger=logger)
@@ -282,11 +284,16 @@ def train_models(
             else:
                 kept_df[LABEL_INTENSITY_COLUMN] = kept_df[LABEL_COLUMN].astype(float)
 
-            synth_features = kept_df.drop(columns=drop_columns, errors="ignore")
-            synth_labels = kept_df[LABEL_COLUMN].astype(int)
-            synth_weights = pd.Series(1.0, index=kept_df.index, dtype=float)
-            positive_mask = kept_df[LABEL_INTENSITY_COLUMN] > 0
-            synth_weights.loc[positive_mask] = kept_df.loc[positive_mask, LABEL_INTENSITY_COLUMN].astype(float)
+            kept_aligned = kept_df.reindex(columns=dataset.frame.columns, fill_value=np.nan)
+            synthetic_store.append(kept_aligned)
+
+            synth_features = kept_aligned.drop(columns=drop_columns, errors="ignore")
+            synth_labels = kept_aligned[LABEL_COLUMN].astype(int)
+            synth_weights = pd.Series(1.0, index=kept_aligned.index, dtype=float)
+            positive_mask = kept_aligned[LABEL_INTENSITY_COLUMN] > 0
+            synth_weights.loc[positive_mask] = kept_aligned.loc[
+                positive_mask, LABEL_INTENSITY_COLUMN
+            ].astype(float)
 
             X_train = pd.concat([X_train, synth_features], axis=0)
             y_train = pd.concat([y_train, synth_labels], axis=0)
@@ -324,7 +331,18 @@ def train_models(
                 proba = proba[:, 1]
             else:
                 proba = None
-        original_rows = dataset.frame.loc[y_split.index].copy()
+        augmented_frame = dataset.frame
+        if synthetic_store:
+            synthetic_aug = pd.concat(synthetic_store, axis=0)
+            synthetic_aug = synthetic_aug.reindex(columns=dataset.frame.columns, fill_value=np.nan)
+            augmented_frame = pd.concat([dataset.frame, synthetic_aug], axis=0)
+        try:
+            original_rows = augmented_frame.loc[y_split.index].copy()
+        except KeyError as exc:
+            missing = [idx for idx in y_split.index if idx not in augmented_frame.index]
+            raise KeyError(
+                f"Missing rows for prediction export: {missing[:5]} (total missing={len(missing)})"
+            ) from exc
         if "model" in original_rows.columns:
             original_rows = original_rows.drop(columns=["model"])
         if "split" in original_rows.columns:
