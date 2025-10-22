@@ -68,6 +68,7 @@ def test_synthetic_generation_thresholds_match_spec(tmp_path):
 
     assert result.manifest["synthetic_fly_id"].str.startswith("syn_").all()
     assert set(result.manifest["parent_fly_id"].unique()) <= {"flyA", "flyB"}
+    assert "was_previewed" in result.manifest.columns
 
 
 def test_synthetic_generation_keeps_training_isolation(tmp_path):

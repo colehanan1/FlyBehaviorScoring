@@ -337,7 +337,7 @@ def _configure_parser() -> argparse.ArgumentParser:
         "--preview-synthetics",
         type=int,
         default=12,
-        help="Number of synthetic trials per class to preview interactively",
+        help="Number of synthetic trials to preview interactively (-1 previews all)",
     )
     train_parser.add_argument(
         "--preview-score-checkpoint",

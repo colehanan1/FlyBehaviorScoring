@@ -22,9 +22,10 @@ Key behaviours:
 
 - Metrics for the synthetic CSV (`AUC-*`, `TimeToPeak-During`, `Peak-Value`) are recomputed via the same BEFORE/DURING/AFTER windowing and threshold rule (`mean_before_fly + 4×std_before_trial`).
 - Synthetic trials inherit trace schema automatically: `dir_val_<frame>` columns are detected, sorted, and stacked without manual configuration.
-- The preview gate renders a Matplotlib grid of selected trials (per-class cap controlled by `--preview-synthetics`), overlays the per-trial threshold, and accepts keyboard decisions (`k` keep, `d` drop, `0`/`1` relabel).
+- The preview gate renders a Matplotlib grid of selected trials (set `--preview-synthetics` to -1 to review every synthetic), overlays the per-trial threshold, and accepts keyboard decisions (`k` keep, `d` drop, `0`/`1` relabel).
 - Optional auto-filtering (`--auto-filter-threshold`) and probability scoring (`--preview-score-checkpoint`) pre-tag conflicts before the manual review.
-- Approved synthetics are appended only to the training fold derived from a fly-level `GroupKFold` split. Validation and test folds remain untouched.
+- The training command now performs a fly-level GroupShuffleSplit with a 70 / 15 / 15 train/validation/test allocation. Only the training partition receives synthetic augmentation; validation and test remain real data.
+- Synthetic trials are exported with `was_previewed` flags, manifest parity, and unit sample weights so they influence the optimiser without overpowering real trials (which retain intensity-derived weights).
 - Provenance fields (e.g. `is_synthetic`, `synthetic_fly_id`, `parent_trial_ids`, `decision`, `final_label`) accompany every synthetic row, and an aligned manifest plus preview PNG land in `--save-synthetics-dir`.
 
 ## Installation

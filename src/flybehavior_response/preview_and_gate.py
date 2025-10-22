@@ -154,6 +154,7 @@ class PreviewPayload:
     predictions: List[float]
     conflicts: List[bool]
     preview_image: Path | None
+    preview_indices: List[int]
 
 
 def preview_and_gate(
@@ -196,21 +197,36 @@ def preview_and_gate(
 
     rng = np.random.default_rng(config.seed)
     preview_indices: List[int] = []
-    if config.preview_synthetics > 0:
-        for label_value in (0, 1):
-            candidates = [idx for idx, value in enumerate(final_labels) if value == label_value]
-            if not candidates:
-                continue
-            count = min(config.preview_synthetics, len(candidates))
-            selected = list(rng.choice(candidates, size=count, replace=False))
-            preview_indices.extend(selected)
+    total_trials = len(frame)
+    preview_target = int(config.preview_synthetics)
+    if preview_target < 0:
+        preview_indices = list(range(total_trials))
+    elif preview_target > 0:
+        preview_target = min(preview_target, total_trials)
+        if preview_target == total_trials:
+            preview_indices = list(range(total_trials))
+        else:
+            taken: set[int] = set()
+            # ensure each class is represented when available
+            for label_value in sorted(frame[LABEL_COLUMN].unique()):
+                class_indices = [idx for idx, value in enumerate(final_labels) if value == label_value]
+                if class_indices and len(taken) < preview_target:
+                    taken.add(class_indices[0])
+            remaining_pool = [idx for idx in range(total_trials) if idx not in taken]
+            need = preview_target - len(taken)
+            if need > 0 and remaining_pool:
+                sampled = rng.choice(remaining_pool, size=min(need, len(remaining_pool)), replace=False)
+                taken.update(int(idx) for idx in np.atleast_1d(sampled))
+            preview_indices = sorted(taken)
 
-    preview_indices = sorted(set(preview_indices))
     logger.info(
-        "Previewing %d synthetic trials (per-class target=%d).", len(preview_indices), config.preview_synthetics
+        "Previewing %d of %d synthetic trials (target=%d).",
+        len(preview_indices),
+        total_trials,
+        preview_target,
     )
 
-    if preview_indices and config.preview_synthetics > 0:
+    if preview_indices and preview_target != 0:
         for idx in preview_indices:
             row = frame.iloc[idx]
             manual_decision = _interactive_review(
@@ -259,5 +275,6 @@ def preview_and_gate(
         predictions=cleaned_predictions,
         conflicts=conflicts,
         preview_image=preview_image,
+        preview_indices=preview_indices,
     )
 

@@ -128,11 +128,22 @@ class SyntheticFlyGenerator:
             pipeline=preview_pipeline,
         )
 
+        preview_flags = np.zeros(len(synthetic_df), dtype=bool)
+        if previewed.preview_indices:
+            preview_flags[np.asarray(previewed.preview_indices, dtype=int)] = True
+
+        self.logger.info(
+            "Synthetic trials generated=%d previewed=%d",
+            len(synthetic_df),
+            int(np.count_nonzero(preview_flags)),
+        )
+
         synthetic_df["decision"] = [decision.value for decision in previewed.decisions]
         synthetic_df["final_label"] = previewed.final_labels
         synthetic_df["pred_prob"] = previewed.predictions
         synthetic_df["conflict_flag"] = previewed.conflicts
         synthetic_df[LABEL_COLUMN] = previewed.final_labels
+        synthetic_df["was_previewed"] = preview_flags
         if LABEL_INTENSITY_COLUMN in synthetic_df.columns:
             intensities = synthetic_df[LABEL_INTENSITY_COLUMN].astype(float)
             intensities.loc[synthetic_df[LABEL_COLUMN] == 0] = 0.0
@@ -153,6 +164,7 @@ class SyntheticFlyGenerator:
             "pred_prob",
             "decision",
             "final_label",
+            "was_previewed",
         ]].copy()
 
         manifest.insert(0, "is_synthetic", 1)
@@ -177,8 +189,6 @@ class SyntheticFlyGenerator:
         traces = fly_df[trace_columns].to_numpy(dtype=float)
         trial_labels = fly_df[LABEL_COLUMN].astype(int).to_numpy()
         trial_names = fly_df.get("trial_label", fly_df.index.astype(str)).astype(str).to_numpy()
-        intensities = fly_df.get(LABEL_INTENSITY_COLUMN, pd.Series(1.0, index=fly_df.index)).to_numpy(dtype=float)
-
         metadata_columns = [col for col in fly_df.columns if col not in trace_columns]
 
         for trial_idx, row in enumerate(fly_df.itertuples(index=False)):
@@ -211,6 +221,7 @@ class SyntheticFlyGenerator:
                 if hasattr(row, column)
             }
             parent_fly_identifier = parent_metadata.get(fly_column, getattr(row, fly_column, "unknown"))
+            synthetic_intensity = 1.0 if label else 0.0
             trials.append(
                 SyntheticTrial(
                     synthetic_fly_id=synthetic_fly_id,
@@ -219,7 +230,7 @@ class SyntheticFlyGenerator:
                     parent_trial_ids=parent_ids,
                     trace=trace.astype(float),
                     label=label,
-                    intensity=float(intensities[trial_idx]),
+                    intensity=synthetic_intensity,
                     trial_label=str(trial_label_value),
                     aug_op=op,
                     seed=self.config.seed,

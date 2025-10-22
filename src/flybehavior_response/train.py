@@ -12,7 +12,7 @@ import pandas as pd
 from joblib import dump
 from joblib import load
 from sklearn.metrics import ConfusionMatrixDisplay
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 
 from .config import PipelineConfig, compute_class_balance, hash_file, make_run_artifacts
 from .evaluate import evaluate_models, perform_cross_validation, save_metrics
@@ -200,45 +200,77 @@ def train_models(
     groups = dataset.frame[fly_column].astype(str)
     unique_groups = groups.drop_duplicates()
     if unique_groups.empty:
-        raise ValueError("GroupKFold requires at least one fly identifier.")
-    n_splits = min(5, len(unique_groups))
-    if n_splits < 2:
+        raise ValueError("Group splitting requires at least one fly identifier.")
+    group_count = len(unique_groups)
+    if group_count < 2:
         raise ValueError("At least two unique flies required for grouped split.")
 
-    shuffled_indices = np.arange(len(dataset.frame))
-    rng = np.random.default_rng(seed)
-    rng.shuffle(shuffled_indices)
-    X_shuffled = X.iloc[shuffled_indices]
-    y_shuffled = y.iloc[shuffled_indices]
-    groups_shuffled = groups.iloc[shuffled_indices]
+    indices = np.arange(len(dataset.frame))
+    train_indices: np.ndarray
+    val_indices: np.ndarray
+    test_indices: np.ndarray
 
-    gkf = GroupKFold(n_splits=n_splits)
-    train_idx_shuff, test_idx_shuff = next(gkf.split(X_shuffled, y_shuffled, groups=groups_shuffled))
-    train_indices = shuffled_indices[train_idx_shuff]
-    test_indices = shuffled_indices[test_idx_shuff]
+    if group_count >= 3:
+        outer_split = GroupShuffleSplit(n_splits=1, test_size=0.15, random_state=seed)
+        trainval_idx, test_idx = next(outer_split.split(X, y, groups=groups))
+        remaining_ratio = 1.0 - 0.15
+        val_ratio_within_train = 0.15 / remaining_ratio
+        inner_split = GroupShuffleSplit(
+            n_splits=1, test_size=val_ratio_within_train, random_state=seed + 1
+        )
+        train_idx_rel, val_idx_rel = next(
+            inner_split.split(
+                X.iloc[trainval_idx],
+                y.iloc[trainval_idx],
+                groups=groups.iloc[trainval_idx],
+            )
+        )
+        train_indices = indices[trainval_idx][train_idx_rel]
+        val_indices = indices[trainval_idx][val_idx_rel]
+        test_indices = indices[test_idx]
+        logger.info(
+            "Grouped split (70/15/15 target) produced %d train flies, %d validation flies, %d test flies.",
+            groups.iloc[train_indices].nunique(),
+            groups.iloc[val_indices].nunique(),
+            groups.iloc[test_indices].nunique(),
+        )
+    else:
+        logger.warning(
+            "Only %d unique flies available; falling back to 50/50 train/test split without validation.",
+            group_count,
+        )
+        gkf = GroupKFold(n_splits=2)
+        train_idx, test_idx = next(gkf.split(X, y, groups=groups))
+        train_indices = indices[train_idx]
+        test_indices = indices[test_idx]
+        val_indices = np.array([], dtype=int)
 
     X_train = X.iloc[train_indices]
-    X_test = X.iloc[test_indices]
     y_train = y.iloc[train_indices]
-    y_test = y.iloc[test_indices]
     sw_train = sample_weights.iloc[train_indices]
+
+    X_val = X.iloc[val_indices]
+    y_val = y.iloc[val_indices]
+    sw_val = sample_weights.iloc[val_indices]
+
+    X_test = X.iloc[test_indices]
+    y_test = y.iloc[test_indices]
     sw_test = sample_weights.iloc[test_indices]
 
     feature_columns = X_train.columns
 
+    total_samples = len(dataset.frame)
     logger.info(
-        "GroupKFold split (n_splits=%d) produced %d training flies and %d test flies.",
-        n_splits,
-        groups.iloc[train_indices].nunique(),
-        groups.iloc[test_indices].nunique(),
-    )
-
-    logger.info(
-        "Split data into training (%d samples, reaction rate=%.2f) and test (%d samples, reaction rate=%.2f)",
+        "Split data -> train: %d samples (%.1f%%, reaction rate=%.2f) | validation: %d samples (%.1f%%, reaction rate=%.2f) | test: %d samples (%.1f%%, reaction rate=%.2f)",
         len(y_train),
-        float(y_train.mean()),
+        (len(y_train) / total_samples) * 100.0,
+        float(y_train.mean()) if len(y_train) else float("nan"),
+        len(y_val),
+        (len(y_val) / total_samples) * 100.0,
+        float(y_val.mean()) if len(y_val) else float("nan"),
         len(y_test),
-        float(y_test.mean()),
+        (len(y_test) / total_samples) * 100.0,
+        float(y_test.mean()) if len(y_test) else float("nan"),
     )
 
     synthetic_store: List[pd.DataFrame] = []
@@ -297,10 +329,6 @@ def train_models(
                 synth_features = synth_features.loc[:, non_empty_feature_cols]
             synth_labels = kept_aligned[LABEL_COLUMN].astype(int)
             synth_weights = pd.Series(1.0, index=kept_aligned.index, dtype=float)
-            positive_mask = kept_aligned[LABEL_INTENSITY_COLUMN] > 0
-            synth_weights.loc[positive_mask] = kept_aligned.loc[
-                positive_mask, LABEL_INTENSITY_COLUMN
-            ].astype(float)
 
             X_train = pd.concat([X_train, synth_features], axis=0)
             X_train = X_train.reindex(columns=feature_columns)
@@ -313,6 +341,12 @@ def train_models(
                 len(synthetic_result.dataframe),
                 len(kept_df),
                 kept_counts,
+            )
+            logger.info(
+                "Training sample totals after augmentation -> real=%d synthetic=%d overall=%d",
+                len(train_indices),
+                len(synth_labels),
+                len(y_train),
             )
         else:
             logger.info("No synthetic trials were retained after gating.")
@@ -329,6 +363,11 @@ def train_models(
         weights_split,
     ) -> None:
         if dry_run:
+            return
+        if y_split.empty:
+            logger.debug(
+                "Skipping %s prediction export because the split is empty.", split_name
+            )
             return
         assert artifacts is not None
         predictions = pipeline.predict(X_split)
@@ -403,25 +442,42 @@ def train_models(
             y_train,
             sample_weight=sw_train,
         )[model_name]
+        val_metrics = None
+        if len(y_val):
+            val_metrics = evaluate_models(
+                {model_name: pipeline},
+                X_val,
+                y_val,
+                sample_weight=sw_val,
+            )[model_name]
         test_metrics = evaluate_models(
             {model_name: pipeline},
             X_test,
             y_test,
             sample_weight=sw_test,
         )[model_name]
-        metrics[model_name] = train_metrics
+        metrics[model_name] = dict(train_metrics)
+        metrics[model_name]["train"] = train_metrics
+        metrics[model_name]["validation"] = val_metrics
         metrics[model_name]["test"] = test_metrics
 
+        def _fmt(metric: Dict[str, object] | None, key: str) -> float:
+            if metric is None:
+                return float("nan")
+            return float(metric[key])
+
         logger.info(
-            "Model %s accuracy -> train: %.3f | test: %.3f",
+            "Model %s accuracy -> train: %.3f | val: %.3f | test: %.3f",
             model_name,
             train_metrics["accuracy"],
+            _fmt(val_metrics, "accuracy"),
             test_metrics["accuracy"],
         )
         logger.info(
-            "Model %s F1 (binary) -> train: %.3f | test: %.3f",
+            "Model %s F1 (binary) -> train: %.3f | val: %.3f | test: %.3f",
             model_name,
             train_metrics["f1_binary"],
+            _fmt(val_metrics, "f1_binary"),
             test_metrics["f1_binary"],
         )
         model_step = pipeline.named_steps["model"]
@@ -475,6 +531,14 @@ def train_models(
                 X_split=X_train,
                 y_split=y_train,
                 weights_split=sw_train,
+            )
+            _write_split_predictions(
+                split_name="validation",
+                model_name=model_name,
+                pipeline=pipeline,
+                X_split=X_val,
+                y_split=y_val,
+                weights_split=sw_val,
             )
             _write_split_predictions(
                 split_name="test",

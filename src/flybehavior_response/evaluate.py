@@ -40,7 +40,11 @@ def compute_metrics(
         "normalized": _serialize_confusion(norm_cm),
     }
     if model_type in {MODEL_LOGREG, MODEL_MLP} and proba is not None:
-        metrics["roc_auc"] = float(roc_auc_score(y_true, proba[:, 1]))
+        unique_labels = np.unique(y_true)
+        if unique_labels.size >= 2:
+            metrics["roc_auc"] = float(roc_auc_score(y_true, proba[:, 1]))
+        else:
+            metrics["roc_auc"] = None
     else:
         metrics["roc_auc"] = None
 
@@ -71,9 +75,13 @@ def compute_metrics(
             "normalized": _serialize_confusion(weighted_norm),
         }
         if model_type in {MODEL_LOGREG, MODEL_MLP} and proba is not None:
-            weighted_metrics["roc_auc"] = float(
-                roc_auc_score(y_true, proba[:, 1], sample_weight=sample_weight)
-            )
+            unique_labels = np.unique(y_true)
+            if unique_labels.size >= 2:
+                weighted_metrics["roc_auc"] = float(
+                    roc_auc_score(y_true, proba[:, 1], sample_weight=sample_weight)
+                )
+            else:
+                weighted_metrics["roc_auc"] = None
         else:
             weighted_metrics["roc_auc"] = None
         metrics["weighted"] = weighted_metrics
