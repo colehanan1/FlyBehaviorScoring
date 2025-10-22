@@ -224,6 +224,8 @@ def train_models(
     sw_train = sample_weights.iloc[train_indices]
     sw_test = sample_weights.iloc[test_indices]
 
+    feature_columns = X_train.columns
+
     logger.info(
         "GroupKFold split (n_splits=%d) produced %d training flies and %d test flies.",
         n_splits,
@@ -288,6 +290,11 @@ def train_models(
             synthetic_store.append(kept_aligned)
 
             synth_features = kept_aligned.drop(columns=drop_columns, errors="ignore")
+            if not synth_features.empty:
+                non_empty_feature_cols = synth_features.columns[
+                    synth_features.notna().any(axis=0)
+                ]
+                synth_features = synth_features.loc[:, non_empty_feature_cols]
             synth_labels = kept_aligned[LABEL_COLUMN].astype(int)
             synth_weights = pd.Series(1.0, index=kept_aligned.index, dtype=float)
             positive_mask = kept_aligned[LABEL_INTENSITY_COLUMN] > 0
@@ -296,6 +303,7 @@ def train_models(
             ].astype(float)
 
             X_train = pd.concat([X_train, synth_features], axis=0)
+            X_train = X_train.reindex(columns=feature_columns)
             y_train = pd.concat([y_train, synth_labels], axis=0)
             sw_train = pd.concat([sw_train, synth_weights], axis=0)
 
