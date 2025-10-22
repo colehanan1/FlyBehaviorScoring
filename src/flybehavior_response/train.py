@@ -334,8 +334,14 @@ def train_models(
         augmented_frame = dataset.frame
         if synthetic_store:
             synthetic_aug = pd.concat(synthetic_store, axis=0)
-            synthetic_aug = synthetic_aug.reindex(columns=dataset.frame.columns, fill_value=np.nan)
+            synthetic_aug = synthetic_aug.reindex(columns=dataset.frame.columns)
+            # Drop columns that are entirely NA to avoid pandas concat dtype warnings while
+            # preserving the real dataset schema. The dropped columns will still exist after
+            # concatenation because they are present in ``dataset.frame``.
+            non_empty_cols = synthetic_aug.columns[synthetic_aug.notna().any(axis=0)]
+            synthetic_aug = synthetic_aug.loc[:, non_empty_cols]
             augmented_frame = pd.concat([dataset.frame, synthetic_aug], axis=0)
+            augmented_frame = augmented_frame.reindex(columns=dataset.frame.columns)
         try:
             original_rows = augmented_frame.loc[y_split.index].copy()
         except KeyError as exc:
