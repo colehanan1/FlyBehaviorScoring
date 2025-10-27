@@ -316,8 +316,8 @@ flybehavior-response predict --data-csv /home/ramanlab/Documents/cole/Data/Opto/
 
   ```bash
   flybehavior-response prepare-raw \
-    --data-npy /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_matrix.npy \
-    --matrix-meta /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_matrix.json \
+    --data-npy /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.npy \
+    --matrix-meta /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.json \
     --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
     --out /home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv
   ```
@@ -334,7 +334,7 @@ Once you have a wide table of raw coordinates, enable the raw channel handling o
 flybehavior-response train --raw-series \
   --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.csv \
   --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
-  --model all --n-pcs 5
+  --model all --n-pcs 2
 
 # evaluate an existing run against the same raw inputs
 flybehavior-response eval --raw-series \
