@@ -153,3 +153,67 @@ def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
     train_ids = set(manifest.loc[manifest["split"] == "train", "fly"])
     test_ids = set(manifest.loc[manifest["split"] == "test", "fly"])
     assert train_ids.isdisjoint(test_ids), "Detected group leakage between train and test splits"
+
+
+def test_train_models_geometry_without_traces(tmp_path: Path) -> None:
+    trials = [
+        ("f1", "t1", 0),
+        ("f2", "t2", 5),
+        ("f3", "t3", 0),
+        ("f4", "t4", 5),
+        ("f5", "t5", 0),
+        ("f6", "t6", 5),
+    ]
+    frame_records = []
+    for idx, (fly, trial_label, score) in enumerate(trials, start=1):
+        for frame_idx in range(4):
+            frame_records.append(
+                {
+                    "dataset": "d",
+                    "fly": fly,
+                    "fly_number": idx,
+                    "trial_type": "testing",
+                    "trial_label": trial_label,
+                    "frame": frame_idx,
+                    "eye_x": 0.1 * (frame_idx + idx),
+                    "eye_y": 0.05 * (frame_idx + idx),
+                    "prob_x": 0.2 * (idx - frame_idx * 0.1),
+                    "prob_y": 0.15 * (idx + frame_idx * 0.2),
+                }
+            )
+    frames = pd.DataFrame(frame_records)
+    labels = pd.DataFrame(
+        {
+            "dataset": ["d"] * len(trials),
+            "fly": [fly for fly, _, _ in trials],
+            "fly_number": list(range(1, len(trials) + 1)),
+            "trial_type": ["testing"] * len(trials),
+            "trial_label": [trial for _, trial, _ in trials],
+            LABEL_COLUMN: [score for _, _, score in trials],
+        }
+    )
+    frames_path = tmp_path / "geom.csv"
+    labels_path = tmp_path / "labels.csv"
+    frames.to_csv(frames_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    metrics = train_models(
+        data_csv=None,
+        labels_csv=labels_path,
+        features=["eye_x_mean", "prob_x_mean"],
+        include_traces=False,
+        use_raw_pca=True,
+        n_pcs=2,
+        models=[MODEL_LOGREG],
+        artifacts_dir=tmp_path,
+        cv=0,
+        seed=1,
+        verbose=False,
+        dry_run=True,
+        geometry_source=frames_path,
+        geom_granularity="trial",
+        group_override="none",
+        test_size=0.5,
+    )
+
+    assert set(metrics["models"].keys()) == {MODEL_LOGREG}

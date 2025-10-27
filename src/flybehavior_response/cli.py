@@ -888,6 +888,7 @@ def _handle_predict(args: argparse.Namespace) -> None:
             downcast=geom_kwargs["geom_downcast"],
             trial_summary=geom_kwargs["geom_trial_summary"],
             feature_columns=geom_kwargs["geom_feature_columns"],
+            include_traces=not getattr(args, "no_raw", False),
         )
         data_df = dataset.frame.copy()
         logger.debug("Prediction dataset shape after geometry processing: %s", data_df.shape)

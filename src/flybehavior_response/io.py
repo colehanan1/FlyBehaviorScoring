@@ -1788,6 +1788,7 @@ def load_geometry_dataset(
     downcast: bool = True,
     trial_summary: Path | None = None,
     feature_columns: Sequence[str] | None = None,
+    include_traces: bool = True,
 ) -> MergedDataset:
     """Load geometry frames and optionally aggregate into trial-level rows."""
 
@@ -1838,6 +1839,11 @@ def load_geometry_dataset(
 
     resolved_stream_frame_column = getattr(stream, "frame_column", frame_column)
 
+    if not include_traces:
+        logger.info(
+            "Raw trace assembly disabled for geometry dataset; proceeding without trace columns."
+        )
+
     if granularity_norm == "trial":
         builder = TrialAggregateBuilder(
             key_columns=MERGE_KEYS,
@@ -1853,7 +1859,7 @@ def load_geometry_dataset(
                 behavioral_config.odor_on_column,
                 behavioral_config.odor_off_column,
             ],
-            trace_candidates=RAW_GEOM_TRACE_CANDIDATES,
+            trace_candidates=RAW_GEOM_TRACE_CANDIDATES if include_traces else {},
             behavioral_config=behavioral_config,
         )
         for chunk in stream:
@@ -2091,6 +2097,7 @@ def load_dataset(
             downcast=geom_downcast,
             trial_summary=geom_trial_summary,
             feature_columns=geom_feature_columns,
+            include_traces=include_traces,
         )
 
     if data_csv is None:

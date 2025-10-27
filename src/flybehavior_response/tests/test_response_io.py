@@ -958,10 +958,52 @@ def test_load_geometry_dataset_builds_traces(tmp_path: Path) -> None:
         for idx in range(4)
     ]
     assert dataset.trace_columns == expected_columns
-    assert dataset.frame.loc[0, "eye_x_f0"] == pytest.approx(0.1)
-    assert dataset.frame.loc[0, "eye_x_f3"] == pytest.approx(0.4)
-    assert dataset.frame.loc[0, "prob_y_f3"] == pytest.approx(0.3)
-    assert all(dataset.frame[col].dtype == "float32" for col in expected_columns)
+
+
+def test_load_geometry_dataset_disables_traces_when_requested(tmp_path: Path) -> None:
+    frames = pd.DataFrame(
+        {
+            "dataset": ["d", "d", "d", "d"],
+            "fly": ["f", "f", "f", "f"],
+            "fly_number": [1, 1, 1, 1],
+            "trial_type": ["testing", "testing", "testing", "testing"],
+            "trial_label": ["t1", "t1", "t1", "t1"],
+            "frame": [0, 1, 2, 3],
+            "eye_x": [0.1, 0.2, 0.3, 0.4],
+            "eye_y": [0.0, 0.1, 0.2, 0.3],
+            "prob_x": [0.5, 0.4, 0.3, 0.2],
+            "prob_y": [0.6, 0.5, 0.4, 0.3],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "dataset": ["d"],
+            "fly": ["f"],
+            "fly_number": [1],
+            "trial_type": ["testing"],
+            "trial_label": ["t1"],
+            LABEL_COLUMN: [5],
+        }
+    )
+    frames_path = tmp_path / "geom.csv"
+    labels_path = tmp_path / "labels.csv"
+    frames.to_csv(frames_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    dataset = load_geometry_dataset(
+        frames_path,
+        labels_csv=labels_path,
+        granularity="trial",
+        normalization="none",
+        include_traces=False,
+    )
+
+    assert dataset.trace_prefixes == []
+    assert dataset.trace_columns == []
+    for prefix in RAW_TRACE_PREFIXES:
+        assert not any(col.startswith(prefix) for col in dataset.frame.columns)
+    assert "eye_x_mean" in dataset.feature_columns
+    assert "prob_y_mean" in dataset.feature_columns
 
 
 def test_load_geometry_dataset_frame_granularity(geometry_csvs: tuple[Path, Path]) -> None:
