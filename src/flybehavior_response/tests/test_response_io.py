@@ -11,6 +11,7 @@ from flybehavior_response.io import (
     LABEL_INTENSITY_COLUMN,
     DataValidationError,
     RAW_TRACE_PREFIXES,
+    TRACE_PATTERN,
     aggregate_trials,
     load_and_merge,
     load_geom_frames,
@@ -205,6 +206,49 @@ def test_load_and_merge_detects_raw_prefixes(tmp_path: Path) -> None:
 
     assert dataset.trace_prefixes == list(RAW_TRACE_PREFIXES)
     assert dataset.trace_columns[:4] == [f"{RAW_TRACE_PREFIXES[0]}0", f"{RAW_TRACE_PREFIXES[0]}1", f"{RAW_TRACE_PREFIXES[1]}0", f"{RAW_TRACE_PREFIXES[1]}1"]
+
+
+def test_load_and_merge_excludes_traces_when_disabled(tmp_path: Path) -> None:
+    frames = {
+        "dataset": ["opto_EB", "opto_EB"],
+        "fly": ["a", "b"],
+        "fly_number": [1, 2],
+        "trial_type": ["testing", "testing"],
+        "trial_label": ["t1", "t2"],
+        "AUC-During": [0.5, 0.7],
+        "Peak-Value": [0.9, 1.1],
+    }
+    for prefix in [*RAW_TRACE_PREFIXES, "dir_val_"]:
+        frames[f"{prefix}0"] = [0.1, 0.2]
+        frames[f"{prefix}1"] = [0.3, 0.4]
+    data = pd.DataFrame(frames)
+    labels = pd.DataFrame(
+        {
+            "dataset": ["opto_EB", "opto_EB"],
+            "fly": ["a", "b"],
+            "fly_number": [1, 2],
+            "trial_type": ["testing", "testing"],
+            "trial_label": ["t1", "t2"],
+            LABEL_COLUMN: [0, 5],
+        }
+    )
+    data_path = tmp_path / "no_raw.csv"
+    labels_path = tmp_path / "no_raw_labels.csv"
+    data.to_csv(data_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    dataset = load_and_merge(
+        data_path,
+        labels_path,
+        include_trace_columns=False,
+    )
+
+    assert dataset.trace_columns == []
+    assert dataset.trace_prefixes == []
+    remaining_columns = set(dataset.frame.columns)
+    assert not any(TRACE_PATTERN.match(col) for col in remaining_columns)
+    for prefix in RAW_TRACE_PREFIXES:
+        assert not any(col.startswith(prefix) for col in remaining_columns)
 
 
 def test_load_and_merge_allows_trace_only_inputs(tmp_path: Path) -> None:

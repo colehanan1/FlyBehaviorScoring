@@ -20,6 +20,8 @@ from .io import (
     LABEL_INTENSITY_COLUMN,
     MERGE_KEYS,
     aggregate_trials,
+    RAW_TRACE_PREFIXES,
+    TRACE_PATTERN,
     load_geom_frames,
     load_geometry_dataset,
     load_and_merge,
@@ -348,13 +350,21 @@ def _extract_geometry_kwargs(args: argparse.Namespace) -> dict[str, object]:
 
 
 def _select_trace_prefixes(
-    args: argparse.Namespace, *, fallback: Sequence[str] | None = None
+    args: argparse.Namespace,
+    *,
+    fallback: Sequence[str] | None = None,
+    force_no_raw: bool | None = None,
 ) -> List[str] | None:
+    no_raw_flag = getattr(args, "no_raw", False)
+    if force_no_raw is not None:
+        no_raw_flag = force_no_raw
+    if no_raw_flag:
+        return []
     if getattr(args, "raw_series", False):
         return list(RAW_DEFAULT_PREFIXES)
     if args.series_prefixes is not None:
         return _parse_series_prefixes(args.series_prefixes)
-    if fallback:
+    if fallback is not None:
         return list(fallback)
     return None
 
@@ -381,6 +391,11 @@ def _configure_parser() -> argparse.ArgumentParser:
         "--raw-series",
         action="store_true",
         help="Use the default raw coordinate prefixes (eye/proboscis channels)",
+    )
+    common_parser.add_argument(
+        "--no-raw",
+        action="store_true",
+        help="Exclude raw trace columns from downstream modeling workflows",
     )
     common_parser.add_argument(
         "--include-auc-before",
@@ -653,11 +668,13 @@ def _handle_prepare(args: argparse.Namespace) -> None:
         return
 
     prefixes = _select_trace_prefixes(args)
+    include_traces = not getattr(args, "no_raw", False)
     dataset = load_and_merge(
         args.data_csv,
         args.labels_csv,
         logger_name="prepare",
         trace_prefixes=prefixes,
+        include_trace_columns=include_traces,
     )
     balance = dataset.frame[LABEL_COLUMN].astype(int).value_counts(normalize=True).to_dict()
     logger.info("Class balance: %s", balance)
@@ -686,6 +703,7 @@ def _handle_train(args: argparse.Namespace) -> None:
     geom_kwargs = _extract_geometry_kwargs(args)
     features = parse_feature_list(args.features, args.include_auc_before)
     prefixes = _select_trace_prefixes(args)
+    include_traces = not getattr(args, "no_raw", False)
     geometry_source = geom_kwargs.pop("geometry_source")
     metrics = train_models(
         data_csv=args.data_csv,
@@ -702,6 +720,7 @@ def _handle_train(args: argparse.Namespace) -> None:
         logreg_solver=args.logreg_solver,
         logreg_max_iter=args.logreg_max_iter,
         trace_prefixes=prefixes,
+        include_traces=include_traces,
         geometry_source=geometry_source,
         **geom_kwargs,
         group_column=args.group_column,
@@ -740,12 +759,26 @@ def _handle_eval(args: argparse.Namespace) -> None:
     logger = get_logger("eval", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
     config_prefixes: Sequence[str] | None = None
+    config_use_traces: bool | None = None
     config_path = run_dir / "config.json"
     if config_path.exists():
         config = PipelineConfig.from_json(config_path)
+        config_use_traces = getattr(config, "use_trace_series", True)
         if config.trace_series_prefixes:
             config_prefixes = config.trace_series_prefixes
-    prefixes = _select_trace_prefixes(args, fallback=config_prefixes)
+        elif config_use_traces is False:
+            config_prefixes = []
+    prefer_config_no_raw = (
+        config_use_traces is False
+        and args.series_prefixes is None
+        and not getattr(args, "raw_series", False)
+    )
+    effective_no_raw = getattr(args, "no_raw", False) or prefer_config_no_raw
+    prefixes = _select_trace_prefixes(
+        args,
+        fallback=config_prefixes,
+        force_no_raw=effective_no_raw,
+    )
     geom_kwargs = _extract_geometry_kwargs(args)
     geometry_source = geom_kwargs.pop("geometry_source")
     dataset = load_dataset(
@@ -753,6 +786,7 @@ def _handle_eval(args: argparse.Namespace) -> None:
         labels_csv=args.labels_csv,
         logger_name="eval",
         trace_prefixes=prefixes,
+        include_traces=not effective_no_raw,
         geometry_source=geometry_source,
         **geom_kwargs,
     )
@@ -787,12 +821,26 @@ def _handle_viz(args: argparse.Namespace) -> None:
     logger = get_logger("viz", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
     config_prefixes: Sequence[str] | None = None
+    config_use_traces: bool | None = None
     config_path = run_dir / "config.json"
     if config_path.exists():
         config = PipelineConfig.from_json(config_path)
+        config_use_traces = getattr(config, "use_trace_series", True)
         if config.trace_series_prefixes:
             config_prefixes = config.trace_series_prefixes
-    prefixes = _select_trace_prefixes(args, fallback=config_prefixes)
+        elif config_use_traces is False:
+            config_prefixes = []
+    prefer_config_no_raw = (
+        config_use_traces is False
+        and args.series_prefixes is None
+        and not getattr(args, "raw_series", False)
+    )
+    effective_no_raw = getattr(args, "no_raw", False) or prefer_config_no_raw
+    prefixes = _select_trace_prefixes(
+        args,
+        fallback=config_prefixes,
+        force_no_raw=effective_no_raw,
+    )
     generate_visuals(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,
@@ -801,6 +849,7 @@ def _handle_viz(args: argparse.Namespace) -> None:
         output_dir=args.plots_dir,
         verbose=args.verbose,
         trace_prefixes=prefixes,
+        include_traces=not effective_no_raw,
     )
 
 
@@ -842,10 +891,32 @@ def _handle_predict(args: argparse.Namespace) -> None:
         )
         data_df = dataset.frame.copy()
         logger.debug("Prediction dataset shape after geometry processing: %s", data_df.shape)
+        if getattr(args, "no_raw", False) and dataset.trace_columns:
+            drop_columns = [col for col in dataset.trace_columns if col in data_df.columns]
+            if drop_columns:
+                data_df = data_df.drop(columns=drop_columns)
+                logger.info(
+                    "Excluded %d raw trace columns from geometry predictions.",
+                    len(drop_columns),
+                )
     else:
         logger.info("Loading prediction data: %s", args.data_csv)
         data_df = pd.read_csv(args.data_csv)
         logger.debug("Prediction dataset shape: %s", data_df.shape)
+        if getattr(args, "no_raw", False):
+            drop_prefixes = list(dict.fromkeys([*DEFAULT_TRACE_PREFIXES, *RAW_TRACE_PREFIXES]))
+            drop_columns = [
+                col
+                for col in data_df.columns
+                if TRACE_PATTERN.match(col)
+                or any(col.startswith(prefix) for prefix in drop_prefixes)
+            ]
+            if drop_columns:
+                data_df = data_df.drop(columns=drop_columns)
+                logger.info(
+                    "Excluded %d raw trace columns from prediction inputs.",
+                    len(drop_columns),
+                )
 
     original_columns = set(data_df.columns)
     had_testing_trial_column = "testing_trial" in original_columns

@@ -1607,6 +1607,7 @@ def load_and_merge(
     *,
     logger_name: str = __name__,
     trace_prefixes: Sequence[str] | None = None,
+    include_trace_columns: bool = True,
 ) -> MergedDataset:
     """Load and merge data and labels CSVs."""
     logger = get_logger(logger_name)
@@ -1659,22 +1660,46 @@ def load_and_merge(
     coerced_labels = _coerce_labels(labels_df[LABEL_COLUMN], labels_csv)
     labels_df[LABEL_COLUMN] = coerced_labels
 
-    requested_prefixes = list(trace_prefixes or DEFAULT_TRACE_PREFIXES)
-    try:
-        trace_cols, data_df, resolved_prefixes = _filter_trace_columns(
-            data_df, requested_prefixes
-        )
-    except ValueError as exc:
-        raise DataValidationError(str(exc)) from exc
-    if not trace_cols:
-        raise DataValidationError(
-            "No trace columns found. Expected columns matching prefixes: %s" % requested_prefixes
-        )
-    if resolved_prefixes == DEFAULT_TRACE_PREFIXES:
-        dropped = [col for col in data_df.columns if TRACE_PATTERN.match(col) and col not in trace_cols]
-        if dropped:
-            data_df = data_df.drop(columns=dropped)
-            logger.info("Dropped %d trace columns outside %s", len(dropped), TRACE_RANGE)
+    trace_cols: List[str]
+    resolved_prefixes: List[str]
+    if include_trace_columns:
+        requested_prefixes = list(trace_prefixes or DEFAULT_TRACE_PREFIXES)
+        try:
+            trace_cols, data_df, resolved_prefixes = _filter_trace_columns(
+                data_df, requested_prefixes
+            )
+        except ValueError as exc:
+            raise DataValidationError(str(exc)) from exc
+        if not trace_cols:
+            raise DataValidationError(
+                "No trace columns found. Expected columns matching prefixes: %s" % requested_prefixes
+            )
+        if resolved_prefixes == DEFAULT_TRACE_PREFIXES:
+            dropped = [col for col in data_df.columns if TRACE_PATTERN.match(col) and col not in trace_cols]
+            if dropped:
+                data_df = data_df.drop(columns=dropped)
+                logger.info("Dropped %d trace columns outside %s", len(dropped), TRACE_RANGE)
+    else:
+        trace_cols = []
+        resolved_prefixes = []
+        configured_prefixes = list(trace_prefixes or [])
+        drop_prefixes = list(dict.fromkeys([
+            *configured_prefixes,
+            *DEFAULT_TRACE_PREFIXES,
+            *RAW_TRACE_PREFIXES,
+        ]))
+        drop_columns = [
+            col
+            for col in data_df.columns
+            if TRACE_PATTERN.match(col)
+            or any(col.startswith(prefix) for prefix in drop_prefixes)
+        ]
+        if drop_columns:
+            data_df = data_df.drop(columns=drop_columns)
+            logger.info(
+                "Excluded %d trace columns from dataset because raw traces were disabled.",
+                len(drop_columns),
+            )
 
     allow_empty_features = resolved_prefixes != DEFAULT_TRACE_PREFIXES
     if not allow_empty_features:
@@ -2032,6 +2057,7 @@ def load_dataset(
     labels_csv: Path | None,
     logger_name: str = __name__,
     trace_prefixes: Sequence[str] | None = None,
+    include_traces: bool = True,
     geometry_source: Path | None = None,
     geom_chunk_size: int = 100_000,
     geom_columns: Sequence[str] | None = None,
@@ -2077,6 +2103,7 @@ def load_dataset(
         labels_csv,
         logger_name=logger_name,
         trace_prefixes=trace_prefixes,
+        include_trace_columns=include_traces,
     )
 
 

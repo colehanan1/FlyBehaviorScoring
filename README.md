@@ -400,6 +400,8 @@ After installation, the `flybehavior-response` command becomes available. Common
 - `--data-csv`: Wide proboscis trace CSV.
 - `--labels-csv`: Labels CSV with `user_score_odor` scores (0 = no response, 1-5 = increasing response strength).
 - `--features`: Comma-separated engineered feature list (default: `AUC-During,TimeToPeak-During,Peak-Value`).
+- `--raw-series`: Prioritize the default raw coordinate prefixes (eye/proboscis channels).
+- `--no-raw`: Drop all trace columns so only engineered features feed the models.
 - `--include-auc-before`: Adds `AUC-Before` to the feature set.
 - `--use-raw-pca` / `--no-use-raw-pca`: Toggle raw trace PCA (default enabled).
 - `--n-pcs`: Number of PCA components (default 5).
@@ -519,6 +521,8 @@ flybehavior-response predict --raw-series \
 
 The raw workflow is always two-step: generate a per-trial table with `prepare-raw`, then invoke `train`, `eval`, `viz`, and `predict` with `--raw-series` (or explicit `--series-prefixes`) so every command consumes the four eye/proboscis streams exactly as prepared.
 ```
+
+Need to benchmark engineered features without the high-dimensional traces? Add `--no-raw` to the same subcommands. The loader drops every `dir_val_###`, `eye_x_f*`, `eye_y_f*`, `prob_x_f*`, and `prob_y_f*` column before training, stores that decision in `config.json`, and automatically disables PCA on the now-missing traces. Downstream `eval`, `viz`, and `predict` runs inherit the configuration, so omitting `--no-raw` later still reproduces the engineered-only workflow unless you explicitly override the series selection.
 
 During training the loader automatically recognises that engineered features are absent and logs that it is proceeding in a trace-only configuration. Keep PCA enabled (`--use-raw-pca`, the default) to derive compact principal components from the four coordinate streams.
 

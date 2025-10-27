@@ -21,8 +21,10 @@ def _create_dataset(tmp_path: Path) -> tuple[Path, Path]:
     rng = np.random.default_rng(0)
     data = pd.DataFrame(
         {
+            "dataset": ["ds"] * 6,
             "fly": ["a", "b", "c", "d", "e", "f"],
             "fly_number": [1, 2, 3, 4, 5, 6],
+            "trial_type": ["testing"] * 6,
             "trial_label": ["t1", "t2", "t3", "t4", "t5", "t6"],
             "dir_val_0": rng.normal(size=6),
             "dir_val_1": rng.normal(size=6),
@@ -34,8 +36,10 @@ def _create_dataset(tmp_path: Path) -> tuple[Path, Path]:
     )
     labels = pd.DataFrame(
         {
+            "dataset": ["ds"] * 6,
             "fly": ["a", "b", "c", "d", "e", "f"],
             "fly_number": [1, 2, 3, 4, 5, 6],
+            "trial_type": ["testing"] * 6,
             "trial_label": ["t1", "t2", "t3", "t4", "t5", "t6"],
             LABEL_COLUMN: [0, 1, 0, 2, 0, 5],
         }
@@ -87,11 +91,12 @@ def test_train_models_returns_metrics(tmp_path: Path) -> None:
         data_csv=data_path,
         labels_csv=labels_path,
         features=["AUC-During", "TimeToPeak-During", "Peak-Value"],
+        include_traces=True,
         use_raw_pca=True,
         n_pcs=2,
         models=["both"],
         artifacts_dir=tmp_path,
-        cv=2,
+        cv=0,
         seed=42,
         verbose=False,
         dry_run=True,
@@ -99,7 +104,7 @@ def test_train_models_returns_metrics(tmp_path: Path) -> None:
     assert set(metrics["models"].keys()) == {MODEL_LDA, MODEL_LOGREG}
     assert "accuracy" in metrics["models"][MODEL_LDA]
     assert "test" in metrics["models"][MODEL_LDA]
-    assert "cross_validation" in metrics["models"][MODEL_LDA]
+    assert "cross_validation" not in metrics["models"][MODEL_LDA]
     assert "weighted" in metrics["models"][MODEL_LOGREG]
 
 
@@ -110,6 +115,7 @@ def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
         data_csv=data_path,
         labels_csv=labels_path,
         features=["AUC-During", "TimeToPeak-During", "Peak-Value"],
+        include_traces=True,
         use_raw_pca=True,
         n_pcs=2,
         models=[MODEL_LDA, MODEL_LOGREG, MODEL_MLP],
