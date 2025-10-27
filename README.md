@@ -84,10 +84,10 @@ pip install -e .
   ``flybehavior_response.io.aggregate_trials`` for notebook workflows.
 
   Geometry exports that expose a different frame counter (for example a column
-  named ``frame`` instead of the default ``frame_idx``) no longer crash the
-  stream. The loader will automatically continue without contiguity validation
-  and log the skipped column. Pass ``--frame-column frame`` to reinstate the
-  block checks when working with these alternate schemas.
+  named ``frame`` instead of the default ``frame_idx``) are resolved
+  automatically. The loader now detects the alternate header, validates
+  contiguity against that column, and keeps the block integrity checks active
+  without any additional flags.
 
   Only trials present in the labels CSV are streamed. Rows without labels are
   dropped up front so aggregation and caching operate on fully annotated data.
@@ -106,6 +106,13 @@ pip install -e .
   the trained models describing the fly-level ``GroupShuffleSplit`` assignment;
   pass ``--group-override none`` to disable leakage guards when cross-fly
   isolation is not required.
+  When the geometry stream includes raw coordinate columns named
+  ``eye_x``, ``eye_y``, ``prob_x``, and ``prob_y``, the loader assembles these
+  into ``eye_x_f*``/``eye_y_f*``/``prob_x_f*``/``prob_y_f*`` trace series for
+  every trial. These traces mirror the format produced by the legacy
+  ``prepare_raw`` workflow, unlock PCA on raw motion signals without additional
+  preprocessing, and remain aligned with the per-trial aggregation and leakage
+  guards described above.
 
 - **Regenerate the geometry cache without touching disk** by using ``--dry-run``
   together with ``--cache-parquet``; the CLI will validate inputs and report

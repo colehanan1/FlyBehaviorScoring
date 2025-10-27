@@ -23,6 +23,12 @@ TRACE_PATTERN = re.compile(r"^dir_val_(\d+)$")
 TRACE_RANGE = (0, 3600)
 DEFAULT_TRACE_PREFIXES = ["dir_val_"]
 RAW_TRACE_PREFIXES = ["eye_x_f", "eye_y_f", "prob_x_f", "prob_y_f"]
+RAW_GEOM_TRACE_CANDIDATES = {
+    "eye_x": "eye_x_f",
+    "eye_y": "eye_y_f",
+    "prob_x": "prob_x_f",
+    "prob_y": "prob_y_f",
+}
 FEATURE_COLUMNS = {
     "AUC-Before",
     "AUC-During",
@@ -42,6 +48,25 @@ SUPPORTED_AGG_STATS = {"mean", "std", "min", "max", "sum", "first", "last"}
 
 
 STRING_KEY_COLUMNS = ["dataset", "fly", "trial_type", "trial_label"]
+
+FRAME_COLUMN_ALIASES = {
+    "frame": "frame",
+}
+
+
+@dataclass(slots=True)
+class GeometryFrameStream:
+    """Iterator wrapper that exposes geometry stream metadata."""
+
+    _iterator: Iterator[pd.DataFrame]
+    frame_column: str | None
+    available_columns: List[str]
+
+    def __iter__(self) -> "GeometryFrameStream":
+        return self
+
+    def __next__(self) -> pd.DataFrame:
+        return next(self._iterator)
 
 
 def _downcast_numeric(frame: pd.DataFrame, *, float_dtype: str = "float32") -> pd.DataFrame:
@@ -388,10 +413,13 @@ def load_geom_frames(
         if frame_column and frame_column not in requested_columns:
             requested_columns.append(frame_column)
 
-    frame_column_present = True
+    resolved_frame_column = frame_column if frame_column else None
+    frame_column_present = bool(resolved_frame_column)
+    available_columns: List[str] | None = None
+    geometry_stream: GeometryFrameStream | None = None
 
     def _iter_source() -> Iterator[pd.DataFrame]:
-        nonlocal frame_column_present
+        nonlocal frame_column_present, resolved_frame_column, available_columns, requested_columns, geometry_stream
         if use_cache and cache_parquet and cache_parquet.exists():
             log.info("Loading geometry frames from cache: %s", cache_parquet)
             yield from _iter_parquet_chunks(
@@ -429,13 +457,37 @@ def load_geom_frames(
                 f"{missing_keys}. Provide a CSV containing the full identifier set."
             )
 
-        if frame_column and frame_column not in available_columns:
-            frame_column_present = False
-            log.info(
-                "Frame column '%s' not detected in %s; skipping contiguity validation.",
-                frame_column,
-                source,
+        if resolved_frame_column and resolved_frame_column not in available_columns:
+            alias = next(
+                (candidate for candidate in FRAME_COLUMN_ALIASES if candidate in available_columns),
+                None,
             )
+            if alias:
+                log.info(
+                    "Frame column '%s' not found in %s; using '%s' for contiguity validation.",
+                    resolved_frame_column,
+                    source,
+                    alias,
+                )
+                resolved_frame_column = alias
+                frame_column_present = True
+                if geometry_stream is not None:
+                    geometry_stream.frame_column = resolved_frame_column
+                if requested_columns is not None and frame_column in requested_columns:
+                    requested_columns = [
+                        col for col in requested_columns if col != frame_column
+                    ]
+                    if alias not in requested_columns:
+                        requested_columns.append(alias)
+            else:
+                frame_column_present = False
+                log.info(
+                    "Frame column '%s' not detected in %s; skipping contiguity validation.",
+                    resolved_frame_column,
+                    source,
+                )
+                if geometry_stream is not None:
+                    geometry_stream.frame_column = None
 
         if requested_columns:
             deduped_requested = list(dict.fromkeys(requested_columns))
@@ -476,6 +528,7 @@ def load_geom_frames(
             yield chunk
 
     def _stream() -> Iterator[pd.DataFrame]:
+        nonlocal available_columns, frame_column_present, resolved_frame_column, geometry_stream
         last_seen: MutableMapping[tuple[object, ...], int] = {}
         final_order: List[str] | None = None
         writer = None
@@ -487,6 +540,40 @@ def load_geom_frames(
             for chunk_counter, raw_chunk in enumerate(_iter_source(), start=1):
                 if raw_chunk.empty:
                     continue
+                if available_columns is None:
+                    available_columns = list(raw_chunk.columns)
+                    if geometry_stream is not None:
+                        geometry_stream.available_columns = available_columns
+                    if (
+                        resolved_frame_column
+                        and resolved_frame_column not in available_columns
+                        and frame_column_present
+                    ):
+                        alias = next(
+                            (
+                                candidate
+                                for candidate in FRAME_COLUMN_ALIASES
+                                if candidate in available_columns
+                            ),
+                            None,
+                        )
+                        if alias:
+                            log.info(
+                                "Frame column '%s' not found in streamed chunk; using '%s' instead.",
+                                resolved_frame_column,
+                                alias,
+                            )
+                            resolved_frame_column = alias
+                            if geometry_stream is not None:
+                                geometry_stream.frame_column = resolved_frame_column
+                        else:
+                            log.info(
+                                "Frame column '%s' absent from streamed chunk; skipping contiguity validation.",
+                                resolved_frame_column,
+                            )
+                            frame_column_present = False
+                            if geometry_stream is not None:
+                                geometry_stream.frame_column = None
                 chunk = normalize_key_columns(raw_chunk)
                 _ensure_columns(chunk, join_keys, context="geometry frame chunk")
                 if label_key_set is not None:
@@ -505,11 +592,11 @@ def load_geom_frames(
                     if kept == 0:
                         continue
                     chunk = chunk.loc[key_series].copy()
-                if frame_column_present:
+                if frame_column_present and resolved_frame_column:
                     _validate_block_contiguity(
                         chunk,
                         key_columns=join_keys,
-                        frame_column=frame_column,
+                        frame_column=resolved_frame_column,
                         last_seen=last_seen,
                     )
                 if label_table is not None:
@@ -532,7 +619,11 @@ def load_geom_frames(
                     chunk[name] = pd.NA
                 chunk = chunk.loc[:, final_order]
 
-                stats = _compute_chunk_stats(chunk, join_keys, frame_column)
+                stats = _compute_chunk_stats(
+                    chunk,
+                    join_keys,
+                    resolved_frame_column if resolved_frame_column else frame_column,
+                )
                 total_rows += int(stats.get("rows", 0))
                 log.info(
                     "Chunk %03d | rows=%d | unique_blocks=%d | frame_range=%s",
@@ -571,100 +662,177 @@ def load_geom_frames(
                     total_rows,
                 )
 
-    return _stream()
+    geometry_stream = GeometryFrameStream(
+        _stream(),
+        frame_column=resolved_frame_column,
+        available_columns=available_columns or [],
+    )
+    return geometry_stream
 
 
-def aggregate_trials(
-    frames: Iterable[pd.DataFrame],
-    *,
-    key_columns: Sequence[str] = MERGE_KEYS,
-    frame_column: str = "frame_idx",
-    value_columns: Sequence[str] | None = None,
-    stats: Sequence[str] = ("mean", "min", "max"),
-    exclude_columns: Sequence[str] | None = None,
-) -> pd.DataFrame:
-    """Aggregate streamed geometry frames into trial-level summaries."""
+class TrialAggregateBuilder:
+    """Incrementally aggregate streamed frames and optionally assemble traces."""
 
-    stats_order = list(dict.fromkeys(stat.lower() for stat in stats))
-    stats_set = set(stats_order)
-    unsupported = stats_set - SUPPORTED_AGG_STATS
-    if unsupported:
-        raise ValueError(
-            f"Unsupported aggregation stats requested: {sorted(unsupported)}. "
-            f"Supported values are {sorted(SUPPORTED_AGG_STATS)}."
-        )
+    def __init__(
+        self,
+        *,
+        key_columns: Sequence[str],
+        frame_column: str | None,
+        value_columns: Sequence[str] | None,
+        stats: Sequence[str],
+        exclude_columns: Sequence[str] | None,
+        trace_candidates: Mapping[str, str] | None = None,
+    ) -> None:
+        self.key_columns = list(key_columns)
+        self.frame_column = frame_column
+        self.value_columns_param = list(value_columns) if value_columns is not None else None
+        self.exclude_set = {name for name in (exclude_columns or [])}
+        self.stats_order = list(dict.fromkeys(stat.lower() for stat in stats))
+        stats_set = set(self.stats_order)
+        unsupported = stats_set - SUPPORTED_AGG_STATS
+        if unsupported:
+            raise ValueError(
+                f"Unsupported aggregation stats requested: {sorted(unsupported)}. "
+                f"Supported values are {sorted(SUPPORTED_AGG_STATS)}."
+            )
+        self.aggregation: dict[tuple[object, ...], dict[str, object]] = {}
+        self.resolved_values: List[str] | None = None
+        self.trace_candidates = dict(trace_candidates or {})
+        self.trace_mapping: dict[str, str] | None = None
+        self.trace_prefixes: List[str] = []
+        self.trace_values: dict[tuple[object, ...], dict[str, List[float]]] = {}
+        self.trace_next_frame: dict[tuple[object, ...], int] = {}
+        self.trace_initialised = not bool(self.trace_candidates)
+        self.sorted_keys: List[tuple[object, ...]] | None = None
 
-    aggregation: dict[tuple[object, ...], dict[str, object]] = {}
-    resolved_values: List[str] | None = None
-    exclude_set = {name for name in (exclude_columns or [])}
+    @property
+    def traces_enabled(self) -> bool:
+        return bool(self.trace_mapping)
 
-    for chunk in frames:
-        if chunk.empty:
-            continue
-        _ensure_columns(chunk, key_columns, context="aggregation chunk")
-        chunk = normalize_key_columns(chunk)
+    def _initialise_traces(self, chunk: pd.DataFrame) -> None:
+        if self.trace_initialised:
+            return
+        missing = [col for col in self.trace_candidates if col not in chunk.columns]
+        if missing:
+            self.trace_initialised = True
+            return
+        if not self.frame_column or self.frame_column not in chunk.columns:
+            raise DataValidationError(
+                "Trace generation requires a frame column; provide --geom-frame-column or include the column in the stream."
+            )
+        self.trace_mapping = dict(self.trace_candidates)
+        self.trace_prefixes = list(dict.fromkeys(self.trace_mapping.values()))
+        self.trace_initialised = True
 
-        if resolved_values is None:
-            if value_columns is None:
-                resolved_values = [
-                    col
-                    for col in chunk.columns
-                    if col not in key_columns
-                    and col != frame_column
-                    and is_numeric_dtype(chunk[col])
-                    and col not in exclude_set
-                ]
-            else:
-                missing = [col for col in value_columns if col not in chunk.columns]
-                if missing:
-                    raise DataValidationError(
-                        f"Aggregation requested missing columns: {missing}"
-                    )
-                non_numeric = [
-                    col for col in value_columns if col not in exclude_set and not is_numeric_dtype(chunk[col])
-                ]
-                if non_numeric:
-                    raise DataValidationError(
-                        f"Aggregation columns must be numeric; offending columns: {non_numeric}"
-                    )
-                resolved_values = [col for col in value_columns if col not in exclude_set]
+    def _resolve_value_columns(self, chunk: pd.DataFrame) -> None:
+        if self.resolved_values is not None:
+            return
+        if self.value_columns_param is None:
+            self.resolved_values = [
+                col
+                for col in chunk.columns
+                if col not in self.key_columns
+                and col != self.frame_column
+                and is_numeric_dtype(chunk[col])
+                and col not in self.exclude_set
+            ]
         else:
-            missing = [col for col in resolved_values if col not in chunk.columns]
+            missing = [col for col in self.value_columns_param if col not in chunk.columns]
             if missing:
                 raise DataValidationError(
-                    f"Stream chunk missing expected columns: {missing}"
+                    f"Aggregation requested missing columns: {missing}"
                 )
+            non_numeric = [
+                col
+                for col in self.value_columns_param
+                if col not in self.exclude_set and not is_numeric_dtype(chunk[col])
+            ]
+            if non_numeric:
+                raise DataValidationError(
+                    f"Aggregation columns must be numeric; offending columns: {non_numeric}"
+                )
+            self.resolved_values = [
+                col for col in self.value_columns_param if col not in self.exclude_set
+            ]
 
-        grouped = chunk.groupby(list(key_columns), sort=False, dropna=False)
+    def _accumulate_trace(
+        self,
+        key: tuple[object, ...],
+        group: pd.DataFrame,
+    ) -> None:
+        if not self.trace_mapping or not self.frame_column:
+            return
+        ordered = group.sort_values(self.frame_column)
+        frames = ordered[self.frame_column].dropna().astype(int)
+        if frames.empty:
+            return
+        expected = self.trace_next_frame.get(key, 0)
+        first_frame = int(frames.iloc[0])
+        if first_frame != expected:
+            raise DataValidationError(
+                f"Trace assembly for key {key} expected frame {expected} but received {first_frame}."
+            )
+        diffs = frames.diff().dropna()
+        if not diffs.eq(1).all():
+            raise DataValidationError(
+                f"Frame column '{self.frame_column}' must increase by 1 within each trace block."
+            )
+        entry = self.trace_values.setdefault(
+            key, {prefix: [] for prefix in self.trace_prefixes}
+        )
+        for prefix in self.trace_prefixes:
+            entry.setdefault(prefix, [])
+        for column, prefix in self.trace_mapping.items():
+            values = ordered[column].astype(float).tolist()
+            entry[prefix].extend(values)
+        self.trace_next_frame[key] = expected + len(frames)
+
+    def process_chunk(self, chunk: pd.DataFrame) -> None:
+        if chunk.empty:
+            return
+        _ensure_columns(chunk, self.key_columns, context="aggregation chunk")
+        chunk = normalize_key_columns(chunk)
+        self._initialise_traces(chunk)
+        self._resolve_value_columns(chunk)
+
+        if self.resolved_values is None:
+            self.resolved_values = []
+
+        missing = [col for col in self.resolved_values if col not in chunk.columns]
+        if missing:
+            raise DataValidationError(
+                f"Stream chunk missing expected columns: {missing}"
+            )
+
+        grouped = chunk.groupby(list(self.key_columns), sort=False, dropna=False)
         for key, group in grouped:
             tuple_key = _as_key_tuple(key)
-            entry = aggregation.setdefault(tuple_key, {
-                "count": 0,
-                "frame_min": None,
-                "frame_max": None,
-                "values": defaultdict(dict),
-            })
+            entry = self.aggregation.setdefault(
+                tuple_key,
+                {
+                    "count": 0,
+                    "frame_min": None,
+                    "frame_max": None,
+                    "values": defaultdict(dict),
+                },
+            )
             entry["count"] = int(entry.get("count", 0)) + len(group)
 
-            if frame_column in group.columns and not group[frame_column].isna().all():
-                frame_vals = group[frame_column].dropna().astype(int)
+            if self.frame_column and self.frame_column in group.columns:
+                frame_vals = group[self.frame_column].dropna().astype(int)
                 if not frame_vals.empty:
                     current_min = entry.get("frame_min")
                     new_min = int(frame_vals.min())
                     entry["frame_min"] = (
-                        new_min
-                        if current_min is None
-                        else min(int(current_min), new_min)
+                        new_min if current_min is None else min(int(current_min), new_min)
                     )
                     current_max = entry.get("frame_max")
                     new_max = int(frame_vals.max())
                     entry["frame_max"] = (
-                        new_max
-                        if current_max is None
-                        else max(int(current_max), new_max)
+                        new_max if current_max is None else max(int(current_max), new_max)
                     )
 
-            for column in resolved_values or []:
+            for column in self.resolved_values:
                 series = group[column].dropna()
                 if series.empty:
                     continue
@@ -703,62 +871,142 @@ def aggregate_trials(
                     value_entry["first"] = float(numeric.iloc[0])
                 value_entry["last"] = float(numeric.iloc[-1])
 
-    if resolved_values is None:
-        resolved_values = list(value_columns or [])
+            if self.trace_mapping:
+                self._accumulate_trace(tuple_key, group)
 
-    rows: List[dict[str, object]] = []
-    for key_tuple, entry in aggregation.items():
-        row = {col: key_tuple[idx] for idx, col in enumerate(key_columns)}
-        row["frame_count"] = entry.get("count", 0)
-        if entry.get("frame_min") is not None:
-            row["frame_start"] = entry["frame_min"]
-        if entry.get("frame_max") is not None:
-            row["frame_end"] = entry["frame_max"]
+    def build_dataframe(self) -> pd.DataFrame:
+        if self.resolved_values is None:
+            self.resolved_values = list(self.value_columns_param or [])
 
-        values_map = entry.get("values", {})
-        for column in resolved_values:
-            stats_entry = values_map.get(column)
-            if not stats_entry:
-                continue
-            count = int(stats_entry.get("count", 0))
-            for stat in stats_order:
-                if stat == "mean":
-                    row[f"{column}_mean"] = (
-                        stats_entry["sum"] / count if count else math.nan
-                    )
-                elif stat == "std":
-                    if count > 1:
-                        mean = stats_entry["sum"] / count
-                        variance = max(stats_entry["sum_sq"] / count - mean**2, 0.0)
-                        row[f"{column}_std"] = math.sqrt(
-                            variance * count / (count - 1)
+        rows: List[dict[str, object]] = []
+        for key_tuple, entry in self.aggregation.items():
+            row = {col: key_tuple[idx] for idx, col in enumerate(self.key_columns)}
+            row["frame_count"] = entry.get("count", 0)
+            if entry.get("frame_min") is not None:
+                row["frame_start"] = entry["frame_min"]
+            if entry.get("frame_max") is not None:
+                row["frame_end"] = entry["frame_max"]
+
+            values_map = entry.get("values", {})
+            for column in self.resolved_values:
+                stats_entry = values_map.get(column)
+                if not stats_entry:
+                    continue
+                count = int(stats_entry.get("count", 0))
+                for stat in self.stats_order:
+                    if stat == "mean":
+                        row[f"{column}_mean"] = (
+                            stats_entry["sum"] / count if count else math.nan
                         )
-                    else:
-                        row[f"{column}_std"] = math.nan
-                elif stat == "min":
-                    row[f"{column}_min"] = stats_entry.get("min")
-                elif stat == "max":
-                    row[f"{column}_max"] = stats_entry.get("max")
-                elif stat == "sum":
-                    row[f"{column}_sum"] = stats_entry.get("sum")
-                elif stat == "first":
-                    row[f"{column}_first"] = stats_entry.get("first")
-                elif stat == "last":
-                    row[f"{column}_last"] = stats_entry.get("last")
-        rows.append(row)
+                    elif stat == "std":
+                        if count > 1:
+                            mean = stats_entry["sum"] / count
+                            variance = max(stats_entry["sum_sq"] / count - mean**2, 0.0)
+                            row[f"{column}_std"] = math.sqrt(
+                                variance * count / (count - 1)
+                            )
+                        else:
+                            row[f"{column}_std"] = math.nan
+                    elif stat == "min":
+                        row[f"{column}_min"] = stats_entry.get("min")
+                    elif stat == "max":
+                        row[f"{column}_max"] = stats_entry.get("max")
+                    elif stat == "sum":
+                        row[f"{column}_sum"] = stats_entry.get("sum")
+                    elif stat == "first":
+                        row[f"{column}_first"] = stats_entry.get("first")
+                    elif stat == "last":
+                        row[f"{column}_last"] = stats_entry.get("last")
+            rows.append(row)
 
-    if not rows:
-        base_columns = list(key_columns)
-        if frame_column:
-            base_columns.extend(["frame_count", "frame_start", "frame_end"])
-        for column in resolved_values or []:
-            for stat in stats_order:
-                base_columns.append(f"{column}_{stat}")
-        return pd.DataFrame(columns=base_columns)
+        if not rows:
+            base_columns = list(self.key_columns)
+            if self.frame_column:
+                base_columns.extend(["frame_count", "frame_start", "frame_end"])
+            for column in self.resolved_values or []:
+                for stat in self.stats_order:
+                    base_columns.append(f"{column}_{stat}")
+            self.sorted_keys = []
+            return pd.DataFrame(columns=base_columns)
 
-    result = pd.DataFrame(rows)
-    result = result.sort_values(list(key_columns)).reset_index(drop=True)
-    return result
+        result = pd.DataFrame(rows)
+        result = result.sort_values(list(self.key_columns)).reset_index(drop=True)
+        self.sorted_keys = [
+            _as_key_tuple(key)
+            for key in result.loc[:, list(self.key_columns)].itertuples(index=False, name=None)
+        ]
+        return result
+
+    def build_trace_frame(self) -> tuple[pd.DataFrame | None, List[str]]:
+        if not self.trace_mapping:
+            return None, []
+        if not self.trace_values:
+            columns = [*self.key_columns]
+            for prefix in self.trace_prefixes:
+                columns.append(f"{prefix}0")
+            return pd.DataFrame(columns=columns), []
+
+        lengths = {
+            key: self.trace_next_frame.get(key, 0)
+            for key in self.trace_values
+        }
+        unique_lengths = set(lengths.values())
+        if len(unique_lengths) > 1:
+            raise DataValidationError(
+                "Inconsistent trace lengths detected across trials; ensure each recording has the same frame count."
+            )
+        frame_count = unique_lengths.pop() if unique_lengths else 0
+        trace_columns: List[str] = []
+        for prefix in self.trace_prefixes:
+            for idx in range(frame_count):
+                trace_columns.append(f"{prefix}{idx}")
+
+        if self.sorted_keys is None:
+            self.sorted_keys = sorted(self.trace_values.keys())
+
+        rows: List[dict[str, object]] = []
+        for key_tuple in self.sorted_keys:
+            entry = self.trace_values.get(key_tuple)
+            if entry is None:
+                raise DataValidationError(
+                    f"Missing trace series for key {key_tuple}; verify geometry input completeness."
+                )
+            row = {col: key_tuple[idx] for idx, col in enumerate(self.key_columns)}
+            for prefix in self.trace_prefixes:
+                values = entry.get(prefix, [])
+                if len(values) != frame_count:
+                    raise DataValidationError(
+                        f"Trace series for key {key_tuple} prefix '{prefix}' has {len(values)} frames; expected {frame_count}."
+                    )
+                for idx, value in enumerate(values):
+                    row[f"{prefix}{idx}"] = float(value)
+            rows.append(row)
+
+        trace_df = pd.DataFrame(rows, columns=[*self.key_columns, *trace_columns])
+        return trace_df, trace_columns
+
+
+def aggregate_trials(
+    frames: Iterable[pd.DataFrame],
+    *,
+    key_columns: Sequence[str] = MERGE_KEYS,
+    frame_column: str = "frame_idx",
+    value_columns: Sequence[str] | None = None,
+    stats: Sequence[str] = ("mean", "min", "max"),
+    exclude_columns: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """Aggregate streamed geometry frames into trial-level summaries."""
+
+    builder = TrialAggregateBuilder(
+        key_columns=key_columns,
+        frame_column=frame_column,
+        value_columns=value_columns,
+        stats=stats,
+        exclude_columns=exclude_columns,
+    )
+    for chunk in frames:
+        builder.process_chunk(chunk)
+    return builder.build_dataframe()
 @dataclass(slots=True)
 class MergedDataset:
     """Container for merged dataset and metadata."""
@@ -1096,14 +1344,35 @@ def load_geometry_dataset(
         drop_missing_labels=drop_missing_labels if labels_csv is not None else False,
     )
 
+    resolved_stream_frame_column = getattr(stream, "frame_column", frame_column)
+
     if granularity_norm == "trial":
-        aggregates = aggregate_trials(
-            stream,
+        builder = TrialAggregateBuilder(
             key_columns=MERGE_KEYS,
-            frame_column=frame_column,
+            frame_column=resolved_stream_frame_column,
+            value_columns=None,
             stats=stat_sequence,
             exclude_columns=[LABEL_COLUMN, LABEL_INTENSITY_COLUMN],
+            trace_candidates=RAW_GEOM_TRACE_CANDIDATES,
         )
+        for chunk in stream:
+            current_frame_column = getattr(stream, "frame_column", resolved_stream_frame_column)
+            if current_frame_column != resolved_stream_frame_column:
+                resolved_stream_frame_column = current_frame_column
+            if current_frame_column != builder.frame_column:
+                builder.frame_column = current_frame_column
+            builder.process_chunk(chunk)
+        aggregates = builder.build_dataframe()
+        trace_frame, trace_columns = builder.build_trace_frame()
+        trace_prefixes = list(builder.trace_prefixes)
+        if builder.traces_enabled:
+            logger.info(
+                "Assembled %d raw trace columns per trial from geometry stream.",
+                len(trace_columns),
+            )
+        else:
+            trace_prefixes = []
+            trace_columns = []
         feature_columns = [col for col in aggregates.columns if col not in MERGE_KEYS]
         aggregates = _normalise_numeric(
             aggregates,
@@ -1133,19 +1402,29 @@ def load_geometry_dataset(
             weights = None
 
         ordered = joined.sort_values(list(MERGE_KEYS)).reset_index(drop=True)
+        if trace_columns:
+            ordered = ordered.merge(
+                trace_frame,
+                on=MERGE_KEYS,
+                how="inner",
+                validate="one_to_one",
+            )
+        if downcast and trace_columns:
+            ordered = _downcast_numeric(ordered)
         feature_set = set(MERGE_KEYS)
+        exclusion = feature_set | {LABEL_COLUMN, LABEL_INTENSITY_COLUMN} | set(trace_columns)
+        feature_list = [
+            col
+            for col in ordered.columns
+            if col not in exclusion
+        ]
         return MergedDataset(
             frame=ordered,
-            trace_columns=[],
-            feature_columns=[
-                col
-                for col in ordered.columns
-                if col not in feature_set
-                and col not in {LABEL_COLUMN, LABEL_INTENSITY_COLUMN}
-            ],
+            trace_columns=list(trace_columns),
+            feature_columns=feature_list,
             label_intensity=intensity,
             sample_weights=weights,
-            trace_prefixes=[],
+            trace_prefixes=trace_prefixes,
             granularity="trial",
             normalization=normalization_mode,
         )
@@ -1163,7 +1442,8 @@ def load_geometry_dataset(
     if collected:
         combined = pd.concat(collected, ignore_index=True)
     else:
-        base_columns: List[str] = list(dict.fromkeys([*MERGE_KEYS, frame_column]))
+        frame_key = resolved_stream_frame_column if resolved_stream_frame_column else frame_column
+        base_columns: List[str] = list(dict.fromkeys([*MERGE_KEYS, frame_key]))
         if columns:
             base_columns.extend(col for col in columns if col not in base_columns)
         if labels_csv is not None:
@@ -1176,7 +1456,9 @@ def load_geometry_dataset(
     geometry_columns = [
         col
         for col in combined.columns
-        if col not in MERGE_KEYS and col not in {LABEL_COLUMN, LABEL_INTENSITY_COLUMN}
+        if col not in MERGE_KEYS
+        and col not in {LABEL_COLUMN, LABEL_INTENSITY_COLUMN}
+        and col != (resolved_stream_frame_column or frame_column)
     ]
 
     for column in geometry_columns:
@@ -1202,7 +1484,11 @@ def load_geometry_dataset(
         intensity = None
         weights = None
 
-    sort_keys = [col for col in [*MERGE_KEYS, frame_column] if col in combined.columns]
+    sort_keys = [
+        col
+        for col in [*MERGE_KEYS, resolved_stream_frame_column or frame_column]
+        if col in combined.columns
+    ]
     if sort_keys:
         combined = combined.sort_values(sort_keys).reset_index(drop=True)
     else:
