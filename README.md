@@ -52,6 +52,56 @@ pip install -e .
   )
   ```
 
+- **Stream raw geometry safely.** Large frame-level exports no longer require
+  loading the entire CSV into memory. Use the updated ``prepare`` subcommand to
+  stream in chunks, validate block continuity, and optionally persist a
+  compressed parquet cache for subsequent runs:
+
+  ```bash
+  flybehavior-response \
+      prepare \
+      --data-csv stats/geometry_frames.csv \
+      --labels-csv stats/labels.csv \
+      --geom-columns "dataset,fly,fly_number,trial_type,trial_label,frame_idx,x,y" \
+      --geom-chunk-size 20000 \
+      --cache-parquet artifacts/geom_cache.parquet \
+      --aggregate-geometry \
+      --aggregate-stats mean,max \
+      --artifacts-dir artifacts
+  ```
+
+  The stream honours the original column order, emits per-chunk diagnostics, and
+  enforces uniqueness of ``dataset``/``fly``/``fly_number``/``trial_type``/
+  ``trial_label`` keys across the
+  optional labels CSV. Aggregation is optional; when enabled it produces a
+  per-trial summary parquet (compressed with Zstandard) alongside the cache.
+  The same pipeline is available programmatically via
+  ``flybehavior_response.io.load_geom_frames`` and
+  ``flybehavior_response.io.aggregate_trials`` for notebook workflows.
+
+  Geometry exports that expose a different frame counter (for example a column
+  named ``frame`` instead of the default ``frame_idx``) no longer crash the
+  stream. The loader will automatically continue without contiguity validation
+  and log the skipped column. Pass ``--frame-column frame`` to reinstate the
+  block checks when working with these alternate schemas.
+
+  Only trials present in the labels CSV are streamed. Rows without labels are
+  dropped up front so aggregation and caching operate on fully annotated data.
+  To debug unexpected omissions, rerun ``prepare`` with ``--keep-missing-labels``
+  to surface a validation error listing the offending keys.
+
+- **Regenerate the geometry cache without touching disk** by using ``--dry-run``
+  together with ``--cache-parquet``; the CLI will validate inputs and report
+  chunk-level statistics without writing artifacts. The parquet features rely on
+  ``pyarrow`` (bundled in ``requirements.txt``).
+
+- **Validate the new pipeline locally.** Run the focused pytest targets to
+  confirm schema handling, cache behaviour, and aggregation parity:
+
+  ```bash
+  PYTHONPATH=src pytest src/flybehavior_response/tests/test_response_io.py -k geom
+  ```
+
 - **Import the building blocks directly.** When you need finer control than the CLI offers, import the core helpers:
 
   ```python
@@ -365,7 +415,7 @@ The loader detects that engineered features are missing, logs a trace-only messa
 - Ensure trace columns follow contiguous 0-based numbering for each prefix (default `dir_val_`). Columns beyond `dir_val_3600` are trimmed automatically for legacy datasets.
 - `user_score_odor` must contain non-negative integers where `0` denotes no response and higher integers (e.g., `1-5`) encode increasing reaction strength. Rows with missing labels are dropped automatically, while negative or fractional scores raise schema errors.
 - Training uses proportional sample weights derived from label intensity so stronger reactions (e.g., `5`) contribute more than weaker ones (e.g., `1`). Review the logged weight summaries if model behaviour seems unexpected.
-- Duplicate keys across CSVs (`fly`, `fly_number`, `trial_label`) raise errors to prevent ambiguous merges.
+- Duplicate keys across CSVs (`dataset`, `fly`, `fly_number`, `trial_type`, `trial_label`) raise errors to prevent ambiguous merges.
 - Ratio features (`AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`) are supported but produce warnings because they are unstable.
 - Use `--dry-run` to confirm configuration before writing artifacts.
 - The CLI automatically selects the newest run directory containing model artifacts. Override with `--run-dir` if you maintain
