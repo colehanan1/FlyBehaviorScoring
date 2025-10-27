@@ -16,8 +16,7 @@ from pandas.api.types import is_numeric_dtype
 from .io_wide import find_series_columns
 from .logging_utils import get_logger
 
-MERGE_KEYS = ["fly", "fly_number", "trial_label"]
-OPTIONAL_KEYS = ["dataset", "trial_type"]
+MERGE_KEYS = ["dataset", "fly", "fly_number", "trial_type", "trial_label"]
 LABEL_COLUMN = "user_score_odor"
 LABEL_INTENSITY_COLUMN = "user_score_odor_intensity"
 TRACE_PATTERN = re.compile(r"^dir_val_(\d+)$")
@@ -42,18 +41,23 @@ class DataValidationError(RuntimeError):
 SUPPORTED_AGG_STATS = {"mean", "std", "min", "max", "sum", "first", "last"}
 
 
+STRING_KEY_COLUMNS = ["dataset", "fly", "trial_type", "trial_label"]
+
+
 def normalize_key_columns(frame: pd.DataFrame) -> pd.DataFrame:
     """Return a copy with canonicalised merge keys.
 
-    Ensures ``fly`` identifiers are trimmed strings and ``fly_number`` is stored as
-    a nullable integer. Columns missing from ``frame`` are ignored so callers can
+    Ensures string-based identifiers (``dataset``, ``fly``, ``trial_type``,
+    ``trial_label``) are trimmed strings and ``fly_number`` is stored as a
+    nullable integer. Columns missing from ``frame`` are ignored so callers can
     reuse the helper across heterogeneous inputs.
     """
 
     result = frame.copy()
-    if "fly" in result.columns:
-        result["fly"] = result["fly"].astype(str).str.strip()
-        result.loc[result["fly"].isin({"", "nan", "None"}), "fly"] = pd.NA
+    for column in STRING_KEY_COLUMNS:
+        if column in result.columns:
+            result[column] = result[column].astype(str).str.strip()
+            result.loc[result[column].isin({"", "nan", "None"}), column] = pd.NA
     if "fly_number" in result.columns:
         def _coerce(value: object) -> object:
             if pd.isna(value) or value == "":

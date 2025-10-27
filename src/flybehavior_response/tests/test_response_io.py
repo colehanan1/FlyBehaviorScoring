@@ -20,8 +20,10 @@ from flybehavior_response.io import (
 def sample_csvs(tmp_path: Path) -> tuple[Path, Path]:
     data = pd.DataFrame(
         {
+            "dataset": ["opto_EB", "opto_EB"],
             "fly": ["a", "b"],
             "fly_number": [1, 2],
+            "trial_type": ["testing", "testing"],
             "trial_label": ["t1", "t2"],
             "dir_val_0": [0.1, 0.2],
             "dir_val_10": [0.3, 0.4],
@@ -36,8 +38,10 @@ def sample_csvs(tmp_path: Path) -> tuple[Path, Path]:
     )
     labels = pd.DataFrame(
         {
+            "dataset": ["opto_EB", "opto_EB"],
             "fly": ["a", "b"],
             "fly_number": [1, 2],
+            "trial_type": ["testing", "testing"],
             "trial_label": ["t1", "t2"],
             LABEL_COLUMN: [0, 5],
         }
@@ -53,6 +57,8 @@ def test_load_and_merge_filters_traces(sample_csvs: tuple[Path, Path]) -> None:
     data_path, labels_path = sample_csvs
     dataset = load_and_merge(data_path, labels_path)
     assert dataset.frame.shape[0] == 2
+    assert dataset.frame["dataset"].tolist() == ["opto_EB", "opto_EB"]
+    assert dataset.frame["trial_type"].tolist() == ["testing", "testing"]
     assert "dir_val_3601" not in dataset.frame.columns
     assert dataset.trace_columns[0] == "dir_val_0"
     assert dataset.trace_columns[-1] == "dir_val_3600"
@@ -64,8 +70,10 @@ def test_load_and_merge_filters_traces(sample_csvs: tuple[Path, Path]) -> None:
 def test_load_and_merge_invalid_labels(tmp_path: Path) -> None:
     data = pd.DataFrame(
         {
+            "dataset": ["opto_EB"],
             "fly": ["a"],
             "fly_number": [1],
+            "trial_type": ["testing"],
             "trial_label": ["t1"],
             "dir_val_0": [0.1],
             "AUC-Before": [1.0],
@@ -77,8 +85,10 @@ def test_load_and_merge_invalid_labels(tmp_path: Path) -> None:
     )
     labels = pd.DataFrame(
         {
+            "dataset": ["opto_EB"],
             "fly": ["a"],
             "fly_number": [1],
+            "trial_type": ["testing"],
             "trial_label": ["t1"],
             LABEL_COLUMN: [-1],
         }
@@ -94,8 +104,10 @@ def test_load_and_merge_invalid_labels(tmp_path: Path) -> None:
 def test_load_and_merge_non_integer_labels(tmp_path: Path) -> None:
     data = pd.DataFrame(
         {
+            "dataset": ["opto_EB"],
             "fly": ["a"],
             "fly_number": [1],
+            "trial_type": ["testing"],
             "trial_label": ["t1"],
             "dir_val_0": [0.1],
             "AUC-Before": [1.0],
@@ -107,8 +119,10 @@ def test_load_and_merge_non_integer_labels(tmp_path: Path) -> None:
     )
     labels = pd.DataFrame(
         {
+            "dataset": ["opto_EB"],
             "fly": ["a"],
             "fly_number": [1],
+            "trial_type": ["testing"],
             "trial_label": ["t1"],
             LABEL_COLUMN: [1.5],
         }
@@ -124,8 +138,10 @@ def test_load_and_merge_non_integer_labels(tmp_path: Path) -> None:
 def test_load_and_merge_duplicate_keys(tmp_path: Path) -> None:
     data = pd.DataFrame(
         {
+            "dataset": ["opto_EB", "opto_EB"],
             "fly": ["a", "a"],
             "fly_number": [1, 1],
+            "trial_type": ["testing", "testing"],
             "trial_label": ["t1", "t1"],
             "dir_val_0": [0.1, 0.2],
             "AUC-Before": [1.0, 2.0],
@@ -137,8 +153,10 @@ def test_load_and_merge_duplicate_keys(tmp_path: Path) -> None:
     )
     labels = pd.DataFrame(
         {
+            "dataset": ["opto_EB"],
             "fly": ["a"],
             "fly_number": [1],
+            "trial_type": ["testing"],
             "trial_label": ["t1"],
             LABEL_COLUMN: [1],
         }
@@ -153,8 +171,10 @@ def test_load_and_merge_duplicate_keys(tmp_path: Path) -> None:
 
 def test_load_and_merge_detects_raw_prefixes(tmp_path: Path) -> None:
     frames = {
+        "dataset": ["opto_EB", "opto_EB"],
         "fly": ["a", "b"],
         "fly_number": [1, 2],
+        "trial_type": ["testing", "testing"],
         "trial_label": ["t1", "t2"],
         "AUC-During": [0.5, 0.7],
         "TimeToPeak-During": [5.0, 6.0],
@@ -166,8 +186,10 @@ def test_load_and_merge_detects_raw_prefixes(tmp_path: Path) -> None:
     data = pd.DataFrame(frames)
     labels = pd.DataFrame(
         {
+            "dataset": ["opto_EB", "opto_EB"],
             "fly": ["a", "b"],
             "fly_number": [1, 2],
+            "trial_type": ["testing", "testing"],
             "trial_label": ["t1", "t2"],
             LABEL_COLUMN: [0, 5],
         }
@@ -200,6 +222,7 @@ def test_load_and_merge_allows_trace_only_inputs(tmp_path: Path) -> None:
             "dataset": ["d", "d"],
             "fly": ["f1", "f2"],
             "fly_number": [1, 2],
+            "trial_type": ["testing", "testing"],
             "trial_label": ["t1", "t2"],
             LABEL_COLUMN: [0, 1],
         }
@@ -218,8 +241,10 @@ def test_load_and_merge_allows_trace_only_inputs(tmp_path: Path) -> None:
 def test_load_and_merge_dir_val_trace_only(tmp_path: Path) -> None:
     data = pd.DataFrame(
         {
+            "dataset": ["opto_EB", "opto_EB"],
             "fly": ["a", "b"],
             "fly_number": [1, 2],
+            "trial_type": ["testing", "testing"],
             "trial_label": ["t1", "t2"],
             "dir_val_0": [0.1, 0.2],
             "dir_val_1": [0.3, 0.4],
@@ -227,8 +252,10 @@ def test_load_and_merge_dir_val_trace_only(tmp_path: Path) -> None:
     )
     labels = pd.DataFrame(
         {
+            "dataset": ["opto_EB", "opto_EB"],
             "fly": ["a", "b"],
             "fly_number": [1, 2],
+            "trial_type": ["testing", "testing"],
             "trial_label": ["t1", "t2"],
             LABEL_COLUMN: [0, 5],
         }
@@ -245,12 +272,56 @@ def test_load_and_merge_dir_val_trace_only(tmp_path: Path) -> None:
     assert dataset.feature_columns == []
 
 
+def test_load_and_merge_requires_dataset_column(tmp_path: Path) -> None:
+    data = pd.DataFrame(
+        {
+            "fly": ["a"],
+            "fly_number": [1],
+            "trial_type": ["testing"],
+            "trial_label": ["t1"],
+            "dir_val_0": [0.1],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "fly": ["a"],
+            "fly_number": [1],
+            "trial_type": ["testing"],
+            "trial_label": ["t1"],
+            LABEL_COLUMN: [0],
+        }
+    )
+    data_path = tmp_path / "missing_dataset.csv"
+    labels_path = tmp_path / "missing_dataset_labels.csv"
+    data.to_csv(data_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    with pytest.raises(DataValidationError):
+        load_and_merge(data_path, labels_path)
+
+
 @pytest.fixture
 def geometry_csvs(tmp_path: Path) -> tuple[Path, Path]:
     frames = pd.DataFrame(
         {
+            "dataset": [
+                " opto_EB",
+                "opto_EB",
+                "opto_EB ",
+                " opto_EB",
+                "opto_EB",
+                "opto_EB ",
+            ],
             "fly": [" a", "a", "a ", "b", "b", "b"],
             "fly_number": ["1", "1", "1", "2", "2", "2"],
+            "trial_type": [
+                " testing",
+                "testing",
+                "testing ",
+                " testing",
+                "testing",
+                "testing ",
+            ],
             "trial_label": ["t1", "t1", "t1", "t2", "t2", "t2"],
             "frame_idx": [0, 1, 2, 0, 1, 2],
             "x": [0.1, 0.2, 0.3, 0.0, 0.1, 0.2],
@@ -259,8 +330,10 @@ def geometry_csvs(tmp_path: Path) -> tuple[Path, Path]:
     )
     labels = pd.DataFrame(
         {
+            "dataset": ["opto_EB", "opto_EB"],
             "fly": ["a", "b"],
             "fly_number": [1, 2],
+            "trial_type": ["testing", "testing"],
             "trial_label": ["t1", "t2"],
             LABEL_COLUMN: [0, 5],
         }
@@ -278,27 +351,41 @@ def test_load_geom_frames_streams_and_joins(geometry_csvs: tuple[Path, Path]) ->
         load_geom_frames(
             frames_path,
             chunk_size=2,
-            columns=["fly", "fly_number", "trial_label", "frame_idx", "x", "y"],
+            columns=[
+                "dataset",
+                "fly",
+                "fly_number",
+                "trial_type",
+                "trial_label",
+                "frame_idx",
+                "x",
+                "y",
+            ],
             labels_csv=labels_path,
         )
     )
     assert len(chunks) == 3
     first = chunks[0]
     assert first.columns.tolist() == [
+        "dataset",
         "fly",
         "fly_number",
+        "trial_type",
         "trial_label",
         "frame_idx",
         "x",
         "y",
         LABEL_COLUMN,
     ]
+    assert first["dataset"].tolist() == ["opto_EB", "opto_EB"]
     assert first["fly"].tolist() == ["a", "a"]
+    assert first["trial_type"].tolist() == ["testing", "testing"]
     assert first[LABEL_COLUMN].tolist() == [0, 0]
     assert chunks[1]["frame_idx"].tolist() == [2, 0]
 
 
 def test_load_geom_frames_cache_roundtrip(geometry_csvs: tuple[Path, Path], tmp_path: Path) -> None:
+    pytest.importorskip("pyarrow", reason="Parquet cache tests require pyarrow")
     frames_path, labels_path = geometry_csvs
     cache_path = tmp_path / "cache.parquet"
 
@@ -344,11 +431,56 @@ def test_aggregate_trials_matches_chunked_means(geometry_csvs: tuple[Path, Path]
     stream = load_geom_frames(
         frames_path,
         chunk_size=2,
-        columns=["fly", "fly_number", "trial_label", "frame_idx", "x", "y"],
+        columns=[
+            "dataset",
+            "fly",
+            "fly_number",
+            "trial_type",
+            "trial_label",
+            "frame_idx",
+            "x",
+            "y",
+        ],
         labels_csv=labels_path,
     )
     aggregated = aggregate_trials(stream, stats=["mean", "max"])
     assert set(aggregated["trial_label"]) == {"t1", "t2"}
+    assert set(aggregated["dataset"]) == {"opto_EB"}
+    assert set(aggregated["trial_type"]) == {"testing"}
     t1_row = aggregated.loc[aggregated["trial_label"] == "t1"].iloc[0]
     assert pytest.approx(t1_row["x_mean"], rel=1e-6) == 0.2
     assert pytest.approx(t1_row["y_max"], rel=1e-6) == 0.6
+
+
+def test_load_geom_frames_requires_full_key_set(tmp_path: Path) -> None:
+    frames = pd.DataFrame(
+        {
+            "fly": ["a", "a"],
+            "fly_number": [1, 1],
+            "trial_type": ["testing", "testing"],
+            "trial_label": ["t1", "t1"],
+            "frame_idx": [0, 1],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "fly": ["a"],
+            "fly_number": [1],
+            "trial_type": ["testing"],
+            "trial_label": ["t1"],
+            LABEL_COLUMN: [0],
+        }
+    )
+    frames_path = tmp_path / "missing_keys.csv"
+    labels_path = tmp_path / "missing_keys_labels.csv"
+    frames.to_csv(frames_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    with pytest.raises(DataValidationError):
+        list(
+            load_geom_frames(
+                frames_path,
+                chunk_size=1,
+                labels_csv=labels_path,
+            )
+        )

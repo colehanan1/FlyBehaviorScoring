@@ -62,7 +62,7 @@ pip install -e .
       prepare \
       --data-csv stats/geometry_frames.csv \
       --labels-csv stats/labels.csv \
-      --geom-columns "fly,fly_number,trial_label,frame_idx,x,y" \
+      --geom-columns "dataset,fly,fly_number,trial_type,trial_label,frame_idx,x,y" \
       --geom-chunk-size 20000 \
       --cache-parquet artifacts/geom_cache.parquet \
       --aggregate-geometry \
@@ -71,7 +71,8 @@ pip install -e .
   ```
 
   The stream honours the original column order, emits per-chunk diagnostics, and
-  enforces uniqueness of ``fly``/``fly_number``/``trial_label`` keys across the
+  enforces uniqueness of ``dataset``/``fly``/``fly_number``/``trial_type``/
+  ``trial_label`` keys across the
   optional labels CSV. Aggregation is optional; when enabled it produces a
   per-trial summary parquet (compressed with Zstandard) alongside the cache.
   The same pipeline is available programmatically via
@@ -403,7 +404,7 @@ The loader detects that engineered features are missing, logs a trace-only messa
 - Ensure trace columns follow contiguous 0-based numbering for each prefix (default `dir_val_`). Columns beyond `dir_val_3600` are trimmed automatically for legacy datasets.
 - `user_score_odor` must contain non-negative integers where `0` denotes no response and higher integers (e.g., `1-5`) encode increasing reaction strength. Rows with missing labels are dropped automatically, while negative or fractional scores raise schema errors.
 - Training uses proportional sample weights derived from label intensity so stronger reactions (e.g., `5`) contribute more than weaker ones (e.g., `1`). Review the logged weight summaries if model behaviour seems unexpected.
-- Duplicate keys across CSVs (`fly`, `fly_number`, `trial_label`) raise errors to prevent ambiguous merges.
+- Duplicate keys across CSVs (`dataset`, `fly`, `fly_number`, `trial_type`, `trial_label`) raise errors to prevent ambiguous merges.
 - Ratio features (`AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`) are supported but produce warnings because they are unstable.
 - Use `--dry-run` to confirm configuration before writing artifacts.
 - The CLI automatically selects the newest run directory containing model artifacts. Override with `--run-dir` if you maintain
