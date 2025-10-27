@@ -44,6 +44,64 @@ SUPPORTED_AGG_STATS = {"mean", "std", "min", "max", "sum", "first", "last"}
 STRING_KEY_COLUMNS = ["dataset", "fly", "trial_type", "trial_label"]
 
 
+def _downcast_numeric(frame: pd.DataFrame, *, float_dtype: str = "float32") -> pd.DataFrame:
+    """Return a copy with floating-point columns safely downcast."""
+
+    if frame.empty:
+        return frame.copy()
+
+    result = frame.copy()
+    float_columns = result.select_dtypes(include=["float", "float16", "float32", "float64"]).columns
+    for column in float_columns:
+        coerced = pd.to_numeric(result[column], errors="coerce")
+        if float_dtype:
+            result[column] = coerced.astype(float_dtype)
+        else:  # pragma: no cover - fallback guard
+            result[column] = pd.to_numeric(coerced, downcast="float")
+    return result
+
+
+def _normalise_numeric(
+    frame: pd.DataFrame,
+    columns: Sequence[str],
+    *,
+    mode: str,
+) -> pd.DataFrame:
+    """Apply normalization to numeric columns based on the requested mode."""
+
+    if not columns or mode == "none":
+        return frame
+
+    supported = {"none", "zscore", "minmax"}
+    if mode not in supported:
+        raise ValueError(f"Unsupported normalization mode: {mode}")
+
+    result = frame.copy()
+    numeric_cols = [col for col in columns if col in result.columns]
+    if not numeric_cols:
+        return result
+
+    numeric_df = result[numeric_cols].apply(pd.to_numeric, errors="coerce")
+    if mode == "zscore":
+        means = numeric_df.mean()
+        stds = numeric_df.std(ddof=0).replace(0, 1.0)
+        transformed = (numeric_df - means) / stds
+    elif mode == "minmax":
+        minima = numeric_df.min()
+        maxima = numeric_df.max()
+        denom = (maxima - minima).replace(0, 1.0)
+        transformed = (numeric_df - minima) / denom
+    else:  # pragma: no cover - defensive default
+        transformed = numeric_df
+
+    transformed = transformed.astype("float32")
+    for column in numeric_cols:
+        # Assign as float32 to avoid pandas upcasting warnings when the
+        # original column used an integer-backed dtype.
+        result[column] = transformed[column].astype("float32")
+    return result
+
+
 def normalize_key_columns(frame: pd.DataFrame) -> pd.DataFrame:
     """Return a copy with canonicalised merge keys.
 
@@ -523,6 +581,7 @@ def aggregate_trials(
     frame_column: str = "frame_idx",
     value_columns: Sequence[str] | None = None,
     stats: Sequence[str] = ("mean", "min", "max"),
+    exclude_columns: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """Aggregate streamed geometry frames into trial-level summaries."""
 
@@ -537,6 +596,7 @@ def aggregate_trials(
 
     aggregation: dict[tuple[object, ...], dict[str, object]] = {}
     resolved_values: List[str] | None = None
+    exclude_set = {name for name in (exclude_columns or [])}
 
     for chunk in frames:
         if chunk.empty:
@@ -552,6 +612,7 @@ def aggregate_trials(
                     if col not in key_columns
                     and col != frame_column
                     and is_numeric_dtype(chunk[col])
+                    and col not in exclude_set
                 ]
             else:
                 missing = [col for col in value_columns if col not in chunk.columns]
@@ -559,12 +620,14 @@ def aggregate_trials(
                     raise DataValidationError(
                         f"Aggregation requested missing columns: {missing}"
                     )
-                non_numeric = [col for col in value_columns if not is_numeric_dtype(chunk[col])]
+                non_numeric = [
+                    col for col in value_columns if col not in exclude_set and not is_numeric_dtype(chunk[col])
+                ]
                 if non_numeric:
                     raise DataValidationError(
                         f"Aggregation columns must be numeric; offending columns: {non_numeric}"
                     )
-                resolved_values = list(value_columns)
+                resolved_values = [col for col in value_columns if col not in exclude_set]
         else:
             missing = [col for col in resolved_values if col not in chunk.columns]
             if missing:
@@ -703,9 +766,11 @@ class MergedDataset:
     frame: pd.DataFrame
     trace_columns: List[str]
     feature_columns: List[str]
-    label_intensity: pd.Series
-    sample_weights: pd.Series
+    label_intensity: pd.Series | None
+    sample_weights: pd.Series | None
     trace_prefixes: List[str]
+    granularity: str = "trial"
+    normalization: str = "none"
 
 
 def _load_csv(path: Path) -> pd.DataFrame:
@@ -846,10 +911,26 @@ def load_and_merge(
     labels_df = _load_csv(labels_csv)
     logger.debug("Labels shape: %s", labels_df.shape)
 
+    try:
+        data_key_dtypes = {col: data_df[col].dtype.name for col in MERGE_KEYS}
+    except KeyError:
+        data_key_dtypes = {
+            col: "missing"
+            for col in MERGE_KEYS
+            if col not in data_df.columns
+        }
+    try:
+        label_key_dtypes = {col: labels_df[col].dtype.name for col in MERGE_KEYS}
+    except KeyError:
+        label_key_dtypes = {
+            col: "missing"
+            for col in MERGE_KEYS
+            if col not in labels_df.columns
+        }
     logger.debug(
         "Key column dtypes | data: %s | labels: %s",
-        {col: dtype.name for col, dtype in data_df[MERGE_KEYS].dtypes.items()},
-        {col: dtype.name for col, dtype in labels_df[MERGE_KEYS].dtypes.items()},
+        data_key_dtypes,
+        label_key_dtypes,
     )
 
     _validate_keys(data_df, data_csv)
@@ -946,12 +1027,253 @@ def load_and_merge(
         label_intensity=intensity,
         sample_weights=weights,
         trace_prefixes=resolved_prefixes,
+        granularity="trial",
+        normalization="none",
     )
 
 
 def write_parquet(dataset: MergedDataset, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     dataset.frame.to_parquet(path, index=False)
+
+
+def load_geometry_dataset(
+    source: Path,
+    *,
+    labels_csv: Path | None,
+    logger_name: str = __name__,
+    chunk_size: int = 100_000,
+    columns: Sequence[str] | None = None,
+    schema: Mapping[str, str] | None = None,
+    cache_parquet: Path | None = None,
+    use_cache: bool = False,
+    compression: str = "zstd",
+    frame_column: str = "frame_idx",
+    stats: Sequence[str] | None = None,
+    granularity: str = "trial",
+    normalization: str = "none",
+    drop_missing_labels: bool = True,
+    downcast: bool = True,
+) -> MergedDataset:
+    """Load geometry frames and optionally aggregate into trial-level rows."""
+
+    granularity_norm = granularity.lower()
+    if granularity_norm not in {"trial", "frame"}:
+        raise ValueError("granularity must be 'trial' or 'frame'")
+    normalization_mode = normalization.lower()
+    if normalization_mode not in {"none", "zscore", "minmax"}:
+        raise ValueError("Unsupported normalization mode for geometry dataset")
+
+    stat_sequence = list(stats or ("mean", "min", "max"))
+    logger = get_logger(logger_name)
+
+    label_table: pd.DataFrame | None = None
+    intensity: pd.Series | None = None
+    weights: pd.Series | None = None
+
+    if labels_csv is not None:
+        label_table = _prepare_labels_table(labels_csv, MERGE_KEYS)
+        if LABEL_COLUMN not in label_table.columns:
+            raise DataValidationError(
+                f"Labels file {labels_csv} missing required label column '{LABEL_COLUMN}'."
+            )
+        coerced = _coerce_labels(label_table[LABEL_COLUMN], labels_csv)
+        label_table[LABEL_INTENSITY_COLUMN] = coerced.astype(int)
+        label_table[LABEL_COLUMN] = (coerced > 0).astype(int)
+
+    stream = load_geom_frames(
+        source,
+        chunk_size=chunk_size,
+        columns=columns,
+        schema=schema,
+        logger=logger,
+        cache_parquet=cache_parquet,
+        use_cache=use_cache,
+        compression=compression,
+        labels_csv=labels_csv if labels_csv is not None else None,
+        join_keys=MERGE_KEYS,
+        frame_column=frame_column,
+        drop_missing_labels=drop_missing_labels if labels_csv is not None else False,
+    )
+
+    if granularity_norm == "trial":
+        aggregates = aggregate_trials(
+            stream,
+            key_columns=MERGE_KEYS,
+            frame_column=frame_column,
+            stats=stat_sequence,
+            exclude_columns=[LABEL_COLUMN, LABEL_INTENSITY_COLUMN],
+        )
+        feature_columns = [col for col in aggregates.columns if col not in MERGE_KEYS]
+        aggregates = _normalise_numeric(
+            aggregates,
+            feature_columns,
+            mode=normalization_mode,
+        )
+        if downcast:
+            aggregates = _downcast_numeric(aggregates)
+        if label_table is not None:
+            joined = aggregates.merge(
+                label_table[[*MERGE_KEYS, LABEL_COLUMN, LABEL_INTENSITY_COLUMN]],
+                on=MERGE_KEYS,
+                how="inner" if drop_missing_labels else "left",
+                validate="one_to_one",
+            )
+            if LABEL_INTENSITY_COLUMN in joined.columns and joined[LABEL_INTENSITY_COLUMN].isna().any():
+                raise DataValidationError(
+                    "Aggregated geometry rows missing labels after merge; ensure labels cover all keys."
+                )
+            intensity = joined[LABEL_INTENSITY_COLUMN].astype(int)
+            joined[LABEL_INTENSITY_COLUMN] = intensity
+            joined[LABEL_COLUMN] = (intensity > 0).astype(int)
+            weights = _compute_sample_weights(intensity)
+        else:
+            joined = aggregates
+            intensity = None
+            weights = None
+
+        ordered = joined.sort_values(list(MERGE_KEYS)).reset_index(drop=True)
+        feature_set = set(MERGE_KEYS)
+        return MergedDataset(
+            frame=ordered,
+            trace_columns=[],
+            feature_columns=[
+                col
+                for col in ordered.columns
+                if col not in feature_set
+                and col not in {LABEL_COLUMN, LABEL_INTENSITY_COLUMN}
+            ],
+            label_intensity=intensity,
+            sample_weights=weights,
+            trace_prefixes=[],
+            granularity="trial",
+            normalization=normalization_mode,
+        )
+
+    # Frame-level granularity
+    collected: List[pd.DataFrame] = []
+    for chunk in stream:
+        if chunk.empty:
+            continue
+        chunk = normalize_key_columns(chunk)
+        if downcast:
+            chunk = _downcast_numeric(chunk)
+        collected.append(chunk)
+
+    if collected:
+        combined = pd.concat(collected, ignore_index=True)
+    else:
+        base_columns: List[str] = list(dict.fromkeys([*MERGE_KEYS, frame_column]))
+        if columns:
+            base_columns.extend(col for col in columns if col not in base_columns)
+        if labels_csv is not None:
+            base_columns.extend(
+                col for col in [LABEL_COLUMN, LABEL_INTENSITY_COLUMN] if col not in base_columns
+            )
+        combined = pd.DataFrame(columns=base_columns)
+
+    combined = normalize_key_columns(combined)
+    geometry_columns = [
+        col
+        for col in combined.columns
+        if col not in MERGE_KEYS and col not in {LABEL_COLUMN, LABEL_INTENSITY_COLUMN}
+    ]
+
+    for column in geometry_columns:
+        combined[column] = pd.to_numeric(combined[column], errors="coerce").astype(
+            "float32"
+        )
+
+    combined = _normalise_numeric(combined, geometry_columns, mode=normalization_mode)
+    if downcast:
+        combined = _downcast_numeric(combined)
+
+    if labels_csv is not None:
+        if LABEL_COLUMN not in combined.columns:
+            raise DataValidationError(
+                "Geometry frames missing label column after merge; verify input files."
+            )
+        coerced_frame_labels = _coerce_labels(combined[LABEL_COLUMN], labels_csv)
+        combined[LABEL_INTENSITY_COLUMN] = coerced_frame_labels.astype(int)
+        combined[LABEL_COLUMN] = (coerced_frame_labels > 0).astype(int)
+        intensity = combined[LABEL_INTENSITY_COLUMN]
+        weights = _compute_sample_weights(intensity)
+    else:
+        intensity = None
+        weights = None
+
+    sort_keys = [col for col in [*MERGE_KEYS, frame_column] if col in combined.columns]
+    if sort_keys:
+        combined = combined.sort_values(sort_keys).reset_index(drop=True)
+    else:
+        combined = combined.reset_index(drop=True)
+
+    feature_columns = [
+        col
+        for col in geometry_columns
+        if col != LABEL_COLUMN and col != LABEL_INTENSITY_COLUMN
+    ]
+
+    return MergedDataset(
+        frame=combined,
+        trace_columns=[],
+        feature_columns=feature_columns,
+        label_intensity=intensity,
+        sample_weights=weights,
+        trace_prefixes=[],
+        granularity="frame",
+        normalization=normalization_mode,
+    )
+
+
+def load_dataset(
+    *,
+    data_csv: Path | None,
+    labels_csv: Path | None,
+    logger_name: str = __name__,
+    trace_prefixes: Sequence[str] | None = None,
+    geometry_source: Path | None = None,
+    geom_chunk_size: int = 100_000,
+    geom_columns: Sequence[str] | None = None,
+    geom_cache_parquet: Path | None = None,
+    geom_use_cache: bool = False,
+    geom_frame_column: str = "frame_idx",
+    geom_stats: Sequence[str] | None = None,
+    geom_granularity: str = "trial",
+    geom_normalization: str = "none",
+    geom_drop_missing_labels: bool = True,
+    geom_downcast: bool = True,
+) -> MergedDataset:
+    """Load a dataset from either merged CSV inputs or geometry frames."""
+
+    if geometry_source is not None:
+        return load_geometry_dataset(
+            geometry_source,
+            labels_csv=labels_csv,
+            logger_name=logger_name,
+            chunk_size=geom_chunk_size,
+            columns=geom_columns,
+            cache_parquet=geom_cache_parquet,
+            use_cache=geom_use_cache,
+            frame_column=geom_frame_column,
+            stats=geom_stats,
+            granularity=geom_granularity,
+            normalization=geom_normalization,
+            drop_missing_labels=geom_drop_missing_labels,
+            downcast=geom_downcast,
+        )
+
+    if data_csv is None:
+        raise ValueError("data_csv must be provided when geometry_source is not specified")
+    if labels_csv is None:
+        raise ValueError("labels_csv must be provided when using tabular CSV datasets")
+
+    return load_and_merge(
+        data_csv,
+        labels_csv,
+        logger_name=logger_name,
+        trace_prefixes=trace_prefixes,
+    )
 
 
 def _diagnose_merge_failure(

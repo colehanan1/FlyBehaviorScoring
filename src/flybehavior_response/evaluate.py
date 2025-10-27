@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Mapping
+from typing import Dict, List, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 from joblib import load
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import GroupKFold, StratifiedKFold
 
 from .modeling import MODEL_LDA, MODEL_LOGREG, MODEL_MLP, build_model_pipeline
 from .weights import expand_samples_by_weight
@@ -111,10 +111,24 @@ def perform_cross_validation(
     cv: int,
     seed: int,
     sample_weights: pd.Series | None = None,
+    groups: pd.Series | Sequence[str] | None = None,
 ) -> Dict[str, float | List[List[float]] | None | Dict[str, List[List[float]]]]:
     if cv <= 1:
         raise ValueError("Cross-validation requires cv >= 2")
-    splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=seed)
+    if groups is not None:
+        group_array = (
+            groups.to_numpy() if hasattr(groups, "to_numpy") else np.asarray(groups)
+        )
+        unique_groups = pd.unique(group_array)
+        if len(unique_groups) < cv:
+            raise ValueError(
+                "GroupKFold requires at least as many unique groups as folds."
+            )
+        splitter = GroupKFold(n_splits=cv)
+        split_iterator = splitter.split(data, labels, group_array)
+    else:
+        splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=seed)
+        split_iterator = splitter.split(data, labels)
     aggregate_raw = np.zeros((2, 2), dtype=float)
     metrics_accum: Dict[str, List[float]] = {"accuracy": [], "f1_macro": [], "f1_binary": [], "roc_auc": []}
     weighted_accum: Dict[str, List[float]] | None = None
@@ -122,7 +136,7 @@ def perform_cross_validation(
     if sample_weights is not None:
         weighted_accum = {"accuracy": [], "f1_macro": [], "f1_binary": [], "roc_auc": []}
         aggregate_weighted_raw = np.zeros((2, 2), dtype=float)
-    for train_idx, test_idx in splitter.split(data, labels):
+    for train_idx, test_idx in split_iterator:
         model = build_model_pipeline(preprocessor, model_type=model_type, seed=seed)
         if sample_weights is not None and model_type == MODEL_LDA:
             train_data, train_labels = expand_samples_by_weight(

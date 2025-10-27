@@ -67,6 +67,7 @@ pip install -e .
       --cache-parquet artifacts/geom_cache.parquet \
       --aggregate-geometry \
       --aggregate-stats mean,max \
+      --aggregate-format parquet \
       --artifacts-dir artifacts
   ```
 
@@ -74,7 +75,10 @@ pip install -e .
   enforces uniqueness of ``dataset``/``fly``/``fly_number``/``trial_type``/
   ``trial_label`` keys across the
   optional labels CSV. Aggregation is optional; when enabled it produces a
-  per-trial summary parquet (compressed with Zstandard) alongside the cache.
+  per-trial summary file alongside the cache. Choose between a compressed
+  parquet (default, requires ``pyarrow`` or ``fastparquet``) and a portable CSV
+  by passing ``--aggregate-format parquet`` or ``--aggregate-format csv``
+  respectively.
   The same pipeline is available programmatically via
   ``flybehavior_response.io.load_geom_frames`` and
   ``flybehavior_response.io.aggregate_trials`` for notebook workflows.
@@ -90,10 +94,24 @@ pip install -e .
   To debug unexpected omissions, rerun ``prepare`` with ``--keep-missing-labels``
   to surface a validation error listing the offending keys.
 
+- **Train directly from geometry frames.** Provide ``--geometry-frames`` to the
+  ``train``, ``eval``, and ``predict`` subcommands to stream per-frame CSVs or
+  parquet exports on the fly. Combine ``--geom-granularity`` with the default
+  ``trial`` mode to materialise aggregated per-trial features or switch to
+  ``frame`` when frame-level rows are preferred. Aggregation honours the same
+  ``--geom-stats`` options exposed by ``prepare``, while ``--geom-normalize``
+  applies either ``zscore`` or ``minmax`` scaling before safely downcasting the
+  values to ``float32`` so they align with the existing feature engineering
+  pipeline. The ``train`` command now writes a ``split_manifest.csv`` alongside
+  the trained models describing the fly-level ``GroupShuffleSplit`` assignment;
+  pass ``--group-override none`` to disable leakage guards when cross-fly
+  isolation is not required.
+
 - **Regenerate the geometry cache without touching disk** by using ``--dry-run``
   together with ``--cache-parquet``; the CLI will validate inputs and report
-  chunk-level statistics without writing artifacts. The parquet features rely on
-  ``pyarrow`` (bundled in ``requirements.txt``).
+  chunk-level statistics without writing artifacts. If the optional parquet
+  engines are unavailable, switch to ``--aggregate-format csv`` for downstream
+  smoke tests.
 
 - **Validate the new pipeline locally.** Run the focused pytest targets to
   confirm schema handling, cache behaviour, and aggregation parity:

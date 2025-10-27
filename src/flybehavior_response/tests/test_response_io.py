@@ -9,10 +9,11 @@ from flybehavior_response.io import (
     LABEL_COLUMN,
     LABEL_INTENSITY_COLUMN,
     DataValidationError,
-    aggregate_trials,
-    load_geom_frames,
     RAW_TRACE_PREFIXES,
+    aggregate_trials,
     load_and_merge,
+    load_geom_frames,
+    load_geometry_dataset,
 )
 
 
@@ -579,6 +580,41 @@ def test_aggregate_trials_matches_chunked_means(geometry_csvs: tuple[Path, Path]
     t1_row = aggregated.loc[aggregated["trial_label"] == "t1"].iloc[0]
     assert pytest.approx(t1_row["x_mean"], rel=1e-6) == 0.2
     assert pytest.approx(t1_row["y_max"], rel=1e-6) == 0.6
+
+
+def test_load_geometry_dataset_trial_granularity(geometry_csvs: tuple[Path, Path]) -> None:
+    frames_path, labels_path = geometry_csvs
+    dataset = load_geometry_dataset(
+        frames_path,
+        labels_csv=labels_path,
+        granularity="trial",
+        stats=("mean", "max"),
+        normalization="zscore",
+    )
+    assert dataset.granularity == "trial"
+    assert dataset.frame.shape[0] == 2
+    assert LABEL_COLUMN in dataset.frame.columns
+    assert LABEL_INTENSITY_COLUMN in dataset.frame.columns
+    assert dataset.frame[LABEL_COLUMN].tolist() == [0, 1]
+    assert "x_mean" in dataset.frame.columns
+    assert dataset.frame["x_mean"].dtype == "float32"
+    assert dataset.feature_columns and "x_mean" in dataset.feature_columns
+
+
+def test_load_geometry_dataset_frame_granularity(geometry_csvs: tuple[Path, Path]) -> None:
+    frames_path, labels_path = geometry_csvs
+    dataset = load_geometry_dataset(
+        frames_path,
+        labels_csv=labels_path,
+        granularity="frame",
+        normalization="minmax",
+    )
+    assert dataset.granularity == "frame"
+    assert len(dataset.frame) == 6
+    assert dataset.frame[LABEL_COLUMN].isin({0, 1}).all()
+    assert dataset.feature_columns
+    first_feature = dataset.feature_columns[0]
+    assert dataset.frame[first_feature].dtype == "float32"
 
 
 def test_load_geom_frames_requires_full_key_set(tmp_path: Path) -> None:

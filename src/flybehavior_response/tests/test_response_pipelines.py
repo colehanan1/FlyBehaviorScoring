@@ -139,3 +139,11 @@ def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
 
     sample = pd.read_csv(latest_run / f"predictions_{MODEL_MLP}_test.csv")
     assert {"model", "split", "predicted_label", "correct"}.issubset(sample.columns)
+
+    manifest_path = latest_run / "split_manifest.csv"
+    assert manifest_path.exists(), "Expected split_manifest.csv in artifacts"
+    manifest = pd.read_csv(manifest_path)
+    assert set(manifest["split"]) == {"train", "test"}
+    train_ids = set(manifest.loc[manifest["split"] == "train", "fly"])
+    test_ids = set(manifest.loc[manifest["split"] == "test", "fly"])
+    assert train_ids.isdisjoint(test_ids), "Detected group leakage between train and test splits"
