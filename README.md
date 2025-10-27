@@ -67,6 +67,7 @@ pip install -e .
       --cache-parquet artifacts/geom_cache.parquet \
       --aggregate-geometry \
       --aggregate-stats mean,max \
+      --aggregate-format parquet \
       --artifacts-dir artifacts
   ```
 
@@ -74,26 +75,164 @@ pip install -e .
   enforces uniqueness of ``dataset``/``fly``/``fly_number``/``trial_type``/
   ``trial_label`` keys across the
   optional labels CSV. Aggregation is optional; when enabled it produces a
-  per-trial summary parquet (compressed with Zstandard) alongside the cache.
+  per-trial summary file alongside the cache. Choose between a compressed
+  parquet (default, requires ``pyarrow`` or ``fastparquet``) and a portable CSV
+  by passing ``--aggregate-format parquet`` or ``--aggregate-format csv``
+  respectively.
   The same pipeline is available programmatically via
   ``flybehavior_response.io.load_geom_frames`` and
   ``flybehavior_response.io.aggregate_trials`` for notebook workflows.
 
   Geometry exports that expose a different frame counter (for example a column
-  named ``frame`` instead of the default ``frame_idx``) no longer crash the
-  stream. The loader will automatically continue without contiguity validation
-  and log the skipped column. Pass ``--frame-column frame`` to reinstate the
-  block checks when working with these alternate schemas.
+  named ``frame`` instead of the default ``frame_idx``) are resolved
+  automatically. The loader now detects the alternate header, validates
+  contiguity against that column, and keeps the block integrity checks active
+  without any additional flags.
 
   Only trials present in the labels CSV are streamed. Rows without labels are
   dropped up front so aggregation and caching operate on fully annotated data.
   To debug unexpected omissions, rerun ``prepare`` with ``--keep-missing-labels``
   to surface a validation error listing the offending keys.
 
+- **Train directly from geometry frames.** Provide ``--geometry-frames`` to the
+  ``train``, ``eval``, and ``predict`` subcommands to stream per-frame CSVs or
+  parquet exports on the fly. Combine ``--geom-granularity`` with the default
+  ``trial`` mode to materialise aggregated per-trial features or switch to
+  ``frame`` when frame-level rows are preferred. Aggregation honours the same
+  ``--geom-stats`` options exposed by ``prepare``, while ``--geom-normalize``
+  applies either ``zscore`` or ``minmax`` scaling before safely downcasting the
+  values to ``float32`` so they align with the existing feature engineering
+  pipeline. The ``train`` command now writes a ``split_manifest.csv`` alongside
+  the trained models describing the fly-level ``GroupShuffleSplit`` assignment;
+  pass ``--group-override none`` to disable leakage guards when cross-fly
+  isolation is not required.
+  When the geometry stream includes raw coordinate columns named
+  ``eye_x``, ``eye_y``, ``prob_x``, and ``prob_y``, the loader assembles these
+  into ``eye_x_f*``/``eye_y_f*``/``prob_x_f*``/``prob_y_f*`` trace series for
+  every trial. These traces mirror the format produced by the legacy
+  ``prepare_raw`` workflow, unlock PCA on raw motion signals without additional
+  preprocessing, and remain aligned with the per-trial aggregation and leakage
+  guards described above.
+
+#### Restrict geometry features for modeling
+
+If you prefer to train on a curated feature panel instead of the entire
+aggregate table, pass ``--geom-feature-columns`` to ``train``, ``eval``, or
+``predict``. Supply a comma-separated list directly or reference a
+newline-delimited file by prefixing the path with ``@``:
+
+```bash
+flybehavior-response train \
+  --geometry-frames /path/to/geom_frames.csv \
+  --geometry-trials /path/to/geom_trial_summary.csv \
+  --labels-csv /path/to/labels.csv \
+  --geom-feature-columns @experiments/feature_subset.txt \
+  --model mlp
+```
+
+The loader validates the selection (for example ``r_before_mean`` or
+``metric_mean``) and raises a schema error when any requested column is absent
+so mistakes surface immediately. The resolved subset is also written to
+``config.json`` under ``geometry_feature_columns`` to keep the training
+provenance auditable.
+
+#### Merge precomputed per-trial geometry summaries
+
+When a laboratory already maintains per-fly or per-trial statistics in a CSV, you can hand those features to the streaming loader with the new ``--geometry-trials`` flag. The file must contain one row per trial with the canonical identifier columns (``dataset``, ``fly``, ``fly_number``, ``trial_type``, ``trial_label``) plus the following engineered metrics so downstream models receive a consistent schema:
+
+``W_est_fly``, ``H_est_fly``, ``diag_est_fly``, ``r_min_fly``, ``r_max_fly``, ``r_p01_fly``, ``r_p99_fly``, ``r_mean_fly``, ``r_std_fly``, ``n_frames``, ``r_mean_trial``, ``r_std_trial``, ``r_max_trial``, ``r95_trial``, ``dx_mean_abs``, ``dy_mean_abs``, ``r_pct_robust_fly_max``, ``r_pct_robust_fly_mean``, ``r_before_mean``, ``r_before_std``, ``r_during_mean``, ``r_during_std``, ``r_during_minus_before_mean``, ``cos_theta_during_mean``, ``sin_theta_during_mean``, ``direction_consistency``, ``frac_high_ext_during``, ``rise_speed``.
+
+During ``load_geometry_dataset`` the summaries are merged with the streamed aggregates before normalisation and downcasting, so every new numeric column participates in the same scaling pipeline. If a column is present in both the streamed aggregates and the external summary, the loader keeps the streamed value and warns about mismatches so accidental drift is visible. ``--geometry-trials`` is only valid when ``--geometry-frames`` is provided at trial granularity.
+
+Example training command:
+
+```bash
+flybehavior-response train \
+  --geometry-frames /path/to/geom_frames.csv \
+  --geometry-trials /path/to/geom_trial_summary.csv \
+  --labels-csv /path/to/labels.csv \
+  --model logreg
+```
+
+The run configuration now records the trial-summary path alongside the geometry frames so provenance remains auditable.
+Provide a labels CSV containing the canonical ``user_score_odor`` column; values
+greater than zero are automatically coerced to a binary responder target during
+``train``/``eval``/``predict`` so no manual preprocessing step is required.
+Rows missing labels are dropped from the geometry stream by default to keep the
+aggregation consistent—rerun with ``--keep-missing-labels`` if you want to audit
+which trials were skipped.
+
+### Enriched per-frame geometry columns and responder training workflow
+
+The geometry enrichment step now emits additional, behaviourally grounded
+columns so downstream analyses no longer have to reconstruct stimulus epochs or
+basic response summaries manually. Each frame row in the enriched CSV includes:
+
+| Column | Definition | Why it matters |
+| --- | --- | --- |
+| ``is_before`` | Binary mask marking frames in the baseline (pre-odor) window. | Lets downstream code isolate baseline behaviour without re-deriving stimulus timing, which keeps reproducibility intact across labs. |
+| ``is_during`` | Binary mask marking frames during odor stimulation. | Ensures frame-level filters target the causal window that determines the responder label. |
+| ``is_after`` | Binary mask marking frames in the post-odor window. | Allows post-hoc inspection without contaminating training features that should focus on the odor epoch. |
+| ``r_before_mean`` | Mean proboscis extension (percentage of the fly’s robust range) computed across baseline frames. | Captures resting proboscis position; elevated values indicate partial extension even before odor onset. |
+| ``r_before_std`` | Standard deviation of proboscis extension during baseline. | Measures baseline “fidgeting.” High variance reveals spontaneous motion that can masquerade as responses. |
+| ``r_during_mean`` | Mean extension percentage while odor is on. | Quantifies the sustained response amplitude during stimulation. |
+| ``r_during_std`` | Standard deviation of extension during odor. | Summarises modulation depth; large swings reflect oscillatory probing, while small values indicate a rigid hold. |
+| ``r_during_minus_before_mean`` | ``r_during_mean - r_before_mean``. | Expresses the odor-triggered change in the fly’s own units. Positive values are odor-locked proboscis extensions; zero or negative values show absence or suppression. |
+| ``cos_theta_during_mean`` | Mean cosine of the proboscis direction vector (normalised ``dx``/``dy``) during odor. | Encodes whether the proboscis points forward, downward, or laterally—key for separating feeding-like probes from grooming. |
+| ``sin_theta_during_mean`` | Mean sine of the proboscis direction vector during odor. | Complements ``cos_theta_during_mean`` so the full direction is available in head-centred coordinates. |
+| ``direction_consistency`` | Length of the mean direction vector, computed as ``sqrt(cos_theta_during_mean**2 + sin_theta_during_mean**2)``. | Scores directional stability: values near 1.0 mean deliberate probes, while lower values flag chaotic motion unrelated to odor. |
+| ``frac_high_ext_during`` | Fraction of odor-period frames where ``r_pct_robust_fly`` exceeds 75 % of that fly’s robust range. Range: [0, 1]. | Captures how long the proboscis stayed highly extended; separates quick flicks from sustained acceptance-like behaviour. |
+| ``rise_speed`` | Initial slope of extension at odor onset: ``(mean extension in the first second of odor − r_before_mean) / 1 s`` expressed as percentage per second. | Measures how quickly the response ramps. Fast rises are characteristic of true stimulus-driven reactions. |
+
+The geometry loader populates these columns automatically whenever the labels table supplies ``odor_on_idx`` and ``odor_off_idx`` values alongside the raw proboscis coordinates. The enrichment runs during ``load_geom_frames`` and all CLI entry points that consume geometry inputs, so downstream scripts and notebooks receive consistent epoch flags and responder summaries without additional preprocessing.
+If the odor timing columns are absent, the loader still succeeds and emits the
+responder summary columns, but their values fall back to ``NaN`` and the
+``rise_speed`` metric remains undefined for those trials. Supplying the odor
+indices is therefore strongly recommended whenever the experiment design makes
+them available.
+
+#### Build per-trial feature tables for supervised learning
+
+These columns make the per-frame CSV directly usable for training binary
+classifiers that decide whether a fly responded to the odor in a given trial.
+Follow this procedure when preparing data for a multilayer perceptron (MLP) or
+another lightweight model:
+
+1. Obtain the human-annotated (or rule-derived) trial labels where
+   ``Responder = 1`` denotes a clear odor response and ``Responder = 0`` denotes
+   no response.
+2. For each trial, collapse the per-frame enrichment into a single feature
+   vector by extracting exactly these ten scalar summaries:
+   ``[r_before_mean, r_before_std, r_during_mean, r_during_std,
+   r_during_minus_before_mean, cos_theta_during_mean, sin_theta_during_mean,
+   direction_consistency, frac_high_ext_during, rise_speed]``.
+3. Assemble a training table with one row per trial and join the responder
+   labels as the target column.
+4. Train the MLP (or another binary classifier) on this 10-dimensional input to
+   predict the responder label.
+
+This feature set is intentionally compact, biologically interpretable, and
+normalised per fly (all extension metrics operate on ``r_pct_robust_fly`` which
+uses the fly’s own ``r_p01_fly``/``r_p99_fly`` range). It avoids dependence on
+camera geometry or trial identifiers, and it limits the inputs to pre-odor and
+during-odor information so the model answers the causal question: did the odor
+move the proboscis away from baseline?
+
+Avoid feeding raw per-frame series, file or fly identifiers, camera scaling
+fields (``W_est_fly``, ``H_est_fly``), or any post-odor aggregates into the
+first-round classifier. Those inputs inject nuisance variation, leak
+non-causal structure, and encourage overfitting on small datasets.
+
+Remember that the enriched CSV is an intermediate artefact designed for reuse
+across pipelines. Build the actual training matrix by selecting one row per
+trial and projecting down to the summary columns listed above before invoking
+``flybehavior-response train`` or a custom scikit-learn script.
+
 - **Regenerate the geometry cache without touching disk** by using ``--dry-run``
   together with ``--cache-parquet``; the CLI will validate inputs and report
-  chunk-level statistics without writing artifacts. The parquet features rely on
-  ``pyarrow`` (bundled in ``requirements.txt``).
+  chunk-level statistics without writing artifacts. If the optional parquet
+  engines are unavailable, switch to ``--aggregate-format csv`` for downstream
+  smoke tests.
 
 - **Validate the new pipeline locally.** Run the focused pytest targets to
   confirm schema handling, cache behaviour, and aggregation parity:

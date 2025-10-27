@@ -21,7 +21,9 @@ from .io import (
     MERGE_KEYS,
     aggregate_trials,
     load_geom_frames,
+    load_geometry_dataset,
     load_and_merge,
+    load_dataset,
     write_parquet,
 )
 from .logging_utils import get_logger, set_global_logging
@@ -213,6 +215,138 @@ def _parse_column_list(raw: str | None) -> List[str] | None:
     return columns or None
 
 
+def _parse_feature_selection(raw: str | None) -> List[str] | None:
+    if raw is None:
+        return None
+    token = raw.strip()
+    if not token:
+        return None
+    if token.startswith("@"):
+        path = Path(token[1:]).expanduser()
+        if not path.exists():
+            raise ValueError(f"Geometry feature list file not found: {path}")
+        features: List[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            entry = line.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            features.append(entry)
+        return features or None
+    return [item.strip() for item in token.split(",") if item.strip()]
+
+
+def _parse_stats_list(raw: str | None) -> List[str]:
+    if raw is None:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _add_geometry_cli_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--geometry-frames",
+        type=Path,
+        help="Path to per-frame geometry data (CSV or parquet)",
+    )
+    parser.add_argument(
+        "--geometry-trials",
+        type=Path,
+        help="Optional per-trial geometry summary CSV to merge with streamed aggregates",
+    )
+    parser.add_argument(
+        "--geom-cache-parquet",
+        type=Path,
+        help="Optional parquet cache destination for streamed geometry data",
+    )
+    parser.add_argument(
+        "--geom-use-cache",
+        action="store_true",
+        help="Load geometry frames from --geom-cache-parquet when it already exists",
+    )
+    parser.add_argument(
+        "--geom-chunk-size",
+        type=int,
+        default=50000,
+        help="Chunk size to use when streaming geometry inputs",
+    )
+    parser.add_argument(
+        "--geom-columns",
+        type=str,
+        help="Comma-separated list of geometry columns to retain while streaming",
+    )
+    parser.add_argument(
+        "--geom-feature-columns",
+        type=str,
+        help=(
+            "Comma-separated geometry feature columns to retain for modeling. "
+            "Prefix with '@' to load newline-delimited names from a file."
+        ),
+    )
+    parser.add_argument(
+        "--geom-frame-column",
+        type=str,
+        default="frame_idx",
+        help="Frame index column used to validate geometry contiguity",
+    )
+    parser.add_argument(
+        "--geom-granularity",
+        choices=["trial", "frame"],
+        default="trial",
+        help="Granularity for geometry-derived datasets (trial aggregates or frame-level rows)",
+    )
+    parser.add_argument(
+        "--geom-stats",
+        type=str,
+        default="mean,min,max",
+        help="Comma-separated aggregation statistics when --geom-granularity=trial",
+    )
+    parser.add_argument(
+        "--geom-normalize",
+        choices=["none", "zscore", "minmax"],
+        default="none",
+        help="Normalization mode applied to geometry columns prior to modeling",
+    )
+    parser.set_defaults(geom_downcast=True, geom_drop_missing_labels=True)
+    parser.add_argument(
+        "--no-geom-downcast",
+        dest="geom_downcast",
+        action="store_false",
+        help="Disable float32 downcasting for geometry columns",
+    )
+    parser.add_argument(
+        "--geom-keep-missing-labels",
+        dest="geom_drop_missing_labels",
+        action="store_false",
+        help="Retain rows without matching labels when streaming geometry data",
+    )
+    parser.add_argument(
+        "--geom-drop-missing-labels",
+        dest="geom_drop_missing_labels",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+
+
+def _extract_geometry_kwargs(args: argparse.Namespace) -> dict[str, object]:
+    columns = _parse_column_list(getattr(args, "geom_columns", None))
+    stats = _parse_stats_list(getattr(args, "geom_stats", None))
+    feature_columns = _parse_feature_selection(getattr(args, "geom_feature_columns", None))
+    return {
+        "geometry_source": getattr(args, "geometry_frames", None),
+        "geom_chunk_size": getattr(args, "geom_chunk_size", 100_000),
+        "geom_columns": columns,
+        "geom_cache_parquet": getattr(args, "geom_cache_parquet", None),
+        "geom_use_cache": bool(getattr(args, "geom_use_cache", False)),
+        "geom_frame_column": getattr(args, "geom_frame_column", "frame_idx"),
+        "geom_stats": stats or None,
+        "geom_granularity": getattr(args, "geom_granularity", "trial"),
+        "geom_normalization": getattr(args, "geom_normalize", "none"),
+        "geom_drop_missing_labels": getattr(args, "geom_drop_missing_labels", True),
+        "geom_downcast": getattr(args, "geom_downcast", True),
+        "geom_trial_summary": getattr(args, "geometry_trials", None),
+        "geom_feature_columns": feature_columns,
+    }
+
+
 def _select_trace_prefixes(
     args: argparse.Namespace, *, fallback: Sequence[str] | None = None
 ) -> List[str] | None:
@@ -338,6 +472,12 @@ def _configure_parser() -> argparse.ArgumentParser:
         default="mean,min,max",
         help="Comma-separated aggregation statistics for numeric geometry columns",
     )
+    prepare_parser.add_argument(
+        "--aggregate-format",
+        choices=["parquet", "csv"],
+        default="parquet",
+        help="File format for aggregated geometry outputs",
+    )
     prepare_parser.set_defaults(drop_missing_labels=True)
     prepare_parser.add_argument(
         "--keep-missing-labels",
@@ -357,6 +497,7 @@ def _configure_parser() -> argparse.ArgumentParser:
         help="Train model pipelines",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    _add_geometry_cli_options(train_parser)
     train_parser.add_argument(
         "--logreg-solver",
         type=str,
@@ -370,12 +511,30 @@ def _configure_parser() -> argparse.ArgumentParser:
         default=1000,
         help="Maximum iterations for logistic regression; increase if convergence warnings occur",
     )
-    subparsers.add_parser(
+    train_parser.add_argument(
+        "--group-column",
+        type=str,
+        default="fly",
+        help="Column used for group-aware splits (default ensures fly-level leakage prevention)",
+    )
+    train_parser.add_argument(
+        "--group-override",
+        type=str,
+        help="Override the group column; specify 'none' to disable group-based splitting",
+    )
+    train_parser.add_argument(
+        "--test-size",
+        type=float,
+        default=0.2,
+        help="Fraction of samples reserved for the held-out test split",
+    )
+    eval_parser = subparsers.add_parser(
         "eval",
         parents=[common_parser],
         help="Evaluate trained models",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    _add_geometry_cli_options(eval_parser)
     subparsers.add_parser(
         "viz",
         parents=[common_parser],
@@ -389,6 +548,7 @@ def _configure_parser() -> argparse.ArgumentParser:
         help="Score new data with a trained pipeline",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    _add_geometry_cli_options(predict_parser)
     predict_parser.add_argument("--model-path", type=Path, required=True, help="Path to trained model joblib")
     predict_parser.add_argument(
         "--output-csv",
@@ -465,12 +625,22 @@ def _handle_prepare(args: argparse.Namespace) -> None:
                 len(aggregates),
             )
             if args.dry_run:
-                logger.info("Dry run enabled; not writing aggregated parquet artifact.")
+                logger.info("Dry run enabled; not writing aggregated artifact.")
                 return
             args.artifacts_dir.mkdir(parents=True, exist_ok=True)
-            out_path = args.artifacts_dir / "geometry_aggregates.parquet"
-            aggregates.to_parquet(out_path, compression="zstd", index=False)
-            logger.info("Wrote aggregated geometry parquet to %s", out_path)
+            if args.aggregate_format == "parquet":
+                out_path = args.artifacts_dir / "geometry_aggregates.parquet"
+                try:
+                    aggregates.to_parquet(out_path, compression="zstd", index=False)
+                except ImportError as exc:  # pragma: no cover - depends on optional deps
+                    raise RuntimeError(
+                        "Parquet support requires the 'pyarrow' or 'fastparquet' optional dependency. "
+                        "Re-run with --aggregate-format csv or install one of the engines."
+                    ) from exc
+            else:
+                out_path = args.artifacts_dir / "geometry_aggregates.csv"
+                aggregates.to_csv(out_path, index=False)
+            logger.info("Wrote aggregated geometry %s to %s", args.aggregate_format, out_path)
             return
 
         # Exhaust the iterator to materialise cache/statistics without aggregation.
@@ -500,10 +670,23 @@ def _handle_prepare(args: argparse.Namespace) -> None:
 
 
 def _handle_train(args: argparse.Namespace) -> None:
-    if not args.data_csv or not args.labels_csv:
-        raise ValueError("--data-csv and --labels-csv are required for train")
+    if not args.labels_csv:
+        raise ValueError("--labels-csv is required for train")
+    if args.data_csv is None and getattr(args, "geometry_frames", None) is None:
+        raise ValueError("Provide --data-csv or --geometry-frames for train")
+    if args.data_csv is not None and getattr(args, "geometry_frames", None) is not None:
+        raise ValueError("Specify either --data-csv or --geometry-frames, not both")
+    if getattr(args, "geometry_frames", None) is not None and args.geom_use_cache and not args.geom_cache_parquet:
+        raise ValueError("--geom-use-cache requires --geom-cache-parquet when using geometry inputs")
+    if getattr(args, "geometry_trials", None) is not None and getattr(args, "geometry_frames", None) is None:
+        raise ValueError("--geometry-trials requires --geometry-frames")
+    if getattr(args, "geom_feature_columns", None) and getattr(args, "geometry_frames", None) is None:
+        raise ValueError("--geom-feature-columns requires --geometry-frames")
+
+    geom_kwargs = _extract_geometry_kwargs(args)
     features = parse_feature_list(args.features, args.include_auc_before)
     prefixes = _select_trace_prefixes(args)
+    geometry_source = geom_kwargs.pop("geometry_source")
     metrics = train_models(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,
@@ -519,6 +702,11 @@ def _handle_train(args: argparse.Namespace) -> None:
         logreg_solver=args.logreg_solver,
         logreg_max_iter=args.logreg_max_iter,
         trace_prefixes=prefixes,
+        geometry_source=geometry_source,
+        **geom_kwargs,
+        group_column=args.group_column,
+        group_override=args.group_override,
+        test_size=args.test_size,
     )
     logger = get_logger("train", verbose=args.verbose)
     logger.info("Training metrics: %s", json.dumps(metrics))
@@ -536,8 +724,18 @@ def _load_models(run_dir: Path) -> dict[str, object]:
 
 
 def _handle_eval(args: argparse.Namespace) -> None:
-    if not args.data_csv or not args.labels_csv:
-        raise ValueError("--data-csv and --labels-csv are required for eval")
+    if not args.labels_csv:
+        raise ValueError("--labels-csv is required for eval")
+    if args.data_csv is None and getattr(args, "geometry_frames", None) is None:
+        raise ValueError("Provide --data-csv or --geometry-frames for eval")
+    if args.data_csv is not None and getattr(args, "geometry_frames", None) is not None:
+        raise ValueError("Specify either --data-csv or --geometry-frames, not both")
+    if getattr(args, "geometry_frames", None) is not None and args.geom_use_cache and not args.geom_cache_parquet:
+        raise ValueError("--geom-use-cache requires --geom-cache-parquet when using geometry inputs")
+    if getattr(args, "geometry_trials", None) is not None and getattr(args, "geometry_frames", None) is None:
+        raise ValueError("--geometry-trials requires --geometry-frames")
+    if getattr(args, "geom_feature_columns", None) and getattr(args, "geometry_frames", None) is None:
+        raise ValueError("--geom-feature-columns requires --geometry-frames")
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
     logger = get_logger("eval", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
@@ -548,11 +746,15 @@ def _handle_eval(args: argparse.Namespace) -> None:
         if config.trace_series_prefixes:
             config_prefixes = config.trace_series_prefixes
     prefixes = _select_trace_prefixes(args, fallback=config_prefixes)
-    dataset = load_and_merge(
-        args.data_csv,
-        args.labels_csv,
+    geom_kwargs = _extract_geometry_kwargs(args)
+    geometry_source = geom_kwargs.pop("geometry_source")
+    dataset = load_dataset(
+        data_csv=args.data_csv,
+        labels_csv=args.labels_csv,
         logger_name="eval",
         trace_prefixes=prefixes,
+        geometry_source=geometry_source,
+        **geom_kwargs,
     )
     models = _load_models(run_dir)
     drop_cols = [LABEL_COLUMN]
@@ -603,13 +805,47 @@ def _handle_viz(args: argparse.Namespace) -> None:
 
 
 def _handle_predict(args: argparse.Namespace) -> None:
-    if not args.data_csv:
-        raise ValueError("--data-csv is required for predict")
+    geometry_path = getattr(args, "geometry_frames", None)
+    if args.data_csv is None and geometry_path is None:
+        raise ValueError("Provide --data-csv or --geometry-frames for predict")
+    if args.data_csv is not None and geometry_path is not None:
+        raise ValueError("Specify either --data-csv or --geometry-frames, not both")
+    if geometry_path is not None and args.geom_use_cache and not args.geom_cache_parquet:
+        raise ValueError("--geom-use-cache requires --geom-cache-parquet when using geometry inputs")
+    if getattr(args, "geometry_trials", None) is not None and geometry_path is None:
+        raise ValueError("--geometry-trials requires --geometry-frames")
+    if getattr(args, "geom_feature_columns", None) and geometry_path is None:
+        raise ValueError("--geom-feature-columns requires --geometry-frames")
     logger = get_logger("predict", verbose=args.verbose)
-    logger.info("Loading prediction data: %s", args.data_csv)
     model = load_pipeline(args.model_path)
-    data_df = pd.read_csv(args.data_csv)
-    logger.debug("Prediction dataset shape: %s", data_df.shape)
+
+    if geometry_path is not None:
+        logger.info("Loading prediction geometry: %s", geometry_path)
+        geom_kwargs = _extract_geometry_kwargs(args)
+        geometry_source = geom_kwargs.pop("geometry_source")
+        dataset = load_geometry_dataset(
+            geometry_source,
+            labels_csv=args.labels_csv,
+            logger_name="predict",
+            chunk_size=geom_kwargs["geom_chunk_size"],
+            columns=geom_kwargs["geom_columns"],
+            cache_parquet=geom_kwargs["geom_cache_parquet"],
+            use_cache=geom_kwargs["geom_use_cache"],
+            frame_column=geom_kwargs["geom_frame_column"],
+            stats=geom_kwargs["geom_stats"],
+            granularity=geom_kwargs["geom_granularity"],
+            normalization=geom_kwargs["geom_normalization"],
+            drop_missing_labels=geom_kwargs["geom_drop_missing_labels"],
+            downcast=geom_kwargs["geom_downcast"],
+            trial_summary=geom_kwargs["geom_trial_summary"],
+            feature_columns=geom_kwargs["geom_feature_columns"],
+        )
+        data_df = dataset.frame.copy()
+        logger.debug("Prediction dataset shape after geometry processing: %s", data_df.shape)
+    else:
+        logger.info("Loading prediction data: %s", args.data_csv)
+        data_df = pd.read_csv(args.data_csv)
+        logger.debug("Prediction dataset shape: %s", data_df.shape)
 
     original_columns = set(data_df.columns)
     had_testing_trial_column = "testing_trial" in original_columns

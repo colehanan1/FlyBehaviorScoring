@@ -33,6 +33,13 @@ class PipelineConfig:
     label_weight_summary: Dict[str, float]
     label_weight_strategy: str
     trace_series_prefixes: List[str] = field(default_factory=list)
+    data_format: str = "tabular"
+    dataset_granularity: str = "trial"
+    group_column: str | None = None
+    geometry_aggregations: List[str] = field(default_factory=list)
+    geometry_normalization: str = "none"
+    geometry_trial_summary: str | None = None
+    geometry_feature_columns: List[str] = field(default_factory=list)
 
     def to_json(self, path: Path) -> None:
         path.write_text(json.dumps(dataclasses.asdict(self), indent=2), encoding="utf-8")
@@ -46,6 +53,13 @@ class PipelineConfig:
         data.setdefault("label_weight_summary", {})
         data.setdefault("label_weight_strategy", "proportional_intensity")
         data.setdefault("trace_series_prefixes", [])
+        data.setdefault("data_format", "tabular")
+        data.setdefault("dataset_granularity", "trial")
+        data.setdefault("group_column", None)
+        data.setdefault("geometry_aggregations", [])
+        data.setdefault("geometry_normalization", "none")
+        data.setdefault("geometry_trial_summary", None)
+        data.setdefault("geometry_feature_columns", [])
         data["label_intensity_counts"] = {
             str(k): int(v) for k, v in data["label_intensity_counts"].items()
         }
@@ -53,6 +67,10 @@ class PipelineConfig:
             str(k): float(v) for k, v in data["label_weight_summary"].items()
         }
         data["trace_series_prefixes"] = list(data["trace_series_prefixes"])
+        data["geometry_aggregations"] = list(data["geometry_aggregations"])
+        data["geometry_feature_columns"] = list(data["geometry_feature_columns"])
+        if data["group_column"] is not None:
+            data["group_column"] = str(data["group_column"])
         return cls(**data)
 
 
