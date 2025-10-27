@@ -251,7 +251,7 @@ def load_geom_frames(
     labels_csv: Path | None = None,
     join_keys: Sequence[str] = MERGE_KEYS,
     frame_column: str = "frame_idx",
-    drop_missing_labels: bool = False,
+    drop_missing_labels: bool = True,
 ) -> Iterator[pd.DataFrame]:
     """Stream geometry frames with optional parquet caching and label joins.
 
@@ -288,7 +288,10 @@ def load_geom_frames(
         Column storing the per-frame index. When present the function validates
         contiguity across streamed chunks.
     drop_missing_labels:
-        When ``True`` rows without matching labels are dropped silently.
+        When ``True`` (the default) rows without matching labels are removed prior
+        to streaming so only labelled trials are processed. When ``False`` the
+        loader raises :class:`DataValidationError` if any geometry rows are
+        missing labels.
 
     Yields
     ------
@@ -306,10 +309,16 @@ def load_geom_frames(
 
     label_table: pd.DataFrame | None = None
     label_projection: pd.DataFrame | None = None
+    label_key_set: set[tuple[object, ...]] | None = None
     if labels_csv is not None:
         label_table = _prepare_labels_table(labels_csv, join_keys)
         extra_columns = [col for col in label_table.columns if col not in join_keys]
         label_projection = pd.DataFrame(columns=extra_columns)
+        if drop_missing_labels:
+            label_key_set = {
+                tuple(row)
+                for row in label_table.loc[:, list(join_keys)].itertuples(index=False, name=None)
+            }
 
     requested_columns: List[str] | None = None
     if columns is not None:
@@ -422,6 +431,22 @@ def load_geom_frames(
                     continue
                 chunk = normalize_key_columns(raw_chunk)
                 _ensure_columns(chunk, join_keys, context="geometry frame chunk")
+                if label_key_set is not None:
+                    key_mask = [
+                        tuple(row) in label_key_set
+                        for row in chunk.loc[:, list(join_keys)].itertuples(index=False, name=None)
+                    ]
+                    key_series = pd.Series(key_mask, index=chunk.index, dtype=bool)
+                    kept = int(key_series.sum())
+                    dropped = len(chunk) - kept
+                    if dropped:
+                        log.info(
+                            "Dropping %d geometry rows without matching labels during streaming.",
+                            dropped,
+                        )
+                    if kept == 0:
+                        continue
+                    chunk = chunk.loc[key_series].copy()
                 if frame_column_present:
                     _validate_block_contiguity(
                         chunk,

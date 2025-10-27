@@ -85,6 +85,11 @@ pip install -e .
   and log the skipped column. Pass ``--frame-column frame`` to reinstate the
   block checks when working with these alternate schemas.
 
+  Only trials present in the labels CSV are streamed. Rows without labels are
+  dropped up front so aggregation and caching operate on fully annotated data.
+  To debug unexpected omissions, rerun ``prepare`` with ``--keep-missing-labels``
+  to surface a validation error listing the offending keys.
+
 - **Regenerate the geometry cache without touching disk** by using ``--dry-run``
   together with ``--cache-parquet``; the CLI will validate inputs and report
   chunk-level statistics without writing artifacts. The parquet features rely on

@@ -338,10 +338,18 @@ def _configure_parser() -> argparse.ArgumentParser:
         default="mean,min,max",
         help="Comma-separated aggregation statistics for numeric geometry columns",
     )
+    prepare_parser.set_defaults(drop_missing_labels=True)
+    prepare_parser.add_argument(
+        "--keep-missing-labels",
+        dest="drop_missing_labels",
+        action="store_false",
+        help="Retain frames without matching labels and fail when the merge encounters them",
+    )
     prepare_parser.add_argument(
         "--drop-missing-labels",
+        dest="drop_missing_labels",
         action="store_true",
-        help="Drop frames without matching labels instead of raising an error",
+        help=argparse.SUPPRESS,
     )
     train_parser = subparsers.add_parser(
         "train",

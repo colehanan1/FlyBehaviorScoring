@@ -384,6 +384,97 @@ def test_load_geom_frames_streams_and_joins(geometry_csvs: tuple[Path, Path]) ->
     assert chunks[1]["frame_idx"].tolist() == [2, 0]
 
 
+def test_load_geom_frames_drops_unlabeled_rows(tmp_path: Path) -> None:
+    frames = pd.DataFrame(
+        {
+            "dataset": ["opto_EB"] * 6,
+            "fly": ["a"] * 3 + ["c"] * 3,
+            "fly_number": [1] * 3 + [3] * 3,
+            "trial_type": ["testing"] * 6,
+            "trial_label": ["t1"] * 3 + ["t3"] * 3,
+            "frame_idx": [0, 1, 2, 0, 1, 2],
+            "x": [0.1, 0.2, 0.3, 0.0, 0.1, 0.2],
+            "y": [0.0, 0.5, 0.6, 0.1, 0.2, 0.3],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "dataset": ["opto_EB"],
+            "fly": ["a"],
+            "fly_number": [1],
+            "trial_type": ["testing"],
+            "trial_label": ["t1"],
+            LABEL_COLUMN: [5],
+        }
+    )
+    frames_path = tmp_path / "frames.csv"
+    labels_path = tmp_path / "labels.csv"
+    frames.to_csv(frames_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    chunks = list(
+        load_geom_frames(
+            frames_path,
+            chunk_size=4,
+            columns=[
+                "dataset",
+                "fly",
+                "fly_number",
+                "trial_type",
+                "trial_label",
+                "frame_idx",
+                "x",
+                "y",
+            ],
+            labels_csv=labels_path,
+        )
+    )
+    combined = pd.concat(chunks, ignore_index=True)
+    assert combined[["dataset", "fly", "trial_label"]].drop_duplicates().to_dict(
+        orient="records"
+    ) == [{"dataset": "opto_EB", "fly": "a", "trial_label": "t1"}]
+    assert combined[LABEL_COLUMN].eq(5).all()
+
+
+def test_load_geom_frames_strict_missing_labels_raises(tmp_path: Path) -> None:
+    frames = pd.DataFrame(
+        {
+            "dataset": ["opto_EB", "opto_EB"],
+            "fly": ["a", "c"],
+            "fly_number": [1, 3],
+            "trial_type": ["testing", "testing"],
+            "trial_label": ["t1", "t3"],
+            "frame_idx": [0, 0],
+            "x": [0.1, 0.2],
+            "y": [0.0, 0.1],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "dataset": ["opto_EB"],
+            "fly": ["a"],
+            "fly_number": [1],
+            "trial_type": ["testing"],
+            "trial_label": ["t1"],
+            LABEL_COLUMN: [0],
+        }
+    )
+    frames_path = tmp_path / "frames.csv"
+    labels_path = tmp_path / "labels.csv"
+    frames.to_csv(frames_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    with pytest.raises(DataValidationError):
+        list(
+            load_geom_frames(
+                frames_path,
+                chunk_size=1,
+                labels_csv=labels_path,
+                drop_missing_labels=False,
+            )
+        )
+
+
 def test_load_geom_frames_handles_missing_default_frame_column(tmp_path: Path) -> None:
     frames = pd.DataFrame(
         {
