@@ -133,6 +133,12 @@ flybehavior-response train \
 ```
 
 The run configuration now records the trial-summary path alongside the geometry frames so provenance remains auditable.
+Provide a labels CSV containing the canonical ``user_score_odor`` column; values
+greater than zero are automatically coerced to a binary responder target during
+``train``/``eval``/``predict`` so no manual preprocessing step is required.
+Rows missing labels are dropped from the geometry stream by default to keep the
+aggregation consistent—rerun with ``--keep-missing-labels`` if you want to audit
+which trials were skipped.
 
 ### Enriched per-frame geometry columns and responder training workflow
 
@@ -157,6 +163,11 @@ basic response summaries manually. Each frame row in the enriched CSV includes:
 | ``rise_speed`` | Initial slope of extension at odor onset: ``(mean extension in the first second of odor − r_before_mean) / 1 s`` expressed as percentage per second. | Measures how quickly the response ramps. Fast rises are characteristic of true stimulus-driven reactions. |
 
 The geometry loader populates these columns automatically whenever the labels table supplies ``odor_on_idx`` and ``odor_off_idx`` values alongside the raw proboscis coordinates. The enrichment runs during ``load_geom_frames`` and all CLI entry points that consume geometry inputs, so downstream scripts and notebooks receive consistent epoch flags and responder summaries without additional preprocessing.
+If the odor timing columns are absent, the loader still succeeds and emits the
+responder summary columns, but their values fall back to ``NaN`` and the
+``rise_speed`` metric remains undefined for those trials. Supplying the odor
+indices is therefore strongly recommended whenever the experiment design makes
+them available.
 
 #### Build per-trial feature tables for supervised learning
 

@@ -243,30 +243,33 @@ class TrialBehaviorAccumulator:
 
         if frame_column and frame_column in group.columns and valid_during.any():
             frames = pd.to_numeric(group[frame_column], errors="coerce")
-            odor_on_values = pd.to_numeric(group.get(config.odor_on_column), errors="coerce")
-            odor_off_values = pd.to_numeric(group.get(config.odor_off_column), errors="coerce")
-            if frames is not None and odor_on_values is not None and odor_off_values is not None:
-                first_valid = (
-                    frames.notna()
-                    & odor_on_values.notna()
-                    & odor_off_values.notna()
-                    & valid_during
-                )
-                if first_valid.any():
-                    odor_on_unique = odor_on_values.loc[first_valid].dropna().unique()
-                    odor_off_unique = odor_off_values.loc[first_valid].dropna().unique()
-                    if len(odor_on_unique) == 1 and len(odor_off_unique) == 1:
-                        odor_on_idx = int(odor_on_unique[0])
-                        odor_off_idx = int(odor_off_unique[0])
-                        window_end = min(odor_on_idx + config.fps, odor_off_idx + 1)
-                        window_mask = (
-                            frames.loc[first_valid].astype(float) >= odor_on_idx
-                        ) & (frames.loc[first_valid].astype(float) < window_end)
-                        if window_mask.any():
-                            window_values = r_values.loc[first_valid].astype(float).loc[window_mask]
-                            if not window_values.empty:
-                                self.first_second_sum += float(window_values.sum())
-                                self.first_second_count += len(window_values)
+            odor_on_series = group.get(config.odor_on_column)
+            odor_off_series = group.get(config.odor_off_column)
+            if not isinstance(odor_on_series, pd.Series) or not isinstance(odor_off_series, pd.Series):
+                return
+            odor_on_values = pd.to_numeric(odor_on_series, errors="coerce")
+            odor_off_values = pd.to_numeric(odor_off_series, errors="coerce")
+            first_valid = (
+                frames.notna()
+                & odor_on_values.notna()
+                & odor_off_values.notna()
+                & valid_during
+            )
+            if first_valid.any():
+                odor_on_unique = odor_on_values.loc[first_valid].dropna().unique()
+                odor_off_unique = odor_off_values.loc[first_valid].dropna().unique()
+                if len(odor_on_unique) == 1 and len(odor_off_unique) == 1:
+                    odor_on_idx = int(odor_on_unique[0])
+                    odor_off_idx = int(odor_off_unique[0])
+                    window_end = min(odor_on_idx + config.fps, odor_off_idx + 1)
+                    window_mask = (
+                        frames.loc[first_valid].astype(float) >= odor_on_idx
+                    ) & (frames.loc[first_valid].astype(float) < window_end)
+                    if window_mask.any():
+                        window_values = r_values.loc[first_valid].astype(float).loc[window_mask]
+                        if not window_values.empty:
+                            self.first_second_sum += float(window_values.sum())
+                            self.first_second_count += len(window_values)
 
     def _mean(self, total: float, count: int) -> float:
         return total / count if count else math.nan

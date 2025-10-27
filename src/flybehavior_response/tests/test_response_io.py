@@ -781,6 +781,50 @@ def test_load_geometry_dataset_includes_responder_features(tmp_path: Path) -> No
     assert {"r_before_mean", "rise_speed"}.issubset(set(dataset.feature_columns))
 
 
+def test_load_geometry_dataset_handles_missing_odor_columns(tmp_path: Path) -> None:
+    frames = pd.DataFrame(
+        {
+            "dataset": ["d"] * 3,
+            "fly": ["f"] * 3,
+            "fly_number": [1] * 3,
+            "trial_type": ["testing"] * 3,
+            "trial_label": ["t1"] * 3,
+            "frame_idx": [0, 1, 2],
+            "r_pct_robust_fly": [10.0, 15.0, 20.0],
+            "dx": [0.1, 0.0, -0.1],
+            "dy": [0.0, 0.1, 0.0],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "dataset": ["d"],
+            "fly": ["f"],
+            "fly_number": [1],
+            "trial_type": ["testing"],
+            "trial_label": ["t1"],
+            LABEL_COLUMN: [3],
+        }
+    )
+    frames_path = tmp_path / "geom.csv"
+    labels_path = tmp_path / "labels.csv"
+    frames.to_csv(frames_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    dataset = load_geometry_dataset(
+        frames_path,
+        labels_csv=labels_path,
+        granularity="trial",
+        normalization="none",
+    )
+
+    assert dataset.frame.shape[0] == 1
+    row = dataset.frame.iloc[0]
+    assert math.isnan(row["r_before_mean"])
+    assert math.isnan(row["rise_speed"])
+    assert LABEL_COLUMN in dataset.frame.columns
+    assert dataset.frame[LABEL_COLUMN].tolist() == [1]
+
+
 def test_load_geometry_dataset_builds_traces(tmp_path: Path) -> None:
     frames = pd.DataFrame(
         {
