@@ -114,6 +114,65 @@ pip install -e .
   preprocessing, and remain aligned with the per-trial aggregation and leakage
   guards described above.
 
+### Enriched per-frame geometry columns and responder training workflow
+
+The geometry enrichment step now emits additional, behaviourally grounded
+columns so downstream analyses no longer have to reconstruct stimulus epochs or
+basic response summaries manually. Each frame row in the enriched CSV includes:
+
+| Column | Definition | Why it matters |
+| --- | --- | --- |
+| ``is_before`` | Binary mask marking frames in the baseline (pre-odor) window. | Lets downstream code isolate baseline behaviour without re-deriving stimulus timing, which keeps reproducibility intact across labs. |
+| ``is_during`` | Binary mask marking frames during odor stimulation. | Ensures frame-level filters target the causal window that determines the responder label. |
+| ``is_after`` | Binary mask marking frames in the post-odor window. | Allows post-hoc inspection without contaminating training features that should focus on the odor epoch. |
+| ``r_before_mean`` | Mean proboscis extension (percentage of the fly’s robust range) computed across baseline frames. | Captures resting proboscis position; elevated values indicate partial extension even before odor onset. |
+| ``r_before_std`` | Standard deviation of proboscis extension during baseline. | Measures baseline “fidgeting.” High variance reveals spontaneous motion that can masquerade as responses. |
+| ``r_during_mean`` | Mean extension percentage while odor is on. | Quantifies the sustained response amplitude during stimulation. |
+| ``r_during_std`` | Standard deviation of extension during odor. | Summarises modulation depth; large swings reflect oscillatory probing, while small values indicate a rigid hold. |
+| ``r_during_minus_before_mean`` | ``r_during_mean - r_before_mean``. | Expresses the odor-triggered change in the fly’s own units. Positive values are odor-locked proboscis extensions; zero or negative values show absence or suppression. |
+| ``cos_theta_during_mean`` | Mean cosine of the proboscis direction vector (normalised ``dx``/``dy``) during odor. | Encodes whether the proboscis points forward, downward, or laterally—key for separating feeding-like probes from grooming. |
+| ``sin_theta_during_mean`` | Mean sine of the proboscis direction vector during odor. | Complements ``cos_theta_during_mean`` so the full direction is available in head-centred coordinates. |
+| ``direction_consistency`` | Length of the mean direction vector, computed as ``sqrt(cos_theta_during_mean**2 + sin_theta_during_mean**2)``. | Scores directional stability: values near 1.0 mean deliberate probes, while lower values flag chaotic motion unrelated to odor. |
+| ``frac_high_ext_during`` | Fraction of odor-period frames where ``r_pct_robust_fly`` exceeds 75 % of that fly’s robust range. Range: [0, 1]. | Captures how long the proboscis stayed highly extended; separates quick flicks from sustained acceptance-like behaviour. |
+| ``rise_speed`` | Initial slope of extension at odor onset: ``(mean extension in the first second of odor − r_before_mean) / 1 s`` expressed as percentage per second. | Measures how quickly the response ramps. Fast rises are characteristic of true stimulus-driven reactions. |
+
+#### Build per-trial feature tables for supervised learning
+
+These columns make the per-frame CSV directly usable for training binary
+classifiers that decide whether a fly responded to the odor in a given trial.
+Follow this procedure when preparing data for a multilayer perceptron (MLP) or
+another lightweight model:
+
+1. Obtain the human-annotated (or rule-derived) trial labels where
+   ``Responder = 1`` denotes a clear odor response and ``Responder = 0`` denotes
+   no response.
+2. For each trial, collapse the per-frame enrichment into a single feature
+   vector by extracting exactly these ten scalar summaries:
+   ``[r_before_mean, r_before_std, r_during_mean, r_during_std,
+   r_during_minus_before_mean, cos_theta_during_mean, sin_theta_during_mean,
+   direction_consistency, frac_high_ext_during, rise_speed]``.
+3. Assemble a training table with one row per trial and join the responder
+   labels as the target column.
+4. Train the MLP (or another binary classifier) on this 10-dimensional input to
+   predict the responder label.
+
+This feature set is intentionally compact, biologically interpretable, and
+normalised per fly (all extension metrics operate on ``r_pct_robust_fly`` which
+uses the fly’s own ``r_p01_fly``/``r_p99_fly`` range). It avoids dependence on
+camera geometry or trial identifiers, and it limits the inputs to pre-odor and
+during-odor information so the model answers the causal question: did the odor
+move the proboscis away from baseline?
+
+Avoid feeding raw per-frame series, file or fly identifiers, camera scaling
+fields (``W_est_fly``, ``H_est_fly``), or any post-odor aggregates into the
+first-round classifier. Those inputs inject nuisance variation, leak
+non-causal structure, and encourage overfitting on small datasets.
+
+Remember that the enriched CSV is an intermediate artefact designed for reuse
+across pipelines. Build the actual training matrix by selecting one row per
+trial and projecting down to the summary columns listed above before invoking
+``flybehavior-response train`` or a custom scikit-learn script.
+
 - **Regenerate the geometry cache without touching disk** by using ``--dry-run``
   together with ``--cache-parquet``; the CLI will validate inputs and report
   chunk-level statistics without writing artifacts. If the optional parquet
