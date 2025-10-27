@@ -52,6 +52,44 @@ pip install -e .
   )
   ```
 
+- **Stream raw geometry safely.** Large frame-level exports no longer require
+  loading the entire CSV into memory. Use the updated ``prepare`` subcommand to
+  stream in chunks, validate block continuity, and optionally persist a
+  compressed parquet cache for subsequent runs:
+
+  ```bash
+  flybehavior-response \
+      prepare \
+      --data-csv stats/geometry_frames.csv \
+      --labels-csv stats/labels.csv \
+      --geom-columns "fly,fly_number,trial_label,frame_idx,x,y" \
+      --geom-chunk-size 20000 \
+      --cache-parquet artifacts/geom_cache.parquet \
+      --aggregate-geometry \
+      --aggregate-stats mean,max \
+      --artifacts-dir artifacts
+  ```
+
+  The stream honours the original column order, emits per-chunk diagnostics, and
+  enforces uniqueness of ``fly``/``fly_number``/``trial_label`` keys across the
+  optional labels CSV. Aggregation is optional; when enabled it produces a
+  per-trial summary parquet (compressed with Zstandard) alongside the cache.
+  The same pipeline is available programmatically via
+  ``flybehavior_response.io.load_geom_frames`` and
+  ``flybehavior_response.io.aggregate_trials`` for notebook workflows.
+
+- **Regenerate the geometry cache without touching disk** by using ``--dry-run``
+  together with ``--cache-parquet``; the CLI will validate inputs and report
+  chunk-level statistics without writing artifacts. The parquet features rely on
+  ``pyarrow`` (bundled in ``requirements.txt``).
+
+- **Validate the new pipeline locally.** Run the focused pytest targets to
+  confirm schema handling, cache behaviour, and aggregation parity:
+
+  ```bash
+  PYTHONPATH=src pytest src/flybehavior_response/tests/test_response_io.py -k geom
+  ```
+
 - **Import the building blocks directly.** When you need finer control than the CLI offers, import the core helpers:
 
   ```python

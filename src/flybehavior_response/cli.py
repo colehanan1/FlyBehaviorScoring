@@ -18,6 +18,9 @@ from .io import (
     DEFAULT_TRACE_PREFIXES,
     LABEL_COLUMN,
     LABEL_INTENSITY_COLUMN,
+    MERGE_KEYS,
+    aggregate_trials,
+    load_geom_frames,
     load_and_merge,
     write_parquet,
 )
@@ -203,6 +206,13 @@ def _parse_series_prefixes(raw: str | None) -> List[str]:
     return prefixes
 
 
+def _parse_column_list(raw: str | None) -> List[str] | None:
+    if raw is None:
+        return None
+    columns = [item.strip() for item in raw.split(",") if item.strip()]
+    return columns or None
+
+
 def _select_trace_prefixes(
     args: argparse.Namespace, *, fallback: Sequence[str] | None = None
 ) -> List[str] | None:
@@ -284,11 +294,54 @@ def _configure_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser(
+    prepare_parser = subparsers.add_parser(
         "prepare",
         parents=[common_parser],
         help="Validate inputs and create merged parquet",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    prepare_parser.add_argument(
+        "--cache-parquet",
+        type=Path,
+        help="Optional parquet cache destination for streamed geometry data",
+    )
+    prepare_parser.add_argument(
+        "--use-cache",
+        action="store_true",
+        help="Load geometry frames from --cache-parquet if it already exists",
+    )
+    prepare_parser.add_argument(
+        "--geom-chunk-size",
+        type=int,
+        default=50000,
+        help="Chunk size to use when streaming geometry CSV inputs",
+    )
+    prepare_parser.add_argument(
+        "--geom-columns",
+        type=str,
+        help="Comma-separated list of geometry columns to keep while streaming",
+    )
+    prepare_parser.add_argument(
+        "--frame-column",
+        type=str,
+        default="frame_idx",
+        help="Frame index column used to validate chunk contiguity",
+    )
+    prepare_parser.add_argument(
+        "--aggregate-geometry",
+        action="store_true",
+        help="Aggregate streamed geometry into per-trial summaries",
+    )
+    prepare_parser.add_argument(
+        "--aggregate-stats",
+        type=str,
+        default="mean,min,max",
+        help="Comma-separated aggregation statistics for numeric geometry columns",
+    )
+    prepare_parser.add_argument(
+        "--drop-missing-labels",
+        action="store_true",
+        help="Drop frames without matching labels instead of raising an error",
     )
     train_parser = subparsers.add_parser(
         "train",
@@ -359,6 +412,68 @@ def _handle_prepare(args: argparse.Namespace) -> None:
     if not args.data_csv or not args.labels_csv:
         raise ValueError("--data-csv and --labels-csv are required for prepare")
     logger = get_logger("prepare", verbose=args.verbose)
+    geometry_mode = bool(
+        args.cache_parquet
+        or args.use_cache
+        or args.geom_columns
+        or args.aggregate_geometry
+    )
+
+    if geometry_mode:
+        columns = _parse_column_list(args.geom_columns)
+        cache_path = args.cache_parquet
+        use_cache_flag = bool(args.use_cache and cache_path and cache_path.exists())
+        if args.dry_run and cache_path and not use_cache_flag:
+            logger.info(
+                "Dry run enabled; parquet cache will not be written to %s.",
+                cache_path,
+            )
+            cache_path = None
+        stats_tokens = [item.strip() for item in (args.aggregate_stats or "").split(",") if item.strip()]
+        if args.aggregate_geometry and not stats_tokens:
+            stats_tokens = ["mean", "min", "max"]
+
+        stream = load_geom_frames(
+            args.data_csv,
+            chunk_size=args.geom_chunk_size,
+            columns=columns,
+            cache_parquet=cache_path,
+            use_cache=use_cache_flag,
+            labels_csv=args.labels_csv,
+            frame_column=args.frame_column,
+            drop_missing_labels=args.drop_missing_labels,
+            logger=logger,
+        )
+
+        if args.aggregate_geometry:
+            aggregates = aggregate_trials(
+                stream,
+                key_columns=MERGE_KEYS,
+                frame_column=args.frame_column,
+                stats=stats_tokens,
+            )
+            logger.info(
+                "Aggregated %d trials from streamed geometry frames.",
+                len(aggregates),
+            )
+            if args.dry_run:
+                logger.info("Dry run enabled; not writing aggregated parquet artifact.")
+                return
+            args.artifacts_dir.mkdir(parents=True, exist_ok=True)
+            out_path = args.artifacts_dir / "geometry_aggregates.parquet"
+            aggregates.to_parquet(out_path, compression="zstd", index=False)
+            logger.info("Wrote aggregated geometry parquet to %s", out_path)
+            return
+
+        # Exhaust the iterator to materialise cache/statistics without aggregation.
+        for _ in stream:
+            pass
+        if args.dry_run:
+            logger.info("Dry run complete; no artifacts were written.")
+        elif cache_path:
+            logger.info("Geometry parquet cache available at %s", cache_path)
+        return
+
     prefixes = _select_trace_prefixes(args)
     dataset = load_and_merge(
         args.data_csv,

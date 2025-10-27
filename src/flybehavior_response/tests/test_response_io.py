@@ -9,6 +9,8 @@ from flybehavior_response.io import (
     LABEL_COLUMN,
     LABEL_INTENSITY_COLUMN,
     DataValidationError,
+    aggregate_trials,
+    load_geom_frames,
     RAW_TRACE_PREFIXES,
     load_and_merge,
 )
@@ -241,3 +243,112 @@ def test_load_and_merge_dir_val_trace_only(tmp_path: Path) -> None:
     assert dataset.trace_prefixes == ["dir_val_"]
     assert dataset.trace_columns == ["dir_val_0", "dir_val_1"]
     assert dataset.feature_columns == []
+
+
+@pytest.fixture
+def geometry_csvs(tmp_path: Path) -> tuple[Path, Path]:
+    frames = pd.DataFrame(
+        {
+            "fly": [" a", "a", "a ", "b", "b", "b"],
+            "fly_number": ["1", "1", "1", "2", "2", "2"],
+            "trial_label": ["t1", "t1", "t1", "t2", "t2", "t2"],
+            "frame_idx": [0, 1, 2, 0, 1, 2],
+            "x": [0.1, 0.2, 0.3, 0.0, 0.1, 0.2],
+            "y": [0.0, 0.5, 0.6, 0.2, 0.2, 0.3],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "fly": ["a", "b"],
+            "fly_number": [1, 2],
+            "trial_label": ["t1", "t2"],
+            LABEL_COLUMN: [0, 5],
+        }
+    )
+    frames_path = tmp_path / "frames.csv"
+    labels_path = tmp_path / "labels.csv"
+    frames.to_csv(frames_path, index=False)
+    labels.to_csv(labels_path, index=False)
+    return frames_path, labels_path
+
+
+def test_load_geom_frames_streams_and_joins(geometry_csvs: tuple[Path, Path]) -> None:
+    frames_path, labels_path = geometry_csvs
+    chunks = list(
+        load_geom_frames(
+            frames_path,
+            chunk_size=2,
+            columns=["fly", "fly_number", "trial_label", "frame_idx", "x", "y"],
+            labels_csv=labels_path,
+        )
+    )
+    assert len(chunks) == 3
+    first = chunks[0]
+    assert first.columns.tolist() == [
+        "fly",
+        "fly_number",
+        "trial_label",
+        "frame_idx",
+        "x",
+        "y",
+        LABEL_COLUMN,
+    ]
+    assert first["fly"].tolist() == ["a", "a"]
+    assert first[LABEL_COLUMN].tolist() == [0, 0]
+    assert chunks[1]["frame_idx"].tolist() == [2, 0]
+
+
+def test_load_geom_frames_cache_roundtrip(geometry_csvs: tuple[Path, Path], tmp_path: Path) -> None:
+    frames_path, labels_path = geometry_csvs
+    cache_path = tmp_path / "cache.parquet"
+
+    streamed = list(
+        load_geom_frames(
+            frames_path,
+            chunk_size=3,
+            cache_parquet=cache_path,
+            labels_csv=labels_path,
+        )
+    )
+    assert cache_path.exists()
+    cached = list(
+        load_geom_frames(
+            frames_path,
+            chunk_size=3,
+            cache_parquet=cache_path,
+            use_cache=True,
+            labels_csv=labels_path,
+        )
+    )
+    assert [chunk.equals(streamed[idx]) for idx, chunk in enumerate(cached)]
+
+
+def test_load_geom_frames_duplicate_labels(geometry_csvs: tuple[Path, Path], tmp_path: Path) -> None:
+    frames_path, labels_path = geometry_csvs
+    dup_labels = pd.read_csv(labels_path)
+    dup_labels = pd.concat([dup_labels, dup_labels.iloc[[0]]], ignore_index=True)
+    dup_path = tmp_path / "dup.csv"
+    dup_labels.to_csv(dup_path, index=False)
+    with pytest.raises(DataValidationError):
+        list(
+            load_geom_frames(
+                frames_path,
+                chunk_size=2,
+                labels_csv=dup_path,
+            )
+        )
+
+
+def test_aggregate_trials_matches_chunked_means(geometry_csvs: tuple[Path, Path]) -> None:
+    frames_path, labels_path = geometry_csvs
+    stream = load_geom_frames(
+        frames_path,
+        chunk_size=2,
+        columns=["fly", "fly_number", "trial_label", "frame_idx", "x", "y"],
+        labels_csv=labels_path,
+    )
+    aggregated = aggregate_trials(stream, stats=["mean", "max"])
+    assert set(aggregated["trial_label"]) == {"t1", "t2"}
+    t1_row = aggregated.loc[aggregated["trial_label"] == "t1"].iloc[0]
+    assert pytest.approx(t1_row["x_mean"], rel=1e-6) == 0.2
+    assert pytest.approx(t1_row["y_max"], rel=1e-6) == 0.6
