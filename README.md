@@ -136,6 +136,8 @@ basic response summaries manually. Each frame row in the enriched CSV includes:
 | ``frac_high_ext_during`` | Fraction of odor-period frames where ``r_pct_robust_fly`` exceeds 75 % of that fly’s robust range. Range: [0, 1]. | Captures how long the proboscis stayed highly extended; separates quick flicks from sustained acceptance-like behaviour. |
 | ``rise_speed`` | Initial slope of extension at odor onset: ``(mean extension in the first second of odor − r_before_mean) / 1 s`` expressed as percentage per second. | Measures how quickly the response ramps. Fast rises are characteristic of true stimulus-driven reactions. |
 
+The geometry loader populates these columns automatically whenever the labels table supplies ``odor_on_idx`` and ``odor_off_idx`` values alongside the raw proboscis coordinates. The enrichment runs during ``load_geom_frames`` and all CLI entry points that consume geometry inputs, so downstream scripts and notebooks receive consistent epoch flags and responder summaries without additional preprocessing.
+
 #### Build per-trial feature tables for supervised learning
 
 These columns make the per-frame CSV directly usable for training binary

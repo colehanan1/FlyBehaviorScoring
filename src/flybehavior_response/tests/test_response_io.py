@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import math
 import pandas as pd
 import pytest
 
@@ -385,6 +386,51 @@ def test_load_geom_frames_streams_and_joins(geometry_csvs: tuple[Path, Path]) ->
     assert chunks[1]["frame_idx"].tolist() == [2, 0]
 
 
+def test_load_geom_frames_enriches_epochs(tmp_path: Path) -> None:
+    frames = pd.DataFrame(
+        {
+            "dataset": ["d"] * 5,
+            "fly": ["f"] * 5,
+            "fly_number": [1] * 5,
+            "trial_type": ["testing"] * 5,
+            "trial_label": ["t1"] * 5,
+            "frame_idx": [0, 1, 2, 3, 4],
+            "eye_x": [0.0] * 5,
+            "eye_y": [0.0] * 5,
+            "prob_x": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "prob_y": [0.0] * 5,
+            "r_pct_robust_fly": [10.0, 20.0, 80.0, 90.0, 30.0],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "dataset": ["d"],
+            "fly": ["f"],
+            "fly_number": [1],
+            "trial_type": ["testing"],
+            "trial_label": ["t1"],
+            LABEL_COLUMN: [5],
+            "odor_on_idx": [1],
+            "odor_off_idx": [3],
+        }
+    )
+    frames_path = tmp_path / "geom_frames.csv"
+    labels_path = tmp_path / "labels.csv"
+    frames.to_csv(frames_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    stream = load_geom_frames(
+        frames_path,
+        chunk_size=10,
+        labels_csv=labels_path,
+    )
+    chunk = next(iter(stream))
+
+    assert list(chunk["is_before"]) == [1, 0, 0, 0, 0]
+    assert list(chunk["is_during"]) == [0, 1, 1, 1, 0]
+    assert list(chunk["is_after"]) == [0, 0, 0, 0, 1]
+
+
 def test_load_geom_frames_drops_unlabeled_rows(tmp_path: Path) -> None:
     frames = pd.DataFrame(
         {
@@ -599,6 +645,60 @@ def test_load_geometry_dataset_trial_granularity(geometry_csvs: tuple[Path, Path
     assert "x_mean" in dataset.frame.columns
     assert dataset.frame["x_mean"].dtype == "float32"
     assert dataset.feature_columns and "x_mean" in dataset.feature_columns
+
+
+def test_load_geometry_dataset_includes_responder_features(tmp_path: Path) -> None:
+    frames = pd.DataFrame(
+        {
+            "dataset": ["d"] * 5,
+            "fly": ["f"] * 5,
+            "fly_number": [1] * 5,
+            "trial_type": ["testing"] * 5,
+            "trial_label": ["t1"] * 5,
+            "frame_idx": [0, 1, 2, 3, 4],
+            "eye_x": [0.0] * 5,
+            "eye_y": [0.0] * 5,
+            "prob_x": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "prob_y": [0.0] * 5,
+            "r_pct_robust_fly": [10.0, 20.0, 80.0, 90.0, 30.0],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "dataset": ["d"],
+            "fly": ["f"],
+            "fly_number": [1],
+            "trial_type": ["testing"],
+            "trial_label": ["t1"],
+            LABEL_COLUMN: [5],
+            "odor_on_idx": [1],
+            "odor_off_idx": [3],
+        }
+    )
+    frames_path = tmp_path / "geom.csv"
+    labels_path = tmp_path / "labels.csv"
+    frames.to_csv(frames_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    dataset = load_geometry_dataset(
+        frames_path,
+        labels_csv=labels_path,
+        granularity="trial",
+        normalization="none",
+    )
+
+    assert dataset.frame.shape[0] == 1
+    row = dataset.frame.iloc[0]
+    assert pytest.approx(row["r_before_mean"], rel=1e-6) == 10.0
+    assert math.isnan(row["r_before_std"])
+    assert pytest.approx(row["r_during_mean"], rel=1e-6) == pytest.approx(190.0 / 3.0, rel=1e-6)
+    assert pytest.approx(row["r_during_minus_before_mean"], rel=1e-6) == pytest.approx(190.0 / 3.0 - 10.0, rel=1e-6)
+    assert pytest.approx(row["cos_theta_during_mean"], rel=1e-6) == 1.0
+    assert pytest.approx(row["sin_theta_during_mean"], rel=1e-6) == 0.0
+    assert pytest.approx(row["direction_consistency"], rel=1e-6) == 1.0
+    assert pytest.approx(row["frac_high_ext_during"], rel=1e-6) == pytest.approx(2.0 / 3.0, rel=1e-6)
+    assert pytest.approx(row["rise_speed"], rel=1e-6) == pytest.approx(190.0 / 3.0 - 10.0, rel=1e-6)
+    assert {"r_before_mean", "rise_speed"}.issubset(set(dataset.feature_columns))
 
 
 def test_load_geometry_dataset_builds_traces(tmp_path: Path) -> None:

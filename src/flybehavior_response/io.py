@@ -12,6 +12,7 @@ from typing import Iterable, Iterator, List, Mapping, MutableMapping, Sequence
 
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
+import numpy as np
 
 from .io_wide import find_series_columns
 from .logging_utils import get_logger
@@ -29,6 +30,21 @@ RAW_GEOM_TRACE_CANDIDATES = {
     "prob_x": "prob_x_f",
     "prob_y": "prob_y_f",
 }
+
+DEFAULT_FPS = 40
+ODOR_ON_COLUMN = "odor_on_idx"
+ODOR_OFF_COLUMN = "odor_off_idx"
+R_PCT_COLUMN = "r_pct_robust_fly"
+DX_COLUMN = "dx"
+DY_COLUMN = "dy"
+EYE_X_COLUMN = "eye_x"
+EYE_Y_COLUMN = "eye_y"
+PROB_X_COLUMN = "prob_x"
+PROB_Y_COLUMN = "prob_y"
+IS_BEFORE_COLUMN = "is_before"
+IS_DURING_COLUMN = "is_during"
+IS_AFTER_COLUMN = "is_after"
+HIGH_EXTENSION_THRESHOLD = 75.0
 FEATURE_COLUMNS = {
     "AUC-Before",
     "AUC-During",
@@ -68,6 +84,191 @@ class GeometryFrameStream:
     def __next__(self) -> pd.DataFrame:
         return next(self._iterator)
 
+
+@dataclass(slots=True)
+class BehavioralFeatureConfig:
+    """Configuration describing responder feature enrichment requirements."""
+
+    r_pct_column: str = R_PCT_COLUMN
+    dx_column: str | None = DX_COLUMN
+    dy_column: str | None = DY_COLUMN
+    eye_x_column: str = EYE_X_COLUMN
+    eye_y_column: str = EYE_Y_COLUMN
+    prob_x_column: str = PROB_X_COLUMN
+    prob_y_column: str = PROB_Y_COLUMN
+    odor_on_column: str = ODOR_ON_COLUMN
+    odor_off_column: str = ODOR_OFF_COLUMN
+    is_before_column: str = IS_BEFORE_COLUMN
+    is_during_column: str = IS_DURING_COLUMN
+    is_after_column: str = IS_AFTER_COLUMN
+    fps: int = DEFAULT_FPS
+    high_extension_threshold: float = HIGH_EXTENSION_THRESHOLD
+
+
+@dataclass(slots=True)
+class TrialBehaviorAccumulator:
+    """Running statistics for responder-oriented aggregates."""
+
+    baseline_count: int = 0
+    baseline_sum: float = 0.0
+    baseline_sum_sq: float = 0.0
+    during_count: int = 0
+    during_sum: float = 0.0
+    during_sum_sq: float = 0.0
+    high_extension_count: int = 0
+    direction_cos_sum: float = 0.0
+    direction_sin_sum: float = 0.0
+    direction_count: int = 0
+    first_second_sum: float = 0.0
+    first_second_count: int = 0
+
+    def update(
+        self,
+        group: pd.DataFrame,
+        *,
+        config: BehavioralFeatureConfig,
+        frame_column: str | None,
+    ) -> None:
+        if config.r_pct_column not in group.columns:
+            return
+        if config.is_before_column not in group.columns or config.is_during_column not in group.columns:
+            return
+
+        r_values = pd.to_numeric(group[config.r_pct_column], errors="coerce")
+        before_mask = group[config.is_before_column].fillna(0).astype(bool)
+        during_mask = group[config.is_during_column].fillna(0).astype(bool)
+
+        valid_before = before_mask & r_values.notna()
+        valid_during = during_mask & r_values.notna()
+
+        if valid_before.any():
+            before_vals = r_values.loc[valid_before].astype(float)
+            self.baseline_count += len(before_vals)
+            self.baseline_sum += float(before_vals.sum())
+            self.baseline_sum_sq += float((before_vals**2).sum())
+
+        if valid_during.any():
+            during_vals = r_values.loc[valid_during].astype(float)
+            self.during_count += len(during_vals)
+            self.during_sum += float(during_vals.sum())
+            self.during_sum_sq += float((during_vals**2).sum())
+            threshold = config.high_extension_threshold
+            if threshold is not None:
+                self.high_extension_count += int((during_vals >= threshold).sum())
+
+        # Direction metrics
+        dx_series: pd.Series | None = None
+        dy_series: pd.Series | None = None
+        if config.dx_column and config.dx_column in group.columns and config.dy_column and config.dy_column in group.columns:
+            dx_series = pd.to_numeric(group[config.dx_column], errors="coerce")
+            dy_series = pd.to_numeric(group[config.dy_column], errors="coerce")
+        elif (
+            config.eye_x_column in group.columns
+            and config.eye_y_column in group.columns
+            and config.prob_x_column in group.columns
+            and config.prob_y_column in group.columns
+        ):
+            dx_series = pd.to_numeric(group[config.prob_x_column], errors="coerce") - pd.to_numeric(
+                group[config.eye_x_column], errors="coerce"
+            )
+            dy_series = pd.to_numeric(group[config.prob_y_column], errors="coerce") - pd.to_numeric(
+                group[config.eye_y_column], errors="coerce"
+            )
+
+        if dx_series is not None and dy_series is not None:
+            vector_valid = dx_series.notna() & dy_series.notna() & valid_during
+            if vector_valid.any():
+                dx_vals = dx_series.loc[vector_valid].astype(float)
+                dy_vals = dy_series.loc[vector_valid].astype(float)
+                magnitude = np.sqrt(dx_vals**2 + dy_vals**2)
+                nonzero = magnitude > 0
+                if nonzero.any():
+                    dx_vals = dx_vals.loc[nonzero]
+                    dy_vals = dy_vals.loc[nonzero]
+                    magnitude = magnitude.loc[nonzero]
+                    cos_vals = dx_vals / magnitude
+                    sin_vals = dy_vals / magnitude
+                    self.direction_cos_sum += float(cos_vals.sum())
+                    self.direction_sin_sum += float(sin_vals.sum())
+                    self.direction_count += len(cos_vals)
+
+        if frame_column and frame_column in group.columns and valid_during.any():
+            frames = pd.to_numeric(group[frame_column], errors="coerce")
+            odor_on_values = pd.to_numeric(group.get(config.odor_on_column), errors="coerce")
+            odor_off_values = pd.to_numeric(group.get(config.odor_off_column), errors="coerce")
+            if frames is not None and odor_on_values is not None and odor_off_values is not None:
+                first_valid = (
+                    frames.notna()
+                    & odor_on_values.notna()
+                    & odor_off_values.notna()
+                    & valid_during
+                )
+                if first_valid.any():
+                    odor_on_unique = odor_on_values.loc[first_valid].dropna().unique()
+                    odor_off_unique = odor_off_values.loc[first_valid].dropna().unique()
+                    if len(odor_on_unique) == 1 and len(odor_off_unique) == 1:
+                        odor_on_idx = int(odor_on_unique[0])
+                        odor_off_idx = int(odor_off_unique[0])
+                        window_end = min(odor_on_idx + config.fps, odor_off_idx + 1)
+                        window_mask = (
+                            frames.loc[first_valid].astype(float) >= odor_on_idx
+                        ) & (frames.loc[first_valid].astype(float) < window_end)
+                        if window_mask.any():
+                            window_values = r_values.loc[first_valid].astype(float).loc[window_mask]
+                            if not window_values.empty:
+                                self.first_second_sum += float(window_values.sum())
+                                self.first_second_count += len(window_values)
+
+    def _mean(self, total: float, count: int) -> float:
+        return total / count if count else math.nan
+
+    def baseline_mean(self) -> float:
+        return self._mean(self.baseline_sum, self.baseline_count)
+
+    def baseline_std(self) -> float:
+        if self.baseline_count > 1:
+            mean = self.baseline_sum / self.baseline_count
+            variance = max(self.baseline_sum_sq / self.baseline_count - mean**2, 0.0)
+            return math.sqrt(variance * self.baseline_count / (self.baseline_count - 1))
+        return math.nan
+
+    def during_mean(self) -> float:
+        return self._mean(self.during_sum, self.during_count)
+
+    def during_std(self) -> float:
+        if self.during_count > 1:
+            mean = self.during_sum / self.during_count
+            variance = max(self.during_sum_sq / self.during_count - mean**2, 0.0)
+            return math.sqrt(variance * self.during_count / (self.during_count - 1))
+        return math.nan
+
+    def direction_means(self) -> tuple[float, float]:
+        if self.direction_count == 0:
+            return math.nan, math.nan
+        cos_mean = self.direction_cos_sum / self.direction_count
+        sin_mean = self.direction_sin_sum / self.direction_count
+        return cos_mean, sin_mean
+
+    def direction_consistency(self) -> float:
+        cos_mean, sin_mean = self.direction_means()
+        if math.isnan(cos_mean) or math.isnan(sin_mean):
+            return math.nan
+        return math.sqrt(cos_mean**2 + sin_mean**2)
+
+    def frac_high_extension(self) -> float:
+        if self.during_count == 0:
+            return math.nan
+        return self.high_extension_count / self.during_count
+
+    def first_second_mean(self) -> float:
+        return self._mean(self.first_second_sum, self.first_second_count)
+
+    def rise_speed(self) -> float:
+        baseline_mean = self.baseline_mean()
+        first_second = self.first_second_mean()
+        if math.isnan(baseline_mean) or math.isnan(first_second):
+            return math.nan
+        return first_second - baseline_mean
 
 def _downcast_numeric(frame: pd.DataFrame, *, float_dtype: str = "float32") -> pd.DataFrame:
     """Return a copy with floating-point columns safely downcast."""
@@ -320,6 +521,47 @@ def _open_parquet_writer(
     return writer, pa
 
 
+def _enrich_epoch_columns(
+    chunk: pd.DataFrame,
+    *,
+    frame_column: str | None,
+    config: BehavioralFeatureConfig,
+) -> pd.DataFrame:
+    """Add baseline/during/post epoch flags when odor indices are available."""
+
+    if frame_column is None or frame_column not in chunk.columns:
+        return chunk
+    if config.odor_on_column not in chunk.columns or config.odor_off_column not in chunk.columns:
+        return chunk
+
+    frames = pd.to_numeric(chunk[frame_column], errors="coerce")
+    odor_on = pd.to_numeric(chunk[config.odor_on_column], errors="coerce")
+    odor_off = pd.to_numeric(chunk[config.odor_off_column], errors="coerce")
+    valid = frames.notna() & odor_on.notna() & odor_off.notna()
+    if not valid.any():
+        chunk[config.is_before_column] = 0
+        chunk[config.is_during_column] = 0
+        chunk[config.is_after_column] = 0
+        return chunk
+
+    is_before = pd.Series(0, index=chunk.index, dtype="uint8")
+    is_during = pd.Series(0, index=chunk.index, dtype="uint8")
+    is_after = pd.Series(0, index=chunk.index, dtype="uint8")
+
+    before_mask = valid & (frames < odor_on)
+    during_mask = valid & (frames >= odor_on) & (frames <= odor_off)
+    after_mask = valid & (frames > odor_off)
+
+    is_before.loc[before_mask] = 1
+    is_during.loc[during_mask] = 1
+    is_after.loc[after_mask] = 1
+
+    chunk[config.is_before_column] = is_before
+    chunk[config.is_during_column] = is_during
+    chunk[config.is_after_column] = is_after
+    return chunk
+
+
 def load_geom_frames(
     source: Path,
     *,
@@ -335,6 +577,7 @@ def load_geom_frames(
     join_keys: Sequence[str] = MERGE_KEYS,
     frame_column: str = "frame_idx",
     drop_missing_labels: bool = True,
+    behavioral_config: BehavioralFeatureConfig | None = None,
 ) -> Iterator[pd.DataFrame]:
     """Stream geometry frames with optional parquet caching and label joins.
 
@@ -386,6 +629,7 @@ def load_geom_frames(
         raise ValueError("chunk_size must be a positive integer")
     source = Path(source)
     log = logger or get_logger(logger_name or __name__)
+    config = behavioral_config or BehavioralFeatureConfig()
 
     if use_cache and not cache_parquet:
         raise ValueError("use_cache=True requires --cache-parquet to be specified")
@@ -619,6 +863,12 @@ def load_geom_frames(
                     chunk[name] = pd.NA
                 chunk = chunk.loc[:, final_order]
 
+                chunk = _enrich_epoch_columns(
+                    chunk,
+                    frame_column=resolved_frame_column if frame_column_present else None,
+                    config=config,
+                )
+
                 stats = _compute_chunk_stats(
                     chunk,
                     join_keys,
@@ -682,6 +932,7 @@ class TrialAggregateBuilder:
         stats: Sequence[str],
         exclude_columns: Sequence[str] | None,
         trace_candidates: Mapping[str, str] | None = None,
+        behavioral_config: "BehavioralFeatureConfig | None" = None,
     ) -> None:
         self.key_columns = list(key_columns)
         self.frame_column = frame_column
@@ -704,6 +955,8 @@ class TrialAggregateBuilder:
         self.trace_next_frame: dict[tuple[object, ...], int] = {}
         self.trace_initialised = not bool(self.trace_candidates)
         self.sorted_keys: List[tuple[object, ...]] | None = None
+        self.behavioral_config = behavioral_config
+        self.behavioral_data: dict[tuple[object, ...], TrialBehaviorAccumulator] = {}
 
     @property
     def traces_enabled(self) -> bool:
@@ -873,6 +1126,15 @@ class TrialAggregateBuilder:
 
             if self.trace_mapping:
                 self._accumulate_trace(tuple_key, group)
+            if self.behavioral_config is not None:
+                accumulator = self.behavioral_data.setdefault(
+                    tuple_key, TrialBehaviorAccumulator()
+                )
+                accumulator.update(
+                    group,
+                    config=self.behavioral_config,
+                    frame_column=self.frame_column,
+                )
 
     def build_dataframe(self) -> pd.DataFrame:
         if self.resolved_values is None:
@@ -917,6 +1179,26 @@ class TrialAggregateBuilder:
                         row[f"{column}_first"] = stats_entry.get("first")
                     elif stat == "last":
                         row[f"{column}_last"] = stats_entry.get("last")
+            if self.behavioral_config is not None:
+                metrics = self.behavioral_data.get(key_tuple)
+                if metrics is not None:
+                    before_mean = metrics.baseline_mean()
+                    during_mean = metrics.during_mean()
+                    cos_mean, sin_mean = metrics.direction_means()
+                    row["r_before_mean"] = before_mean
+                    row["r_before_std"] = metrics.baseline_std()
+                    row["r_during_mean"] = during_mean
+                    row["r_during_std"] = metrics.during_std()
+                    row["r_during_minus_before_mean"] = (
+                        during_mean - before_mean
+                        if not math.isnan(during_mean) and not math.isnan(before_mean)
+                        else math.nan
+                    )
+                    row["cos_theta_during_mean"] = cos_mean
+                    row["sin_theta_during_mean"] = sin_mean
+                    row["direction_consistency"] = metrics.direction_consistency()
+                    row["frac_high_ext_during"] = metrics.frac_high_extension()
+                    row["rise_speed"] = metrics.rise_speed()
             rows.append(row)
 
         if not rows:
@@ -926,6 +1208,21 @@ class TrialAggregateBuilder:
             for column in self.resolved_values or []:
                 for stat in self.stats_order:
                     base_columns.append(f"{column}_{stat}")
+            if self.behavioral_config is not None:
+                base_columns.extend(
+                    [
+                        "r_before_mean",
+                        "r_before_std",
+                        "r_during_mean",
+                        "r_during_std",
+                        "r_during_minus_before_mean",
+                        "cos_theta_during_mean",
+                        "sin_theta_during_mean",
+                        "direction_consistency",
+                        "frac_high_ext_during",
+                        "rise_speed",
+                    ]
+                )
             self.sorted_keys = []
             return pd.DataFrame(columns=base_columns)
 
@@ -994,6 +1291,7 @@ def aggregate_trials(
     value_columns: Sequence[str] | None = None,
     stats: Sequence[str] = ("mean", "min", "max"),
     exclude_columns: Sequence[str] | None = None,
+    behavioral_config: BehavioralFeatureConfig | None = None,
 ) -> pd.DataFrame:
     """Aggregate streamed geometry frames into trial-level summaries."""
 
@@ -1003,6 +1301,7 @@ def aggregate_trials(
         value_columns=value_columns,
         stats=stats,
         exclude_columns=exclude_columns,
+        behavioral_config=behavioral_config,
     )
     for chunk in frames:
         builder.process_chunk(chunk)
@@ -1314,6 +1613,7 @@ def load_geometry_dataset(
 
     stat_sequence = list(stats or ("mean", "min", "max"))
     logger = get_logger(logger_name)
+    behavioral_config = BehavioralFeatureConfig()
 
     label_table: pd.DataFrame | None = None
     intensity: pd.Series | None = None
@@ -1342,6 +1642,7 @@ def load_geometry_dataset(
         join_keys=MERGE_KEYS,
         frame_column=frame_column,
         drop_missing_labels=drop_missing_labels if labels_csv is not None else False,
+        behavioral_config=behavioral_config,
     )
 
     resolved_stream_frame_column = getattr(stream, "frame_column", frame_column)
@@ -1352,8 +1653,17 @@ def load_geometry_dataset(
             frame_column=resolved_stream_frame_column,
             value_columns=None,
             stats=stat_sequence,
-            exclude_columns=[LABEL_COLUMN, LABEL_INTENSITY_COLUMN],
+            exclude_columns=[
+                LABEL_COLUMN,
+                LABEL_INTENSITY_COLUMN,
+                behavioral_config.is_before_column,
+                behavioral_config.is_during_column,
+                behavioral_config.is_after_column,
+                behavioral_config.odor_on_column,
+                behavioral_config.odor_off_column,
+            ],
             trace_candidates=RAW_GEOM_TRACE_CANDIDATES,
+            behavioral_config=behavioral_config,
         )
         for chunk in stream:
             current_frame_column = getattr(stream, "frame_column", resolved_stream_frame_column)
