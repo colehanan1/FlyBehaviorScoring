@@ -52,6 +52,40 @@ pip install -e .
   )
   ```
 
+### Command interface overview
+
+- **Choose between legacy argparse and the new Typer shell.** Existing automation that calls `flybehavior-response train|eval|predict|prepare|viz` continues to work unchanged. A modern Typer interface now ships alongside it; invoke it by prefixing commands with `typer` (for example `flybehavior-response typer train ...`). Both entry points share the same validation logic and write identical artifacts so teams can upgrade incrementally.
+- **Typer commands at a glance.**
+
+  | Command | Purpose |
+  | --- | --- |
+  | `flybehavior-response typer prepare` | Stream geometry frames with caching, aggregation, and schema enforcement. |
+  | `flybehavior-response typer train` | Train models from merged CSVs or per-frame geometry while respecting GroupKFold constraints. |
+  | `flybehavior-response typer eval` | Evaluate saved models against CSV or streamed geometry inputs. |
+  | `flybehavior-response typer predict` | Score new trials from CSV or geometry streams with optional filters. |
+  | `flybehavior-response typer viz` | Generate plots for the latest (or specified) training run. |
+
+- **Geometry quickstart with caching and GroupKFold.** The example below streams frame-level geometry, enforces a JSON schema, materialises a parquet cache, and documents the group-aware split:
+
+  ```bash
+  flybehavior-response typer train \
+    --geom-frames-csv data/geometry_frames.csv \
+    --labels-csv data/labels.csv \
+    --schema-json configs/geom_schema.json \
+    --chunksize 25000 \
+    --cache-parquet artifacts/cache/geometry.parquet \
+    --granularity trial \
+    --normalization zscore \
+    --geom-stats mean,min,max \
+    --group-column fly \
+    --model logreg \
+    --artifacts-dir artifacts/runs/latest
+  ```
+
+  New aliases such as `--geom-frames-csv`, `--schema-json`, `--chunksize`, `--cache-parquet`, `--granularity`, and `--normalization` mirror their legacy counterparts (`--geometry-frames`, `--geom-schema-json`, `--geom-chunk-size`, etc.), so existing scripts remain valid while the Typer interface offers descriptive help text. The trained run still records the GroupKFold assignments in `split_manifest.csv`; pass `--group-override none` when group-aware splits are unnecessary.
+
+- **Test the surface area.** Run `pytest src/flybehavior_response/tests/test_response_cli.py -k typer` to confirm the Typer train command accepts the new geometry ingestion flags. The broader CLI regression suite (`pytest src/flybehavior_response/tests/test_response_cli.py`) remains compatible with legacy entry points.
+
 - **Stream raw geometry safely.** Large frame-level exports no longer require
   loading the entire CSV into memory. Use the updated ``prepare`` subcommand to
   stream in chunks, validate block continuity, and optionally persist a

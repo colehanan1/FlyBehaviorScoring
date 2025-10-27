@@ -41,6 +41,7 @@ DEFAULT_PLOTS_DIR = DEFAULT_ARTIFACTS_DIR / "plots"
 
 
 prepare_raw_app = typer.Typer(add_completion=False)
+response_app = typer.Typer(add_completion=False)
 
 
 @prepare_raw_app.callback(invoke_without_command=True, no_args_is_help=True)
@@ -241,29 +242,55 @@ def _parse_stats_list(raw: str | None) -> List[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _load_schema_mapping(path: Path | None) -> dict[str, str] | None:
+    if path is None:
+        return None
+    resolved = Path(path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"Schema JSON not found: {resolved}")
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Schema JSON must contain an object mapping column names to dtypes")
+    mapping: dict[str, str] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("Schema JSON entries must map string column names to dtype strings")
+        mapping[key] = value
+    return mapping
+
+
 def _add_geometry_cli_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--geometry-frames",
+        "--geom-frames-csv",
+        dest="geometry_frames",
         type=Path,
         help="Path to per-frame geometry data (CSV or parquet)",
     )
     parser.add_argument(
         "--geometry-trials",
+        "--geom-trial-summary",
+        dest="geometry_trials",
         type=Path,
         help="Optional per-trial geometry summary CSV to merge with streamed aggregates",
     )
     parser.add_argument(
         "--geom-cache-parquet",
+        "--cache-parquet",
+        dest="geom_cache_parquet",
         type=Path,
         help="Optional parquet cache destination for streamed geometry data",
     )
     parser.add_argument(
         "--geom-use-cache",
+        "--use-cache",
         action="store_true",
         help="Load geometry frames from --geom-cache-parquet when it already exists",
     )
     parser.add_argument(
         "--geom-chunk-size",
+        "--chunksize",
+        dest="geom_chunk_size",
         type=int,
         default=50000,
         help="Chunk size to use when streaming geometry inputs",
@@ -283,12 +310,21 @@ def _add_geometry_cli_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--geom-frame-column",
+        "--frame-column",
         type=str,
         default="frame_idx",
         help="Frame index column used to validate geometry contiguity",
     )
     parser.add_argument(
+        "--geom-schema-json",
+        "--schema-json",
+        dest="geom_schema_json",
+        type=Path,
+        help="Optional JSON file mapping geometry column names to dtype strings",
+    )
+    parser.add_argument(
         "--geom-granularity",
+        "--granularity",
         choices=["trial", "frame"],
         default="trial",
         help="Granularity for geometry-derived datasets (trial aggregates or frame-level rows)",
@@ -301,6 +337,7 @@ def _add_geometry_cli_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--geom-normalize",
+        "--normalization",
         choices=["none", "zscore", "minmax"],
         default="none",
         help="Normalization mode applied to geometry columns prior to modeling",
@@ -330,6 +367,7 @@ def _extract_geometry_kwargs(args: argparse.Namespace) -> dict[str, object]:
     columns = _parse_column_list(getattr(args, "geom_columns", None))
     stats = _parse_stats_list(getattr(args, "geom_stats", None))
     feature_columns = _parse_feature_selection(getattr(args, "geom_feature_columns", None))
+    schema_mapping = _load_schema_mapping(getattr(args, "geom_schema_json", None))
     return {
         "geometry_source": getattr(args, "geometry_frames", None),
         "geom_chunk_size": getattr(args, "geom_chunk_size", 100_000),
@@ -344,7 +382,746 @@ def _extract_geometry_kwargs(args: argparse.Namespace) -> dict[str, object]:
         "geom_downcast": getattr(args, "geom_downcast", True),
         "geom_trial_summary": getattr(args, "geometry_trials", None),
         "geom_feature_columns": feature_columns,
+        "geom_schema": schema_mapping,
     }
+
+
+@response_app.command("prepare")
+def response_prepare(
+    data_csv: Path = typer.Option(
+        ...,
+        "--data-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to geometry frames CSV or merged trial table.",
+    ),
+    labels_csv: Path = typer.Option(
+        ...,
+        "--labels-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to labels CSV sharing merge keys with the data input.",
+    ),
+    artifacts_dir: Path = typer.Option(
+        DEFAULT_ARTIFACTS_DIR,
+        "--artifacts-dir",
+        file_okay=False,
+        help="Directory used to write merged parquet or aggregates.",
+    ),
+    cache_parquet: Optional[Path] = typer.Option(
+        None,
+        "--cache-parquet",
+        file_okay=True,
+        dir_okay=False,
+        help="Optional parquet cache destination for streamed geometry chunks.",
+    ),
+    use_cache: bool = typer.Option(
+        False,
+        "--use-cache/--no-use-cache",
+        help="Load geometry frames from --cache-parquet when it already exists.",
+    ),
+    geom_chunk_size: int = typer.Option(
+        50_000,
+        "--geom-chunk-size",
+        "--chunksize",
+        min=1,
+        help="Number of rows per streamed geometry chunk when reading CSV inputs.",
+    ),
+    geom_columns: Optional[str] = typer.Option(
+        None,
+        "--geom-columns",
+        help="Comma-separated geometry columns to retain while streaming.",
+    ),
+    frame_column: str = typer.Option(
+        "frame_idx",
+        "--frame-column",
+        help="Frame index column used to validate geometry contiguity.",
+    ),
+    schema_json: Optional[Path] = typer.Option(
+        None,
+        "--schema-json",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional JSON mapping column names to dtype strings for geometry CSV ingestion.",
+    ),
+    aggregate_geometry: bool = typer.Option(
+        False,
+        "--aggregate-geometry/--no-aggregate-geometry",
+        help="Aggregate streamed geometry into per-trial summaries when enabled.",
+    ),
+    aggregate_stats: str = typer.Option(
+        "mean,min,max",
+        "--aggregate-stats",
+        help="Comma-separated aggregation statistics applied during geometry aggregation.",
+    ),
+    aggregate_format: str = typer.Option(
+        "parquet",
+        "--aggregate-format",
+        help="File format for aggregated geometry outputs (parquet or csv).",
+    ),
+    drop_missing_labels: bool = typer.Option(
+        True,
+        "--drop-missing-labels/--keep-missing-labels",
+        help="Drop geometry rows without labels (default) or retain them for diagnostics.",
+    ),
+    series_prefixes: Optional[str] = typer.Option(
+        None,
+        "--series-prefixes",
+        help="Comma-separated list of time-series prefixes for merged parquet outputs.",
+    ),
+    raw_series: bool = typer.Option(
+        False,
+        "--raw-series/--no-raw-series",
+        help="Use the default raw coordinate prefixes when preparing merged parquet outputs.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Execute without writing artifacts."),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging."),
+) -> None:
+    set_global_logging(verbose=verbose)
+    args = argparse.Namespace(
+        command="prepare",
+        data_csv=data_csv,
+        labels_csv=labels_csv,
+        artifacts_dir=artifacts_dir,
+        cache_parquet=cache_parquet,
+        use_cache=use_cache,
+        geom_chunk_size=geom_chunk_size,
+        geom_columns=geom_columns,
+        frame_column=frame_column,
+        schema_json=schema_json,
+        aggregate_geometry=aggregate_geometry,
+        aggregate_stats=aggregate_stats,
+        aggregate_format=aggregate_format,
+        drop_missing_labels=drop_missing_labels,
+        dry_run=dry_run,
+        verbose=verbose,
+        series_prefixes=series_prefixes,
+        raw_series=raw_series,
+    )
+    _handle_prepare(args)
+
+
+@response_app.command("train")
+def response_train(
+    labels_csv: Path = typer.Option(
+        ...,
+        "--labels-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to labels CSV containing response annotations.",
+    ),
+    data_csv: Optional[Path] = typer.Option(
+        None,
+        "--data-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional path to merged trial-level features CSV.",
+    ),
+    geom_frames_csv: Optional[Path] = typer.Option(
+        None,
+        "--geom-frames-csv",
+        "--geometry-frames",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional path to streamed geometry frames CSV or parquet.",
+    ),
+    geom_trial_summary: Optional[Path] = typer.Option(
+        None,
+        "--geom-trial-summary",
+        "--geometry-trials",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional per-trial geometry summary CSV to merge with aggregates.",
+    ),
+    artifacts_dir: Path = typer.Option(
+        DEFAULT_ARTIFACTS_DIR,
+        "--artifacts-dir",
+        file_okay=False,
+        help="Directory to store trained model artifacts and configuration.",
+    ),
+    features: str = typer.Option(
+        ",".join(DEFAULT_FEATURES),
+        "--features",
+        help="Comma-separated engineered features to include when using merged CSV inputs.",
+    ),
+    include_auc_before: bool = typer.Option(
+        False,
+        "--include-auc-before/--no-include-auc-before",
+        help="Append the legacy AUC-Before feature alongside selected engineered features.",
+    ),
+    series_prefixes: Optional[str] = typer.Option(
+        None,
+        "--series-prefixes",
+        help="Comma-separated list of raw trace prefixes to include in modeling.",
+    ),
+    raw_series: bool = typer.Option(
+        False,
+        "--raw-series/--no-raw-series",
+        help="Use default raw coordinate prefixes when computing trace PCA.",
+    ),
+    use_raw_pca: bool = typer.Option(
+        True,
+        "--use-raw-pca/--no-use-raw-pca",
+        help="Enable PCA on raw trace columns.",
+    ),
+    n_pcs: int = typer.Option(5, "--n-pcs", min=1, help="Number of principal components for raw traces."),
+    model: str = typer.Option(
+        "all",
+        "--model",
+        help="Model to train (logreg, lda, mlp, both, or all).",
+    ),
+    cv: int = typer.Option(0, "--cv", min=0, help="Number of stratified folds for cross-validation."),
+    seed: int = typer.Option(42, "--seed", help="Random seed for preprocessing and modeling."),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Execute without writing artifacts."),
+    logreg_solver: str = typer.Option(
+        "lbfgs",
+        "--logreg-solver",
+        help="Solver for logistic regression (lbfgs, liblinear, or saga).",
+    ),
+    logreg_max_iter: int = typer.Option(
+        1000,
+        "--logreg-max-iter",
+        min=1,
+        help="Maximum iterations for logistic regression training.",
+    ),
+    group_column: str = typer.Option(
+        "fly",
+        "--group-column",
+        help="Column used for GroupKFold stratification.",
+    ),
+    group_override: Optional[str] = typer.Option(
+        None,
+        "--group-override",
+        help="Override the group column (use 'none' to disable GroupKFold).",
+    ),
+    test_size: float = typer.Option(
+        0.2,
+        "--test-size",
+        min=0.05,
+        max=0.95,
+        help="Fraction reserved for the held-out evaluation split.",
+    ),
+    geom_columns: Optional[str] = typer.Option(
+        None,
+        "--geom-columns",
+        help="Comma-separated geometry columns to retain while streaming.",
+    ),
+    geom_feature_columns: Optional[str] = typer.Option(
+        None,
+        "--geom-feature-columns",
+        help="Comma-separated geometry feature columns or '@file' containing newline-separated names.",
+    ),
+    geom_stats: Optional[str] = typer.Option(
+        "mean,min,max",
+        "--geom-stats",
+        help="Comma-separated aggregation statistics for geometry ingestion.",
+    ),
+    geom_chunk_size: int = typer.Option(
+        50_000,
+        "--geom-chunk-size",
+        "--chunksize",
+        min=1,
+        help="Number of rows per streamed geometry chunk when reading CSV inputs.",
+    ),
+    geom_cache_parquet: Optional[Path] = typer.Option(
+        None,
+        "--geom-cache-parquet",
+        "--cache-parquet",
+        file_okay=True,
+        dir_okay=False,
+        help="Optional parquet cache destination for streamed geometry data.",
+    ),
+    geom_use_cache: bool = typer.Option(
+        False,
+        "--geom-use-cache/--no-geom-use-cache",
+        help="Load geometry frames from --geom-cache-parquet when it already exists.",
+    ),
+    geom_frame_column: str = typer.Option(
+        "frame_idx",
+        "--geom-frame-column",
+        "--frame-column",
+        help="Frame index column used to validate geometry contiguity.",
+    ),
+    geom_granularity: str = typer.Option(
+        "trial",
+        "--geom-granularity",
+        "--granularity",
+        help="Granularity for geometry-derived datasets (trial or frame).",
+    ),
+    geom_normalization: str = typer.Option(
+        "none",
+        "--geom-normalize",
+        "--normalization",
+        help="Normalization applied to geometry features (none, zscore, minmax).",
+    ),
+    geom_drop_missing_labels: bool = typer.Option(
+        True,
+        "--geom-drop-missing-labels/--geom-keep-missing-labels",
+        help="Drop geometry rows without labels or retain them for diagnostics.",
+    ),
+    geom_downcast: bool = typer.Option(
+        True,
+        "--geom-downcast/--no-geom-downcast",
+        help="Downcast floating geometry columns to float32 for efficiency.",
+    ),
+    geom_schema_json: Optional[Path] = typer.Option(
+        None,
+        "--geom-schema-json",
+        "--schema-json",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional JSON mapping geometry column names to dtype strings.",
+    ),
+) -> None:
+    set_global_logging(verbose=verbose)
+    args = argparse.Namespace(
+        command="train",
+        labels_csv=labels_csv,
+        data_csv=data_csv,
+        geometry_frames=geom_frames_csv,
+        geometry_trials=geom_trial_summary,
+        artifacts_dir=artifacts_dir,
+        features=features,
+        include_auc_before=include_auc_before,
+        series_prefixes=series_prefixes,
+        raw_series=raw_series,
+        use_raw_pca=use_raw_pca,
+        n_pcs=n_pcs,
+        model=model,
+        cv=cv,
+        seed=seed,
+        verbose=verbose,
+        dry_run=dry_run,
+        logreg_solver=logreg_solver,
+        logreg_max_iter=logreg_max_iter,
+        group_column=group_column,
+        group_override=group_override,
+        test_size=test_size,
+        geom_columns=geom_columns,
+        geom_feature_columns=geom_feature_columns,
+        geom_stats=geom_stats,
+        geom_chunk_size=geom_chunk_size,
+        geom_cache_parquet=geom_cache_parquet,
+        geom_use_cache=geom_use_cache,
+        geom_frame_column=geom_frame_column,
+        geom_granularity=geom_granularity,
+        geom_normalize=geom_normalization,
+        geom_drop_missing_labels=geom_drop_missing_labels,
+        geom_downcast=geom_downcast,
+        geom_schema_json=geom_schema_json,
+    )
+    _handle_train(args)
+
+
+@response_app.command("eval")
+def response_eval(
+    labels_csv: Path = typer.Option(
+        ...,
+        "--labels-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to labels CSV providing evaluation annotations.",
+    ),
+    data_csv: Optional[Path] = typer.Option(
+        None,
+        "--data-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional path to merged trial-level CSV for evaluation.",
+    ),
+    geom_frames_csv: Optional[Path] = typer.Option(
+        None,
+        "--geom-frames-csv",
+        "--geometry-frames",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional geometry frames CSV or parquet for evaluation.",
+    ),
+    geom_trial_summary: Optional[Path] = typer.Option(
+        None,
+        "--geom-trial-summary",
+        "--geometry-trials",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional per-trial geometry summary CSV to merge during evaluation.",
+    ),
+    artifacts_dir: Path = typer.Option(
+        DEFAULT_ARTIFACTS_DIR,
+        "--artifacts-dir",
+        file_okay=False,
+        help="Directory containing trained model artifacts.",
+    ),
+    run_dir: Optional[Path] = typer.Option(
+        None,
+        "--run-dir",
+        file_okay=False,
+        help="Specific run directory to evaluate; defaults to most recent under artifacts-dir.",
+    ),
+    series_prefixes: Optional[str] = typer.Option(
+        None,
+        "--series-prefixes",
+        help="Comma-separated list of raw trace prefixes to load for evaluation.",
+    ),
+    raw_series: bool = typer.Option(
+        False,
+        "--raw-series/--no-raw-series",
+        help="Use default raw coordinate prefixes when reconstructing traces.",
+    ),
+    geom_columns: Optional[str] = typer.Option(
+        None,
+        "--geom-columns",
+        help="Comma-separated geometry columns to retain while streaming.",
+    ),
+    geom_feature_columns: Optional[str] = typer.Option(
+        None,
+        "--geom-feature-columns",
+        help="Comma-separated geometry feature columns or '@file' reference.",
+    ),
+    geom_stats: Optional[str] = typer.Option(
+        "mean,min,max",
+        "--geom-stats",
+        help="Comma-separated aggregation statistics for geometry ingestion.",
+    ),
+    geom_chunk_size: int = typer.Option(
+        50_000,
+        "--geom-chunk-size",
+        "--chunksize",
+        min=1,
+        help="Number of rows per streamed geometry chunk when reading CSV inputs.",
+    ),
+    geom_cache_parquet: Optional[Path] = typer.Option(
+        None,
+        "--geom-cache-parquet",
+        "--cache-parquet",
+        file_okay=True,
+        dir_okay=False,
+        help="Optional parquet cache destination for streamed geometry data.",
+    ),
+    geom_use_cache: bool = typer.Option(
+        False,
+        "--geom-use-cache/--no-geom-use-cache",
+        help="Load geometry frames from --geom-cache-parquet when it already exists.",
+    ),
+    geom_frame_column: str = typer.Option(
+        "frame_idx",
+        "--geom-frame-column",
+        "--frame-column",
+        help="Frame index column used to validate geometry contiguity.",
+    ),
+    geom_granularity: str = typer.Option(
+        "trial",
+        "--geom-granularity",
+        "--granularity",
+        help="Granularity for geometry-derived datasets (trial or frame).",
+    ),
+    geom_normalization: str = typer.Option(
+        "none",
+        "--geom-normalize",
+        "--normalization",
+        help="Normalization applied to geometry features (none, zscore, minmax).",
+    ),
+    geom_drop_missing_labels: bool = typer.Option(
+        True,
+        "--geom-drop-missing-labels/--geom-keep-missing-labels",
+        help="Drop geometry rows without labels or retain them for diagnostics.",
+    ),
+    geom_downcast: bool = typer.Option(
+        True,
+        "--geom-downcast/--no-geom-downcast",
+        help="Downcast floating geometry columns to float32 for efficiency.",
+    ),
+    geom_schema_json: Optional[Path] = typer.Option(
+        None,
+        "--geom-schema-json",
+        "--schema-json",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional JSON mapping geometry column names to dtype strings.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Execute without writing metrics."),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging."),
+) -> None:
+    set_global_logging(verbose=verbose)
+    args = argparse.Namespace(
+        command="eval",
+        labels_csv=labels_csv,
+        data_csv=data_csv,
+        geometry_frames=geom_frames_csv,
+        geometry_trials=geom_trial_summary,
+        artifacts_dir=artifacts_dir,
+        run_dir=run_dir,
+        series_prefixes=series_prefixes,
+        raw_series=raw_series,
+        geom_columns=geom_columns,
+        geom_feature_columns=geom_feature_columns,
+        geom_stats=geom_stats,
+        geom_chunk_size=geom_chunk_size,
+        geom_cache_parquet=geom_cache_parquet,
+        geom_use_cache=geom_use_cache,
+        geom_frame_column=geom_frame_column,
+        geom_granularity=geom_granularity,
+        geom_normalize=geom_normalization,
+        geom_drop_missing_labels=geom_drop_missing_labels,
+        geom_downcast=geom_downcast,
+        geom_schema_json=geom_schema_json,
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+    _handle_eval(args)
+
+
+@response_app.command("predict")
+def response_predict(
+    model_path: Path = typer.Option(
+        ...,
+        "--model-path",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to trained model joblib produced by the train command.",
+    ),
+    output_csv: Path = typer.Option(
+        DEFAULT_ARTIFACTS_DIR / "predictions.csv",
+        "--output-csv",
+        file_okay=True,
+        dir_okay=False,
+        help="Destination CSV for predictions.",
+    ),
+    labels_csv: Optional[Path] = typer.Option(
+        None,
+        "--labels-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional labels CSV used when ingesting geometry frames.",
+    ),
+    data_csv: Optional[Path] = typer.Option(
+        None,
+        "--data-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional merged trial-level CSV for prediction.",
+    ),
+    geom_frames_csv: Optional[Path] = typer.Option(
+        None,
+        "--geom-frames-csv",
+        "--geometry-frames",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional geometry frames CSV or parquet for prediction.",
+    ),
+    geom_trial_summary: Optional[Path] = typer.Option(
+        None,
+        "--geom-trial-summary",
+        "--geometry-trials",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional per-trial geometry summary CSV to enrich predictions.",
+    ),
+    fly: Optional[str] = typer.Option(None, "--fly", help="Filter predictions to a specific fly identifier."),
+    fly_number: Optional[int] = typer.Option(
+        None,
+        "--fly-number",
+        help="Filter predictions to a specific numeric fly identifier.",
+    ),
+    trial_label: Optional[str] = typer.Option(
+        None,
+        "--trial-label",
+        help="Filter predictions to a specific trial label.",
+    ),
+    testing_trial: Optional[str] = typer.Option(
+        None,
+        "--testing-trial",
+        help="Legacy alias for --trial-label.",
+    ),
+    geom_columns: Optional[str] = typer.Option(
+        None,
+        "--geom-columns",
+        help="Comma-separated geometry columns to retain while streaming.",
+    ),
+    geom_feature_columns: Optional[str] = typer.Option(
+        None,
+        "--geom-feature-columns",
+        help="Comma-separated geometry feature columns or '@file' reference.",
+    ),
+    geom_stats: Optional[str] = typer.Option(
+        "mean,min,max",
+        "--geom-stats",
+        help="Comma-separated aggregation statistics for geometry ingestion.",
+    ),
+    geom_chunk_size: int = typer.Option(
+        50_000,
+        "--geom-chunk-size",
+        "--chunksize",
+        min=1,
+        help="Number of rows per streamed geometry chunk when reading CSV inputs.",
+    ),
+    geom_cache_parquet: Optional[Path] = typer.Option(
+        None,
+        "--geom-cache-parquet",
+        "--cache-parquet",
+        file_okay=True,
+        dir_okay=False,
+        help="Optional parquet cache destination for streamed geometry data.",
+    ),
+    geom_use_cache: bool = typer.Option(
+        False,
+        "--geom-use-cache/--no-geom-use-cache",
+        help="Load geometry frames from --geom-cache-parquet when it already exists.",
+    ),
+    geom_frame_column: str = typer.Option(
+        "frame_idx",
+        "--geom-frame-column",
+        "--frame-column",
+        help="Frame index column used to validate geometry contiguity.",
+    ),
+    geom_granularity: str = typer.Option(
+        "trial",
+        "--geom-granularity",
+        "--granularity",
+        help="Granularity for geometry-derived datasets (trial or frame).",
+    ),
+    geom_normalization: str = typer.Option(
+        "none",
+        "--geom-normalize",
+        "--normalization",
+        help="Normalization applied to geometry features (none, zscore, minmax).",
+    ),
+    geom_drop_missing_labels: bool = typer.Option(
+        True,
+        "--geom-drop-missing-labels/--geom-keep-missing-labels",
+        help="Drop geometry rows without labels or retain them for diagnostics.",
+    ),
+    geom_downcast: bool = typer.Option(
+        True,
+        "--geom-downcast/--no-geom-downcast",
+        help="Downcast floating geometry columns to float32 for efficiency.",
+    ),
+    geom_schema_json: Optional[Path] = typer.Option(
+        None,
+        "--geom-schema-json",
+        "--schema-json",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Optional JSON mapping geometry column names to dtype strings.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Execute without writing predictions."),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging."),
+) -> None:
+    set_global_logging(verbose=verbose)
+    args = argparse.Namespace(
+        command="predict",
+        model_path=model_path,
+        output_csv=output_csv,
+        labels_csv=labels_csv,
+        data_csv=data_csv,
+        geometry_frames=geom_frames_csv,
+        geometry_trials=geom_trial_summary,
+        fly=fly,
+        fly_number=fly_number,
+        trial_label=trial_label,
+        testing_trial=testing_trial,
+        geom_columns=geom_columns,
+        geom_feature_columns=geom_feature_columns,
+        geom_stats=geom_stats,
+        geom_chunk_size=geom_chunk_size,
+        geom_cache_parquet=geom_cache_parquet,
+        geom_use_cache=geom_use_cache,
+        geom_frame_column=geom_frame_column,
+        geom_granularity=geom_granularity,
+        geom_normalize=geom_normalization,
+        geom_drop_missing_labels=geom_drop_missing_labels,
+        geom_downcast=geom_downcast,
+        geom_schema_json=geom_schema_json,
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+    _handle_predict(args)
+
+
+@response_app.command("viz")
+def response_viz(
+    data_csv: Path = typer.Option(
+        ...,
+        "--data-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to merged trial-level CSV for visualization.",
+    ),
+    labels_csv: Path = typer.Option(
+        ...,
+        "--labels-csv",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to labels CSV used for visualization overlays.",
+    ),
+    artifacts_dir: Path = typer.Option(
+        DEFAULT_ARTIFACTS_DIR,
+        "--artifacts-dir",
+        file_okay=False,
+        help="Directory containing trained model artifacts.",
+    ),
+    run_dir: Optional[Path] = typer.Option(
+        None,
+        "--run-dir",
+        file_okay=False,
+        help="Specific run directory to visualize; defaults to most recent under artifacts-dir.",
+    ),
+    plots_dir: Path = typer.Option(
+        DEFAULT_PLOTS_DIR,
+        "--plots-dir",
+        file_okay=False,
+        help="Directory where generated plots are written.",
+    ),
+    seed: int = typer.Option(42, "--seed", help="Random seed for visualization sampling."),
+    series_prefixes: Optional[str] = typer.Option(
+        None,
+        "--series-prefixes",
+        help="Comma-separated list of raw trace prefixes to include in visuals.",
+    ),
+    raw_series: bool = typer.Option(
+        False,
+        "--raw-series/--no-raw-series",
+        help="Use default raw coordinate prefixes when generating visuals.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Skip visualization generation."),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logging."),
+) -> None:
+    set_global_logging(verbose=verbose)
+    args = argparse.Namespace(
+        command="viz",
+        data_csv=data_csv,
+        labels_csv=labels_csv,
+        artifacts_dir=artifacts_dir,
+        run_dir=run_dir,
+        plots_dir=plots_dir,
+        seed=seed,
+        series_prefixes=series_prefixes,
+        raw_series=raw_series,
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+    _handle_viz(args)
 
 
 def _select_trace_prefixes(
@@ -446,6 +1223,7 @@ def _configure_parser() -> argparse.ArgumentParser:
     )
     prepare_parser.add_argument(
         "--geom-chunk-size",
+        "--chunksize",
         type=int,
         default=50000,
         help="Chunk size to use when streaming geometry CSV inputs",
@@ -460,6 +1238,11 @@ def _configure_parser() -> argparse.ArgumentParser:
         type=str,
         default="frame_idx",
         help="Frame index column used to validate chunk contiguity",
+    )
+    prepare_parser.add_argument(
+        "--schema-json",
+        type=Path,
+        help="Optional JSON file mapping geometry column names to dtype strings",
     )
     prepare_parser.add_argument(
         "--aggregate-geometry",
@@ -585,6 +1368,7 @@ def _handle_prepare(args: argparse.Namespace) -> None:
         or args.use_cache
         or args.geom_columns
         or args.aggregate_geometry
+        or getattr(args, "schema_json", None)
     )
 
     if geometry_mode:
@@ -601,10 +1385,12 @@ def _handle_prepare(args: argparse.Namespace) -> None:
         if args.aggregate_geometry and not stats_tokens:
             stats_tokens = ["mean", "min", "max"]
 
+        schema_mapping = _load_schema_mapping(getattr(args, "schema_json", None))
         stream = load_geom_frames(
             args.data_csv,
             chunk_size=args.geom_chunk_size,
             columns=columns,
+            schema=schema_mapping,
             cache_parquet=cache_path,
             use_cache=use_cache_flag,
             labels_csv=args.labels_csv,
@@ -829,6 +1615,7 @@ def _handle_predict(args: argparse.Namespace) -> None:
             logger_name="predict",
             chunk_size=geom_kwargs["geom_chunk_size"],
             columns=geom_kwargs["geom_columns"],
+            schema=geom_kwargs.get("geom_schema"),
             cache_parquet=geom_kwargs["geom_cache_parquet"],
             use_cache=geom_kwargs["geom_use_cache"],
             frame_column=geom_kwargs["geom_frame_column"],
@@ -935,6 +1722,18 @@ def main(argv: list[str] | None = None) -> None:
         try:
             prepare_raw_app(
                 prog_name="flybehavior-response prepare-raw",
+                args=command_args,
+                standalone_mode=False,
+            )
+        except SystemExit as exc:  # pragma: no cover - delegated to Typer
+            if exc.code:
+                raise
+        return
+    if raw_args and raw_args[0] == "typer":
+        command_args = raw_args[1:]
+        try:
+            response_app(
+                prog_name="flybehavior-response",
                 args=command_args,
                 standalone_mode=False,
             )

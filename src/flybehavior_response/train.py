@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Dict, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -52,6 +52,7 @@ def train_models(
     geometry_source: Path | None = None,
     geom_chunk_size: int = 100_000,
     geom_columns: Sequence[str] | None = None,
+    geom_schema: Mapping[str, str] | None = None,
     geom_cache_parquet: Path | None = None,
     geom_use_cache: bool = False,
     geom_frame_column: str = "frame_idx",
@@ -77,6 +78,7 @@ def train_models(
         geometry_source=geometry_source,
         geom_chunk_size=geom_chunk_size,
         geom_columns=geom_columns,
+        geom_schema=geom_schema,
         geom_cache_parquet=geom_cache_parquet,
         geom_use_cache=geom_use_cache,
         geom_frame_column=geom_frame_column,

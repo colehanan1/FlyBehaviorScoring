@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import os
-import subprocess
+import argparse
 import json
 import os
 import subprocess
@@ -9,7 +8,9 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from typer.testing import CliRunner
 
+from flybehavior_response.cli import _extract_geometry_kwargs, response_app
 from flybehavior_response.io import LABEL_COLUMN
 
 
@@ -149,6 +150,29 @@ def _write_geometry_summary(tmp_path: Path, frames_path: Path) -> Path:
     return summary_path
 
 
+def test_extract_geometry_kwargs_loads_schema(tmp_path: Path) -> None:
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(json.dumps({"frame_idx": "int64", "x": "float32"}), encoding="utf-8")
+    args = argparse.Namespace(
+        geom_schema_json=schema_path,
+        geom_columns=None,
+        geom_stats=None,
+        geom_feature_columns=None,
+        geometry_frames=None,
+        geom_chunk_size=10,
+        geom_cache_parquet=None,
+        geom_use_cache=False,
+        geom_frame_column="frame_idx",
+        geom_granularity="trial",
+        geom_normalize="none",
+        geom_drop_missing_labels=True,
+        geom_downcast=True,
+        geometry_trials=None,
+    )
+    kwargs = _extract_geometry_kwargs(args)
+    assert kwargs["geom_schema"] == {"frame_idx": "int64", "x": "float32"}
+
+
 def test_cli_help_runs() -> None:
     _run_cli(["--help"])
 
@@ -218,6 +242,40 @@ def test_cli_train_with_geometry_summary(tmp_path: Path) -> None:
         "r_before_mean",
         "r_during_mean",
     ]
+
+
+def test_typer_train_accepts_geometry_schema(tmp_path: Path) -> None:
+    frames_path, labels_path = _write_geometry(tmp_path)
+    schema_path = tmp_path / "geom_schema.json"
+    schema_path.write_text(json.dumps({"frame_idx": "int64", "x": "float32", "y": "float32"}), encoding="utf-8")
+    artifacts_dir = tmp_path / "typer_artifacts"
+    runner = CliRunner()
+    result = runner.invoke(
+        response_app,
+        [
+            "train",
+            "--labels-csv",
+            str(labels_path),
+            "--geom-frames-csv",
+            str(frames_path),
+            "--geom-schema-json",
+            str(schema_path),
+            "--chunksize",
+            "2",
+            "--granularity",
+            "trial",
+            "--normalization",
+            "none",
+            "--geom-stats",
+            "mean",
+            "--model",
+            "logreg",
+            "--artifacts-dir",
+            str(artifacts_dir),
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0, result.output
 
 
 def test_cli_predict_filters_single_trial(tmp_path: Path) -> None:
