@@ -204,6 +204,8 @@ def test_cli_train_with_geometry_summary(tmp_path: Path) -> None:
             str(artifacts_dir),
             "--model",
             "logreg",
+            "--geom-feature-columns",
+            "r_before_mean,r_during_mean",
         ]
     )
     run_dirs = [path for path in artifacts_dir.iterdir() if path.is_dir()]
@@ -212,6 +214,10 @@ def test_cli_train_with_geometry_summary(tmp_path: Path) -> None:
     config_path = run_dir / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert config.get("geometry_trial_summary") == str(summary_path)
+    assert config.get("geometry_feature_columns") == [
+        "r_before_mean",
+        "r_during_mean",
+    ]
 
 
 def test_cli_predict_filters_single_trial(tmp_path: Path) -> None:

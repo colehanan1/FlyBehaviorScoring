@@ -825,6 +825,51 @@ def test_load_geometry_dataset_handles_missing_odor_columns(tmp_path: Path) -> N
     assert dataset.frame[LABEL_COLUMN].tolist() == [1]
 
 
+def test_load_geometry_dataset_feature_filter(tmp_path: Path) -> None:
+    frames = pd.DataFrame(
+        {
+            "dataset": ["d"] * 4,
+            "fly": ["f"] * 4,
+            "fly_number": [1] * 4,
+            "trial_type": ["testing"] * 4,
+            "trial_label": ["t1"] * 4,
+            "frame_idx": [0, 1, 2, 3],
+            "metric": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "dataset": ["d"],
+            "fly": ["f"],
+            "fly_number": [1],
+            "trial_type": ["testing"],
+            "trial_label": ["t1"],
+            LABEL_COLUMN: [4],
+        }
+    )
+    frames_path = tmp_path / "geom.csv"
+    labels_path = tmp_path / "labels.csv"
+    frames.to_csv(frames_path, index=False)
+    labels.to_csv(labels_path, index=False)
+
+    dataset = load_geometry_dataset(
+        frames_path,
+        labels_csv=labels_path,
+        granularity="trial",
+        feature_columns=["frame_count", "metric_mean"],
+    )
+
+    assert dataset.feature_columns == ["frame_count", "metric_mean"]
+
+    with pytest.raises(DataValidationError):
+        load_geometry_dataset(
+            frames_path,
+            labels_csv=labels_path,
+            granularity="trial",
+            feature_columns=["not_a_column"],
+        )
+
+
 def test_load_geometry_dataset_builds_traces(tmp_path: Path) -> None:
     frames = pd.DataFrame(
         {

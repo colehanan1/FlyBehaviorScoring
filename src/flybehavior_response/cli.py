@@ -215,6 +215,26 @@ def _parse_column_list(raw: str | None) -> List[str] | None:
     return columns or None
 
 
+def _parse_feature_selection(raw: str | None) -> List[str] | None:
+    if raw is None:
+        return None
+    token = raw.strip()
+    if not token:
+        return None
+    if token.startswith("@"):
+        path = Path(token[1:]).expanduser()
+        if not path.exists():
+            raise ValueError(f"Geometry feature list file not found: {path}")
+        features: List[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            entry = line.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            features.append(entry)
+        return features or None
+    return [item.strip() for item in token.split(",") if item.strip()]
+
+
 def _parse_stats_list(raw: str | None) -> List[str]:
     if raw is None:
         return []
@@ -252,6 +272,14 @@ def _add_geometry_cli_options(parser: argparse.ArgumentParser) -> None:
         "--geom-columns",
         type=str,
         help="Comma-separated list of geometry columns to retain while streaming",
+    )
+    parser.add_argument(
+        "--geom-feature-columns",
+        type=str,
+        help=(
+            "Comma-separated geometry feature columns to retain for modeling. "
+            "Prefix with '@' to load newline-delimited names from a file."
+        ),
     )
     parser.add_argument(
         "--geom-frame-column",
@@ -301,6 +329,7 @@ def _add_geometry_cli_options(parser: argparse.ArgumentParser) -> None:
 def _extract_geometry_kwargs(args: argparse.Namespace) -> dict[str, object]:
     columns = _parse_column_list(getattr(args, "geom_columns", None))
     stats = _parse_stats_list(getattr(args, "geom_stats", None))
+    feature_columns = _parse_feature_selection(getattr(args, "geom_feature_columns", None))
     return {
         "geometry_source": getattr(args, "geometry_frames", None),
         "geom_chunk_size": getattr(args, "geom_chunk_size", 100_000),
@@ -314,6 +343,7 @@ def _extract_geometry_kwargs(args: argparse.Namespace) -> dict[str, object]:
         "geom_drop_missing_labels": getattr(args, "geom_drop_missing_labels", True),
         "geom_downcast": getattr(args, "geom_downcast", True),
         "geom_trial_summary": getattr(args, "geometry_trials", None),
+        "geom_feature_columns": feature_columns,
     }
 
 
@@ -650,6 +680,8 @@ def _handle_train(args: argparse.Namespace) -> None:
         raise ValueError("--geom-use-cache requires --geom-cache-parquet when using geometry inputs")
     if getattr(args, "geometry_trials", None) is not None and getattr(args, "geometry_frames", None) is None:
         raise ValueError("--geometry-trials requires --geometry-frames")
+    if getattr(args, "geom_feature_columns", None) and getattr(args, "geometry_frames", None) is None:
+        raise ValueError("--geom-feature-columns requires --geometry-frames")
 
     geom_kwargs = _extract_geometry_kwargs(args)
     features = parse_feature_list(args.features, args.include_auc_before)
@@ -702,6 +734,8 @@ def _handle_eval(args: argparse.Namespace) -> None:
         raise ValueError("--geom-use-cache requires --geom-cache-parquet when using geometry inputs")
     if getattr(args, "geometry_trials", None) is not None and getattr(args, "geometry_frames", None) is None:
         raise ValueError("--geometry-trials requires --geometry-frames")
+    if getattr(args, "geom_feature_columns", None) and getattr(args, "geometry_frames", None) is None:
+        raise ValueError("--geom-feature-columns requires --geometry-frames")
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
     logger = get_logger("eval", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
@@ -780,6 +814,8 @@ def _handle_predict(args: argparse.Namespace) -> None:
         raise ValueError("--geom-use-cache requires --geom-cache-parquet when using geometry inputs")
     if getattr(args, "geometry_trials", None) is not None and geometry_path is None:
         raise ValueError("--geometry-trials requires --geometry-frames")
+    if getattr(args, "geom_feature_columns", None) and geometry_path is None:
+        raise ValueError("--geom-feature-columns requires --geometry-frames")
     logger = get_logger("predict", verbose=args.verbose)
     model = load_pipeline(args.model_path)
 
@@ -802,6 +838,7 @@ def _handle_predict(args: argparse.Namespace) -> None:
             drop_missing_labels=geom_kwargs["geom_drop_missing_labels"],
             downcast=geom_kwargs["geom_downcast"],
             trial_summary=geom_kwargs["geom_trial_summary"],
+            feature_columns=geom_kwargs["geom_feature_columns"],
         )
         data_df = dataset.frame.copy()
         logger.debug("Prediction dataset shape after geometry processing: %s", data_df.shape)

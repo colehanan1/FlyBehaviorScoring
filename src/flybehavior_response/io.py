@@ -1762,6 +1762,7 @@ def load_geometry_dataset(
     drop_missing_labels: bool = True,
     downcast: bool = True,
     trial_summary: Path | None = None,
+    feature_columns: Sequence[str] | None = None,
 ) -> MergedDataset:
     """Load geometry frames and optionally aggregate into trial-level rows."""
 
@@ -1775,6 +1776,8 @@ def load_geometry_dataset(
         raise ValueError("Geometry trial summaries require granularity='trial'")
 
     stat_sequence = list(stats or ("mean", "min", "max"))
+    feature_filter = [col for col in feature_columns] if feature_columns is not None else None
+    feature_filter_set = set(feature_filter) if feature_filter else None
     logger = get_logger(logger_name)
     behavioral_config = BehavioralFeatureConfig()
 
@@ -1890,11 +1893,29 @@ def load_geometry_dataset(
             ordered = _downcast_numeric(ordered)
         feature_set = set(MERGE_KEYS)
         exclusion = feature_set | {LABEL_COLUMN, LABEL_INTENSITY_COLUMN} | set(trace_columns)
-        feature_list = [
+        available_features = [
             col
             for col in ordered.columns
             if col not in exclusion
         ]
+        if feature_filter_set is not None:
+            missing = sorted(feature_filter_set - set(available_features))
+            if missing:
+                raise DataValidationError(
+                    "Requested geometry feature columns not present in aggregated dataset: "
+                    f"{missing}"
+                )
+            feature_list = [col for col in available_features if col in feature_filter_set]
+            if not feature_list:
+                raise DataValidationError(
+                    "No geometry feature columns remain after applying the requested filter."
+                )
+            logger.info(
+                "Restricted geometry feature set to %d columns via --geom-feature-columns.",
+                len(feature_list),
+            )
+        else:
+            feature_list = available_features
         return MergedDataset(
             frame=ordered,
             trace_columns=list(trace_columns),
@@ -1976,6 +1997,22 @@ def load_geometry_dataset(
         for col in geometry_columns
         if col != LABEL_COLUMN and col != LABEL_INTENSITY_COLUMN
     ]
+    if feature_filter_set is not None:
+        missing = sorted(feature_filter_set - set(feature_columns))
+        if missing:
+            raise DataValidationError(
+                "Requested geometry feature columns not present in frame-level dataset: "
+                f"{missing}"
+            )
+        feature_columns = [col for col in feature_columns if col in feature_filter_set]
+        if not feature_columns:
+            raise DataValidationError(
+                "No geometry feature columns remain after applying the requested filter."
+            )
+        logger.info(
+            "Restricted frame-level geometry feature set to %d columns via --geom-feature-columns.",
+            len(feature_columns),
+        )
 
     return MergedDataset(
         frame=combined,
@@ -2007,6 +2044,7 @@ def load_dataset(
     geom_drop_missing_labels: bool = True,
     geom_downcast: bool = True,
     geom_trial_summary: Path | None = None,
+    geom_feature_columns: Sequence[str] | None = None,
 ) -> MergedDataset:
     """Load a dataset from either merged CSV inputs or geometry frames."""
 
@@ -2026,6 +2064,7 @@ def load_dataset(
             drop_missing_labels=geom_drop_missing_labels,
             downcast=geom_downcast,
             trial_summary=geom_trial_summary,
+            feature_columns=geom_feature_columns,
         )
 
     if data_csv is None:

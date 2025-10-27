@@ -39,6 +39,7 @@ class PipelineConfig:
     geometry_aggregations: List[str] = field(default_factory=list)
     geometry_normalization: str = "none"
     geometry_trial_summary: str | None = None
+    geometry_feature_columns: List[str] = field(default_factory=list)
 
     def to_json(self, path: Path) -> None:
         path.write_text(json.dumps(dataclasses.asdict(self), indent=2), encoding="utf-8")
@@ -58,6 +59,7 @@ class PipelineConfig:
         data.setdefault("geometry_aggregations", [])
         data.setdefault("geometry_normalization", "none")
         data.setdefault("geometry_trial_summary", None)
+        data.setdefault("geometry_feature_columns", [])
         data["label_intensity_counts"] = {
             str(k): int(v) for k, v in data["label_intensity_counts"].items()
         }
@@ -66,6 +68,7 @@ class PipelineConfig:
         }
         data["trace_series_prefixes"] = list(data["trace_series_prefixes"])
         data["geometry_aggregations"] = list(data["geometry_aggregations"])
+        data["geometry_feature_columns"] = list(data["geometry_feature_columns"])
         if data["group_column"] is not None:
             data["group_column"] = str(data["group_column"])
         return cls(**data)

@@ -114,6 +114,28 @@ pip install -e .
   preprocessing, and remain aligned with the per-trial aggregation and leakage
   guards described above.
 
+#### Restrict geometry features for modeling
+
+If you prefer to train on a curated feature panel instead of the entire
+aggregate table, pass ``--geom-feature-columns`` to ``train``, ``eval``, or
+``predict``. Supply a comma-separated list directly or reference a
+newline-delimited file by prefixing the path with ``@``:
+
+```bash
+flybehavior-response train \
+  --geometry-frames /path/to/geom_frames.csv \
+  --geometry-trials /path/to/geom_trial_summary.csv \
+  --labels-csv /path/to/labels.csv \
+  --geom-feature-columns @experiments/feature_subset.txt \
+  --model mlp
+```
+
+The loader validates the selection (for example ``r_before_mean`` or
+``metric_mean``) and raises a schema error when any requested column is absent
+so mistakes surface immediately. The resolved subset is also written to
+``config.json`` under ``geometry_feature_columns`` to keep the training
+provenance auditable.
+
 #### Merge precomputed per-trial geometry summaries
 
 When a laboratory already maintains per-fly or per-trial statistics in a CSV, you can hand those features to the streaming loader with the new ``--geometry-trials`` flag. The file must contain one row per trial with the canonical identifier columns (``dataset``, ``fly``, ``fly_number``, ``trial_type``, ``trial_label``) plus the following engineered metrics so downstream models receive a consistent schema:
