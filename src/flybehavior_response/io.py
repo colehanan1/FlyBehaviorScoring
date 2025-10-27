@@ -321,7 +321,10 @@ def load_geom_frames(
         if frame_column and frame_column not in requested_columns:
             requested_columns.append(frame_column)
 
+    frame_column_present = True
+
     def _iter_source() -> Iterator[pd.DataFrame]:
+        nonlocal frame_column_present
         if use_cache and cache_parquet and cache_parquet.exists():
             log.info("Loading geometry frames from cache: %s", cache_parquet)
             yield from _iter_parquet_chunks(
@@ -350,7 +353,51 @@ def load_geom_frames(
             )
             return
 
-        usecols = list(dict.fromkeys(requested_columns)) if requested_columns else None
+        header = pd.read_csv(source, nrows=0)
+        available_columns = list(header.columns)
+        missing_keys = [col for col in join_keys if col not in available_columns]
+        if missing_keys:
+            raise DataValidationError(
+                "Geometry source is missing required key columns "
+                f"{missing_keys}. Provide a CSV containing the full identifier set."
+            )
+
+        if frame_column and frame_column not in available_columns:
+            frame_column_present = False
+            log.info(
+                "Frame column '%s' not detected in %s; skipping contiguity validation.",
+                frame_column,
+                source,
+            )
+
+        if requested_columns:
+            deduped_requested = list(dict.fromkeys(requested_columns))
+            missing_requested = [
+                name for name in deduped_requested if name not in available_columns
+            ]
+            missing_required = [
+                name for name in missing_requested if name in join_keys
+            ]
+            missing_optional = [
+                name
+                for name in missing_requested
+                if name not in join_keys and name != frame_column
+            ]
+            if missing_required:
+                raise DataValidationError(
+                    "Geometry source is missing required columns "
+                    f"{missing_required}."
+                )
+            if missing_optional:
+                log.info(
+                    "Skipping %s absent columns from geometry stream: %s",
+                    len(missing_optional),
+                    ", ".join(sorted(missing_optional)),
+                )
+            usecols = [name for name in deduped_requested if name in available_columns]
+        else:
+            usecols = None
+
         csv_iter = pd.read_csv(
             source,
             chunksize=chunk_size,
@@ -375,12 +422,13 @@ def load_geom_frames(
                     continue
                 chunk = normalize_key_columns(raw_chunk)
                 _ensure_columns(chunk, join_keys, context="geometry frame chunk")
-                _validate_block_contiguity(
-                    chunk,
-                    key_columns=join_keys,
-                    frame_column=frame_column,
-                    last_seen=last_seen,
-                )
+                if frame_column_present:
+                    _validate_block_contiguity(
+                        chunk,
+                        key_columns=join_keys,
+                        frame_column=frame_column,
+                        last_seen=last_seen,
+                    )
                 if label_table is not None:
                     chunk = _merge_labels(
                         chunk,

@@ -79,6 +79,12 @@ pip install -e .
   ``flybehavior_response.io.load_geom_frames`` and
   ``flybehavior_response.io.aggregate_trials`` for notebook workflows.
 
+  Geometry exports that expose a different frame counter (for example a column
+  named ``frame`` instead of the default ``frame_idx``) no longer crash the
+  stream. The loader will automatically continue without contiguity validation
+  and log the skipped column. Pass ``--frame-column frame`` to reinstate the
+  block checks when working with these alternate schemas.
+
 - **Regenerate the geometry cache without touching disk** by using ``--dry-run``
   together with ``--cache-parquet``; the CLI will validate inputs and report
   chunk-level statistics without writing artifacts. The parquet features rely on

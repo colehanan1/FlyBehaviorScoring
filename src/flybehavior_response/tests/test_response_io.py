@@ -384,6 +384,44 @@ def test_load_geom_frames_streams_and_joins(geometry_csvs: tuple[Path, Path]) ->
     assert chunks[1]["frame_idx"].tolist() == [2, 0]
 
 
+def test_load_geom_frames_handles_missing_default_frame_column(tmp_path: Path) -> None:
+    frames = pd.DataFrame(
+        {
+            "dataset": ["opto_EB", "opto_EB", "opto_EB", "opto_EB"],
+            "fly": ["f1", "f1", "f2", "f2"],
+            "fly_number": [1, 1, 2, 2],
+            "trial_type": ["testing", "testing", "testing", "testing"],
+            "trial_label": ["t1", "t1", "t2", "t2"],
+            "frame": [0, 1, 0, 1],
+            "x": [0.1, 0.2, 0.3, 0.4],
+        }
+    )
+    frames_path = tmp_path / "frames.csv"
+    frames.to_csv(frames_path, index=False)
+
+    chunks = list(
+        load_geom_frames(
+            frames_path,
+            chunk_size=2,
+            columns=[
+                "dataset",
+                "fly",
+                "fly_number",
+                "trial_type",
+                "trial_label",
+                "frame",
+                "x",
+            ],
+        )
+    )
+
+    assert len(chunks) == 2
+    combined = pd.concat(chunks, ignore_index=True)
+    assert "frame" in combined.columns
+    assert "frame_idx" not in combined.columns
+    assert combined["frame"].tolist() == [0, 1, 0, 1]
+
+
 def test_load_geom_frames_cache_roundtrip(geometry_csvs: tuple[Path, Path], tmp_path: Path) -> None:
     pytest.importorskip("pyarrow", reason="Parquet cache tests require pyarrow")
     frames_path, labels_path = geometry_csvs
