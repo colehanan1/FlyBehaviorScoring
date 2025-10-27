@@ -55,6 +55,55 @@ FEATURE_COLUMNS = {
     "Peak-Value",
 }
 
+TRIAL_SUMMARY_REQUIRED_COLUMNS = [
+    "dataset",
+    "fly",
+    "fly_number",
+    "trial_type",
+    "trial_label",
+    "W_est_fly",
+    "H_est_fly",
+    "diag_est_fly",
+    "r_min_fly",
+    "r_max_fly",
+    "r_p01_fly",
+    "r_p99_fly",
+    "r_mean_fly",
+    "r_std_fly",
+    "n_frames",
+    "r_mean_trial",
+    "r_std_trial",
+    "r_max_trial",
+    "r95_trial",
+    "dx_mean_abs",
+    "dy_mean_abs",
+    "r_pct_robust_fly_max",
+    "r_pct_robust_fly_mean",
+    "r_before_mean",
+    "r_before_std",
+    "r_during_mean",
+    "r_during_std",
+    "r_during_minus_before_mean",
+    "cos_theta_during_mean",
+    "sin_theta_during_mean",
+    "direction_consistency",
+    "frac_high_ext_during",
+    "rise_speed",
+]
+
+TRIAL_SUMMARY_DUPLICATE_COLUMNS = {
+    "r_before_mean",
+    "r_before_std",
+    "r_during_mean",
+    "r_during_std",
+    "r_during_minus_before_mean",
+    "cos_theta_during_mean",
+    "sin_theta_during_mean",
+    "direction_consistency",
+    "frac_high_ext_during",
+    "rise_speed",
+}
+
 
 class DataValidationError(RuntimeError):
     """Raised when data schema validation fails."""
@@ -363,6 +412,114 @@ def _ensure_columns(frame: pd.DataFrame, columns: Sequence[str], *, context: str
         raise DataValidationError(
             f"Missing required columns {missing} while processing {context}."
         )
+
+
+def _load_trial_summary_csv(path: Path, *, logger: Logger) -> pd.DataFrame:
+    """Load and validate a geometry trial summary CSV."""
+
+    csv_path = Path(path)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Geometry trial summary not found: {csv_path}")
+    logger.info("Merging geometry trial summary from %s", csv_path)
+    summary = pd.read_csv(csv_path)
+    _ensure_columns(summary, TRIAL_SUMMARY_REQUIRED_COLUMNS, context=f"geometry trial summary {csv_path}")
+    summary = normalize_key_columns(summary)
+    dup_mask = summary.duplicated(subset=MERGE_KEYS, keep=False)
+    if dup_mask.any():
+        dup_rows = summary.loc[dup_mask, MERGE_KEYS].drop_duplicates()
+        raise DataValidationError(
+            "Geometry trial summary contains duplicate merge keys; ensure one row per trial."
+            f" Offending keys: {dup_rows.to_dict(orient='records')}"
+        )
+    for column in summary.columns:
+        if column in MERGE_KEYS:
+            continue
+        summary[column] = pd.to_numeric(summary[column], errors="coerce")
+    return summary
+
+
+def _merge_trial_summary(
+    aggregates: pd.DataFrame,
+    summary: pd.DataFrame,
+    *,
+    logger: Logger,
+) -> pd.DataFrame:
+    """Merge external per-trial geometry summaries into streamed aggregates."""
+
+    base_keys = {
+        tuple(row)
+        for row in aggregates.loc[:, list(MERGE_KEYS)].itertuples(index=False, name=None)
+    }
+    summary_keys = {
+        tuple(row)
+        for row in summary.loc[:, list(MERGE_KEYS)].itertuples(index=False, name=None)
+    }
+    missing_keys = base_keys - summary_keys
+    extra_keys = summary_keys - base_keys
+    if missing_keys:
+        logger.warning(
+            "Geometry trial summary missing %d of %d aggregated trial(s); new columns will contain NaN for those rows.",
+            len(missing_keys),
+            len(base_keys),
+        )
+    if extra_keys:
+        logger.info(
+            "Geometry trial summary includes %d additional trial(s) not present in streamed aggregates; they were ignored.",
+            len(extra_keys),
+        )
+    overlapping = [
+        column
+        for column in summary.columns
+        if column in aggregates.columns and column not in MERGE_KEYS
+    ]
+    if overlapping:
+        for column in overlapping:
+            if column not in TRIAL_SUMMARY_DUPLICATE_COLUMNS:
+                logger.warning(
+                    "Geometry trial summary column '%s' already exists; streamed values will be retained.",
+                    column,
+                )
+            joined = aggregates.loc[:, [*MERGE_KEYS, column]].merge(
+                summary.loc[:, [*MERGE_KEYS, column]],
+                on=MERGE_KEYS,
+                how="left",
+                suffixes=("_stream", "_summary"),
+                validate="one_to_one",
+            )
+            stream_vals = pd.to_numeric(joined[f"{column}_stream"], errors="coerce")
+            summary_vals = pd.to_numeric(joined[f"{column}_summary"], errors="coerce")
+            fill_mask = stream_vals.isna() & summary_vals.notna()
+            if fill_mask.any():
+                stream_vals = stream_vals.where(~fill_mask, summary_vals)
+                aggregates[column] = stream_vals.to_numpy(dtype=float)
+            stream_arr = stream_vals.to_numpy(dtype=float)
+            summary_arr = summary_vals.to_numpy(dtype=float)
+            valid = (~np.isnan(stream_arr)) & (~np.isnan(summary_arr))
+            mismatch_count = 0
+            if valid.any():
+                diff_mask = ~np.isclose(stream_arr[valid], summary_arr[valid], rtol=1e-3, atol=1e-3)
+                mismatch_count += int(diff_mask.sum())
+            nan_mask = np.isnan(stream_arr) ^ np.isnan(summary_arr)
+            mismatch_count += int(nan_mask.sum())
+            if mismatch_count:
+                logger.warning(
+                    "Geometry trial summary column '%s' differs from streamed aggregates for %d trial(s); keeping streamed values.",
+                    column,
+                    mismatch_count,
+                )
+        summary = summary.drop(columns=overlapping)
+    additional_columns = [col for col in summary.columns if col not in MERGE_KEYS]
+    if not additional_columns:
+        logger.info("Geometry trial summary did not contribute additional columns after alignment.")
+        return aggregates
+    merged = aggregates.merge(
+        summary,
+        on=MERGE_KEYS,
+        how="left",
+        validate="one_to_one",
+    )
+    return merged
+
 
 
 def _as_key_tuple(key: object) -> tuple[object, ...]:
@@ -1601,6 +1758,7 @@ def load_geometry_dataset(
     normalization: str = "none",
     drop_missing_labels: bool = True,
     downcast: bool = True,
+    trial_summary: Path | None = None,
 ) -> MergedDataset:
     """Load geometry frames and optionally aggregate into trial-level rows."""
 
@@ -1610,6 +1768,8 @@ def load_geometry_dataset(
     normalization_mode = normalization.lower()
     if normalization_mode not in {"none", "zscore", "minmax"}:
         raise ValueError("Unsupported normalization mode for geometry dataset")
+    if trial_summary is not None and granularity_norm != "trial":
+        raise ValueError("Geometry trial summaries require granularity='trial'")
 
     stat_sequence = list(stats or ("mean", "min", "max"))
     logger = get_logger(logger_name)
@@ -1673,6 +1833,10 @@ def load_geometry_dataset(
                 builder.frame_column = current_frame_column
             builder.process_chunk(chunk)
         aggregates = builder.build_dataframe()
+        aggregates = normalize_key_columns(aggregates)
+        if trial_summary is not None:
+            summary_df = _load_trial_summary_csv(trial_summary, logger=logger)
+            aggregates = _merge_trial_summary(aggregates, summary_df, logger=logger)
         trace_frame, trace_columns = builder.build_trace_frame()
         trace_prefixes = list(builder.trace_prefixes)
         if builder.traces_enabled:
@@ -1839,6 +2003,7 @@ def load_dataset(
     geom_normalization: str = "none",
     geom_drop_missing_labels: bool = True,
     geom_downcast: bool = True,
+    geom_trial_summary: Path | None = None,
 ) -> MergedDataset:
     """Load a dataset from either merged CSV inputs or geometry frames."""
 
@@ -1857,6 +2022,7 @@ def load_dataset(
             normalization=geom_normalization,
             drop_missing_labels=geom_drop_missing_labels,
             downcast=geom_downcast,
+            trial_summary=geom_trial_summary,
         )
 
     if data_csv is None:

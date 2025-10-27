@@ -347,6 +347,54 @@ def geometry_csvs(tmp_path: Path) -> tuple[Path, Path]:
     return frames_path, labels_path
 
 
+@pytest.fixture
+def geometry_trial_summary_csv(tmp_path: Path, geometry_csvs: tuple[Path, Path]) -> Path:
+    summary_records = []
+    for fly_idx, fly in enumerate(["a", "b"]):
+        trial_label = f"t{fly_idx + 1}"
+        summary_records.append(
+            {
+                "dataset": "opto_EB",
+                "fly": fly,
+                "fly_number": fly_idx + 1,
+                "trial_type": "testing",
+                "trial_label": trial_label,
+                "W_est_fly": 190.0 + fly_idx,
+                "H_est_fly": 180.0 + fly_idx,
+                "diag_est_fly": 260.0 + fly_idx,
+                "r_min_fly": 80.0 + fly_idx,
+                "r_max_fly": 220.0 + fly_idx,
+                "r_p01_fly": 83.0 + fly_idx,
+                "r_p99_fly": 192.0 + fly_idx,
+                "r_mean_fly": 94.0 + fly_idx,
+                "r_std_fly": 18.0 + fly_idx,
+                "n_frames": 3,
+                "r_mean_trial": 91.0 + fly_idx,
+                "r_std_trial": 8.0 + fly_idx,
+                "r_max_trial": 170.0 + fly_idx,
+                "r95_trial": 100.0 + fly_idx,
+                "dx_mean_abs": 45.0 + fly_idx,
+                "dy_mean_abs": 60.0 + fly_idx,
+                "r_pct_robust_fly_max": 82.0 + fly_idx,
+                "r_pct_robust_fly_mean": 70.0 + fly_idx,
+                "r_before_mean": 5.0 + fly_idx,
+                "r_before_std": 0.5 + fly_idx,
+                "r_during_mean": 12.0 + fly_idx,
+                "r_during_std": 1.5 + fly_idx,
+                "r_during_minus_before_mean": 7.0 + fly_idx,
+                "cos_theta_during_mean": 0.5 + 0.1 * fly_idx,
+                "sin_theta_during_mean": 0.8 - 0.1 * fly_idx,
+                "direction_consistency": 0.9 - 0.05 * fly_idx,
+                "frac_high_ext_during": 0.2 + 0.1 * fly_idx,
+                "rise_speed": 2.0 + fly_idx,
+            }
+        )
+    summary_df = pd.DataFrame(summary_records)
+    summary_path = tmp_path / "trial_summary.csv"
+    summary_df.to_csv(summary_path, index=False)
+    return summary_path
+
+
 def test_load_geom_frames_streams_and_joins(geometry_csvs: tuple[Path, Path]) -> None:
     frames_path, labels_path = geometry_csvs
     chunks = list(
@@ -645,6 +693,38 @@ def test_load_geometry_dataset_trial_granularity(geometry_csvs: tuple[Path, Path
     assert "x_mean" in dataset.frame.columns
     assert dataset.frame["x_mean"].dtype == "float32"
     assert dataset.feature_columns and "x_mean" in dataset.feature_columns
+
+
+def test_load_geometry_dataset_merges_trial_summary(
+    geometry_csvs: tuple[Path, Path], geometry_trial_summary_csv: Path
+) -> None:
+    frames_path, labels_path = geometry_csvs
+    dataset = load_geometry_dataset(
+        frames_path,
+        labels_csv=labels_path,
+        granularity="trial",
+        stats=("mean",),
+        normalization="none",
+        trial_summary=geometry_trial_summary_csv,
+    )
+    assert {"W_est_fly", "H_est_fly", "diag_est_fly"}.issubset(dataset.frame.columns)
+    assert dataset.frame["r_before_mean"].tolist() == pytest.approx([5.0, 6.0], rel=1e-6)
+    assert dataset.frame["frac_high_ext_during"].tolist() == pytest.approx([0.2, 0.30000000000000004], rel=1e-6)
+    assert "rise_speed" in dataset.feature_columns
+    assert "W_est_fly" in dataset.feature_columns
+
+
+def test_load_geometry_dataset_summary_requires_trial(
+    geometry_csvs: tuple[Path, Path], geometry_trial_summary_csv: Path
+) -> None:
+    frames_path, labels_path = geometry_csvs
+    with pytest.raises(ValueError):
+        load_geometry_dataset(
+            frames_path,
+            labels_csv=labels_path,
+            granularity="frame",
+            trial_summary=geometry_trial_summary_csv,
+        )
 
 
 def test_load_geometry_dataset_includes_responder_features(tmp_path: Path) -> None:

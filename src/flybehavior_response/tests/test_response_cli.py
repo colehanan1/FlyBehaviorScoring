@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import json
 import os
 import subprocess
 import sys
@@ -98,6 +99,56 @@ def _write_geometry(tmp_path: Path) -> tuple[Path, Path]:
     return frames_path, labels_path
 
 
+def _write_geometry_summary(tmp_path: Path, frames_path: Path) -> Path:
+    summary_records = []
+    for fly_idx in range(2):
+        fly = f"fly_geom_{fly_idx}"
+        fly_number = fly_idx + 1
+        for trial_idx in range(2):
+            trial_label = f"tg{fly_idx}_{trial_idx}"
+            summary_records.append(
+                {
+                    "dataset": "geom_ds",
+                    "fly": fly,
+                    "fly_number": fly_number,
+                    "trial_type": "testing",
+                    "trial_label": trial_label,
+                    "W_est_fly": 195.0 + fly_idx,
+                    "H_est_fly": 180.0 + trial_idx,
+                    "diag_est_fly": 265.0 + trial_idx,
+                    "r_min_fly": 80.0 + fly_idx,
+                    "r_max_fly": 220.0 + trial_idx,
+                    "r_p01_fly": 83.0 + fly_idx,
+                    "r_p99_fly": 192.0 + trial_idx,
+                    "r_mean_fly": 94.0 + fly_idx + trial_idx,
+                    "r_std_fly": 18.0 + 0.5 * trial_idx,
+                    "n_frames": 3,
+                    "r_mean_trial": 90.0 + fly_idx + trial_idx,
+                    "r_std_trial": 8.0 + 0.5 * trial_idx,
+                    "r_max_trial": 170.0 + trial_idx,
+                    "r95_trial": 100.0 + trial_idx,
+                    "dx_mean_abs": 40.0 + fly_idx + trial_idx,
+                    "dy_mean_abs": 55.0 + fly_idx + trial_idx,
+                    "r_pct_robust_fly_max": 82.0 + trial_idx,
+                    "r_pct_robust_fly_mean": 70.0 + fly_idx + trial_idx,
+                    "r_before_mean": 5.0 + trial_idx,
+                    "r_before_std": 0.5 + 0.1 * trial_idx,
+                    "r_during_mean": 12.0 + fly_idx + trial_idx,
+                    "r_during_std": 1.0 + 0.2 * trial_idx,
+                    "r_during_minus_before_mean": 7.0 + fly_idx,
+                    "cos_theta_during_mean": 0.6 + 0.05 * trial_idx,
+                    "sin_theta_during_mean": 0.7 - 0.05 * trial_idx,
+                    "direction_consistency": 0.9 - 0.05 * trial_idx,
+                    "frac_high_ext_during": 0.25 + 0.1 * trial_idx,
+                    "rise_speed": 2.5 + fly_idx + trial_idx,
+                }
+            )
+    summary_df = pd.DataFrame(summary_records)
+    summary_path = tmp_path / "geometry_trial_summary.csv"
+    summary_df.to_csv(summary_path, index=False)
+    return summary_path
+
+
 def test_cli_help_runs() -> None:
     _run_cli(["--help"])
 
@@ -134,6 +185,33 @@ def test_cli_train_eval_dry_run(tmp_path: Path) -> None:
             "--dry-run",
         ]
     )
+
+
+def test_cli_train_with_geometry_summary(tmp_path: Path) -> None:
+    frames_path, labels_path = _write_geometry(tmp_path)
+    summary_path = _write_geometry_summary(tmp_path, frames_path)
+    artifacts_dir = tmp_path / "geom_artifacts"
+    _run_cli(
+        [
+            "train",
+            "--geometry-frames",
+            str(frames_path),
+            "--geometry-trials",
+            str(summary_path),
+            "--labels-csv",
+            str(labels_path),
+            "--artifacts-dir",
+            str(artifacts_dir),
+            "--model",
+            "logreg",
+        ]
+    )
+    run_dirs = [path for path in artifacts_dir.iterdir() if path.is_dir()]
+    assert run_dirs, "Expected geometry training artifacts"
+    run_dir = max(run_dirs, key=lambda item: item.stat().st_mtime)
+    config_path = run_dir / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config.get("geometry_trial_summary") == str(summary_path)
 
 
 def test_cli_predict_filters_single_trial(tmp_path: Path) -> None:

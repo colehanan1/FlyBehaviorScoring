@@ -60,6 +60,7 @@ def train_models(
     geom_normalization: str = "none",
     geom_drop_missing_labels: bool = True,
     geom_downcast: bool = True,
+    geom_trial_summary: Path | None = None,
     group_column: str = "fly",
     group_override: str | None = None,
     test_size: float = 0.2,
@@ -83,6 +84,7 @@ def train_models(
         geom_normalization=geom_normalization,
         geom_drop_missing_labels=geom_drop_missing_labels,
         geom_downcast=geom_downcast,
+        geom_trial_summary=geom_trial_summary,
     )
     resolved_prefixes = list(dataset.trace_prefixes)
     logger.debug("Trace prefixes resolved to: %s", resolved_prefixes)
@@ -190,6 +192,8 @@ def train_models(
         "data_csv": hash_file(data_path),
         "labels_csv": hash_file(labels_csv),
     }
+    if geom_trial_summary is not None:
+        file_hashes["geometry_trial_summary_csv"] = hash_file(geom_trial_summary)
 
     resolved_group_column = group_column
     if group_override is not None:
@@ -276,6 +280,7 @@ def train_models(
         group_column=resolved_group_column,
         geometry_aggregations=list(geom_stats or []),
         geometry_normalization=dataset.normalization,
+        geometry_trial_summary=str(geom_trial_summary) if geom_trial_summary is not None else None,
     )
 
     def _write_split_predictions(

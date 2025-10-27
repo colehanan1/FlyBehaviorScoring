@@ -228,6 +228,11 @@ def _add_geometry_cli_options(parser: argparse.ArgumentParser) -> None:
         help="Path to per-frame geometry data (CSV or parquet)",
     )
     parser.add_argument(
+        "--geometry-trials",
+        type=Path,
+        help="Optional per-trial geometry summary CSV to merge with streamed aggregates",
+    )
+    parser.add_argument(
         "--geom-cache-parquet",
         type=Path,
         help="Optional parquet cache destination for streamed geometry data",
@@ -308,6 +313,7 @@ def _extract_geometry_kwargs(args: argparse.Namespace) -> dict[str, object]:
         "geom_normalization": getattr(args, "geom_normalize", "none"),
         "geom_drop_missing_labels": getattr(args, "geom_drop_missing_labels", True),
         "geom_downcast": getattr(args, "geom_downcast", True),
+        "geom_trial_summary": getattr(args, "geometry_trials", None),
     }
 
 
@@ -642,6 +648,8 @@ def _handle_train(args: argparse.Namespace) -> None:
         raise ValueError("Specify either --data-csv or --geometry-frames, not both")
     if getattr(args, "geometry_frames", None) is not None and args.geom_use_cache and not args.geom_cache_parquet:
         raise ValueError("--geom-use-cache requires --geom-cache-parquet when using geometry inputs")
+    if getattr(args, "geometry_trials", None) is not None and getattr(args, "geometry_frames", None) is None:
+        raise ValueError("--geometry-trials requires --geometry-frames")
 
     geom_kwargs = _extract_geometry_kwargs(args)
     features = parse_feature_list(args.features, args.include_auc_before)
@@ -692,6 +700,8 @@ def _handle_eval(args: argparse.Namespace) -> None:
         raise ValueError("Specify either --data-csv or --geometry-frames, not both")
     if getattr(args, "geometry_frames", None) is not None and args.geom_use_cache and not args.geom_cache_parquet:
         raise ValueError("--geom-use-cache requires --geom-cache-parquet when using geometry inputs")
+    if getattr(args, "geometry_trials", None) is not None and getattr(args, "geometry_frames", None) is None:
+        raise ValueError("--geometry-trials requires --geometry-frames")
     run_dir = _resolve_run_dir(args.artifacts_dir, args.run_dir)
     logger = get_logger("eval", verbose=args.verbose)
     logger.info("Using run directory: %s", run_dir)
@@ -768,6 +778,8 @@ def _handle_predict(args: argparse.Namespace) -> None:
         raise ValueError("Specify either --data-csv or --geometry-frames, not both")
     if geometry_path is not None and args.geom_use_cache and not args.geom_cache_parquet:
         raise ValueError("--geom-use-cache requires --geom-cache-parquet when using geometry inputs")
+    if getattr(args, "geometry_trials", None) is not None and geometry_path is None:
+        raise ValueError("--geometry-trials requires --geometry-frames")
     logger = get_logger("predict", verbose=args.verbose)
     model = load_pipeline(args.model_path)
 
@@ -789,6 +801,7 @@ def _handle_predict(args: argparse.Namespace) -> None:
             normalization=geom_kwargs["geom_normalization"],
             drop_missing_labels=geom_kwargs["geom_drop_missing_labels"],
             downcast=geom_kwargs["geom_downcast"],
+            trial_summary=geom_kwargs["geom_trial_summary"],
         )
         data_df = dataset.frame.copy()
         logger.debug("Prediction dataset shape after geometry processing: %s", data_df.shape)

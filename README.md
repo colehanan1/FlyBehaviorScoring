@@ -114,6 +114,26 @@ pip install -e .
   preprocessing, and remain aligned with the per-trial aggregation and leakage
   guards described above.
 
+#### Merge precomputed per-trial geometry summaries
+
+When a laboratory already maintains per-fly or per-trial statistics in a CSV, you can hand those features to the streaming loader with the new ``--geometry-trials`` flag. The file must contain one row per trial with the canonical identifier columns (``dataset``, ``fly``, ``fly_number``, ``trial_type``, ``trial_label``) plus the following engineered metrics so downstream models receive a consistent schema:
+
+``W_est_fly``, ``H_est_fly``, ``diag_est_fly``, ``r_min_fly``, ``r_max_fly``, ``r_p01_fly``, ``r_p99_fly``, ``r_mean_fly``, ``r_std_fly``, ``n_frames``, ``r_mean_trial``, ``r_std_trial``, ``r_max_trial``, ``r95_trial``, ``dx_mean_abs``, ``dy_mean_abs``, ``r_pct_robust_fly_max``, ``r_pct_robust_fly_mean``, ``r_before_mean``, ``r_before_std``, ``r_during_mean``, ``r_during_std``, ``r_during_minus_before_mean``, ``cos_theta_during_mean``, ``sin_theta_during_mean``, ``direction_consistency``, ``frac_high_ext_during``, ``rise_speed``.
+
+During ``load_geometry_dataset`` the summaries are merged with the streamed aggregates before normalisation and downcasting, so every new numeric column participates in the same scaling pipeline. If a column is present in both the streamed aggregates and the external summary, the loader keeps the streamed value and warns about mismatches so accidental drift is visible. ``--geometry-trials`` is only valid when ``--geometry-frames`` is provided at trial granularity.
+
+Example training command:
+
+```bash
+flybehavior-response train \
+  --geometry-frames /path/to/geom_frames.csv \
+  --geometry-trials /path/to/geom_trial_summary.csv \
+  --labels-csv /path/to/labels.csv \
+  --model logreg
+```
+
+The run configuration now records the trial-summary path alongside the geometry frames so provenance remains auditable.
+
 ### Enriched per-frame geometry columns and responder training workflow
 
 The geometry enrichment step now emits additional, behaviourally grounded

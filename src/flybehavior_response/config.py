@@ -38,6 +38,7 @@ class PipelineConfig:
     group_column: str | None = None
     geometry_aggregations: List[str] = field(default_factory=list)
     geometry_normalization: str = "none"
+    geometry_trial_summary: str | None = None
 
     def to_json(self, path: Path) -> None:
         path.write_text(json.dumps(dataclasses.asdict(self), indent=2), encoding="utf-8")
@@ -56,6 +57,7 @@ class PipelineConfig:
         data.setdefault("group_column", None)
         data.setdefault("geometry_aggregations", [])
         data.setdefault("geometry_normalization", "none")
+        data.setdefault("geometry_trial_summary", None)
         data["label_intensity_counts"] = {
             str(k): int(v) for k, v in data["label_intensity_counts"].items()
         }
