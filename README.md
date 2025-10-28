@@ -34,6 +34,10 @@ python optuna_mlp_tuning.py \
   Optuna median after two folds, keeping runtime within the two-hour budget.
 * Sample weights default to 1.0 for non-responders and lower-intensity
   responses, with class-5 trials receiving a 5× multiplier during optimisation.
+* Provide `--best-params-json /path/to/best_params.json` to skip optimisation and
+  retrain/evaluate using a previously exported Optuna configuration. The JSON
+  may contain either the raw Optuna trial parameters (`architecture`, `h1`,
+  `layer_config`, etc.) or the normalised output written by this script.
 
 ### Generated artefacts
 
@@ -46,7 +50,7 @@ The command writes all deliverables into `--output-dir` (defaults to
 | `optuna_trials.csv` | Tabular export of every trial with metrics and timings. |
 | `optuna_history.html` | Interactive optimisation trace (Plotly). |
 | `optuna_importances.html` | Hyperparameter importance plot emphasising PCA components. |
-| `best_params.json` | Best configuration with consolidated hidden-layer sizes. |
+| `best_params.json` | Best configuration including architecture, layer widths, and optimiser settings. |
 | `best_mlp_model.joblib` | Retrained preprocessing + MLP pipeline for deployment. |
 | `TUNING_REPORT.md` | Auto-generated summary comparing the tuned model with the baseline. |
 
@@ -54,6 +58,24 @@ The retrained pipeline includes the median imputer, scaler, PCA transform, and
 the optimised neural network, allowing drop-in inference via
 `joblib.load(output_dir / "best_mlp_model.joblib")`. Because `.joblib` files are
 ignored by Git, they remain local run artefacts.
+
+### Reusing a saved configuration
+
+After a successful Optuna run, you can rebuild and retrain the best pipeline
+without repeating the search:
+
+```bash
+python optuna_mlp_tuning.py \
+  --data-csv /path/to/all_envelope_rows_wide.csv \
+  --labels-csv /path/to/labels.csv \
+  --best-params-json optuna_results/best_params.json \
+  --output-dir optuna_results
+```
+
+The script normalises the JSON payload, resolves the hidden-layer topology, and
+trains the `SampleWeightedMLPClassifier` end to end with the saved hyperparameters.
+All downstream artefacts (model, report, and parameter snapshot) are refreshed
+to reflect the supplied configuration.
 
 ### Using this package from another repository
 

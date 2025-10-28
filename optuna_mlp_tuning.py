@@ -16,7 +16,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Mapping, Sequence, Tuple
 
 import joblib
 import numpy as np
@@ -154,6 +154,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Optional global timeout (seconds). Use 0 to disable the limit.",
     )
     parser.add_argument(
+        "--best-params-json",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a JSON file containing a previously discovered Optuna parameter set. "
+            "When provided, the study is skipped and the supplied configuration is evaluated "
+            "and retrained."
+        ),
+    )
+    parser.add_argument(
         "--baseline-hidden",
         type=int,
         default=128,
@@ -276,7 +286,14 @@ def load_training_data(
     )
 
 
-def build_pipeline(*, n_components: int, hidden_layer_sizes: Tuple[int, ...], alpha: float, batch_size: int, learning_rate: float) -> Pipeline:
+def build_pipeline(
+    *,
+    n_components: int,
+    hidden_layer_sizes: Tuple[int, ...],
+    alpha: float,
+    batch_size: int,
+    learning_rate_init: float,
+) -> Pipeline:
     """Construct the preprocessing and classifier pipeline."""
 
     mlp = SampleWeightedMLPClassifier(
@@ -285,7 +302,7 @@ def build_pipeline(*, n_components: int, hidden_layer_sizes: Tuple[int, ...], al
         solver="adam",
         alpha=alpha,
         batch_size=batch_size,
-        learning_rate_init=learning_rate,
+        learning_rate_init=learning_rate_init,
         max_iter=1000,
         early_stopping=True,
         validation_fraction=0.15,
@@ -302,6 +319,70 @@ def build_pipeline(*, n_components: int, hidden_layer_sizes: Tuple[int, ...], al
         ]
     )
     return pipeline
+
+
+def resolve_hidden_layer_sizes_from_params(params: Mapping[str, object]) -> Tuple[int, ...]:
+    """Derive the MLP hidden layer configuration from a parameter mapping."""
+
+    if "hidden_layer_sizes" in params and params["hidden_layer_sizes"] is not None:
+        raw_sizes = params["hidden_layer_sizes"]
+        if isinstance(raw_sizes, (list, tuple)):
+            return tuple(int(size) for size in raw_sizes)
+        if isinstance(raw_sizes, str):
+            cleaned = raw_sizes.strip().replace("(", "").replace(")", "")
+            cleaned = cleaned.replace(" ", "")
+            if not cleaned:
+                raise ValueError("hidden_layer_sizes string cannot be empty")
+            if "_" in cleaned:
+                tokens = cleaned.split("_")
+            else:
+                tokens = [token for token in cleaned.split(",") if token]
+            return tuple(int(token) for token in tokens)
+        if isinstance(raw_sizes, int):
+            return (int(raw_sizes),)
+        raise TypeError(
+            "Unsupported hidden_layer_sizes type: " f"{type(raw_sizes)!r}."
+        )
+
+    architecture = params.get("architecture")
+    if architecture == ARCHITECTURE_SINGLE:
+        h1 = params.get("h1")
+        if h1 is None:
+            raise ValueError("Single-layer architecture requires an 'h1' parameter.")
+        return (int(h1),)
+
+    if architecture == ARCHITECTURE_TWO_LAYER:
+        layer_config = params.get("layer_config")
+        if layer_config is None:
+            raise ValueError("Two-layer architecture requires a 'layer_config' parameter.")
+        if isinstance(layer_config, str):
+            tokens = layer_config.replace(" ", "").split("_")
+        elif isinstance(layer_config, (list, tuple)):
+            tokens = [str(value) for value in layer_config]
+        else:
+            raise TypeError(
+                "Unsupported layer_config type: " f"{type(layer_config)!r}."
+            )
+        return tuple(int(token) for token in tokens if token)
+
+    raise ValueError(
+        "Unable to resolve hidden_layer_sizes. Provide either hidden_layer_sizes, "
+        "architecture with h1, or architecture with layer_config."
+    )
+
+
+def build_pipeline_from_params(params: Mapping[str, object]) -> Pipeline:
+    """Convenience helper to construct a pipeline from a parameter mapping."""
+
+    hidden_layers = resolve_hidden_layer_sizes_from_params(params)
+    learning_rate_key = "learning_rate_init" if "learning_rate_init" in params else "learning_rate"
+    return build_pipeline(
+        n_components=int(params["n_components"]),
+        hidden_layer_sizes=hidden_layers,
+        alpha=float(params["alpha"]),
+        batch_size=int(params["batch_size"]),
+        learning_rate_init=float(params[learning_rate_key]),
+    )
 
 
 def _verify_group_separation(groups: pd.Series, train_idx: Iterable[int], val_idx: Iterable[int]) -> None:
@@ -412,7 +493,7 @@ def objective_factory(
         n_components = trial.suggest_categorical("n_components", [32, 40, 48, 56, 64])
         alpha = trial.suggest_float("alpha", 1e-5, 1e-2, log=True)
         batch_size = trial.suggest_categorical("batch_size", [16, 32])
-        learning_rate = trial.suggest_float("learning_rate_init", 1e-4, 1e-2, log=True)
+        learning_rate_init = trial.suggest_float("learning_rate_init", 1e-4, 1e-2, log=True)
 
         architecture = trial.suggest_categorical("architecture", [ARCHITECTURE_SINGLE, ARCHITECTURE_TWO_LAYER])
         if architecture == ARCHITECTURE_SINGLE:
@@ -427,7 +508,7 @@ def objective_factory(
             hidden_layer_sizes=hidden_layer_sizes,
             alpha=float(alpha),
             batch_size=int(batch_size),
-            learning_rate=float(learning_rate),
+            learning_rate_init=float(learning_rate_init),
         )
 
         logger.info(
@@ -436,7 +517,7 @@ def objective_factory(
             n_components,
             alpha,
             batch_size,
-            learning_rate,
+            learning_rate_init,
             hidden_layer_sizes,
         )
 
@@ -473,7 +554,9 @@ def _baseline_params(hidden: int, components: int) -> dict:
         "hidden_layer_sizes": (hidden,),
         "alpha": 1e-4,
         "batch_size": 32,
-        "learning_rate": 1e-3,
+        "learning_rate_init": 1e-3,
+        "architecture": ARCHITECTURE_SINGLE,
+        "h1": hidden,
     }
 
 
@@ -487,7 +570,7 @@ def run_baseline(
     """Evaluate a deterministic baseline configuration for reporting."""
 
     params = _baseline_params(hidden, components)
-    pipeline = build_pipeline(**params)
+    pipeline = build_pipeline_from_params(params)
     logger.info(
         "Evaluating baseline model | components=%d | hidden=%d",
         components,
@@ -527,26 +610,61 @@ def save_report(
     baseline_result: EvaluationResult,
     best_params: dict,
     best_result: EvaluationResult,
-    study: optuna.Study,
+    study: optuna.Study | None,
 ) -> None:
     report_path = output_dir / "TUNING_REPORT.md"
 
-    summary = (
-        "Optuna explored {:d} completed trials ({} pruned) using a median-pruned "
-        "TPE sampler. The best configuration achieved a macro-F1 of {:.4f} "
-        "across five fly-grouped folds, outperforming the deterministic baseline "
-        "macro-F1 of {:.4f}."
-    ).format(
-        len([t for t in study.trials if t.state == TrialState.COMPLETE]),
-        len([t for t in study.trials if t.state == TrialState.PRUNED]),
-        best_result.mean_macro_f1,
-        baseline_result.mean_macro_f1,
-    )
+    if study is not None:
+        completed_trials = len([t for t in study.trials if t.state == TrialState.COMPLETE])
+        pruned_trials = len([t for t in study.trials if t.state == TrialState.PRUNED])
+        summary = (
+            "Optuna explored {:d} completed trials ({} pruned) using a median-pruned "
+            "TPE sampler. The best configuration achieved a macro-F1 of {:.4f} "
+            "across five fly-grouped folds, outperforming the deterministic baseline "
+            "macro-F1 of {:.4f}."
+        ).format(
+            completed_trials,
+            pruned_trials,
+            best_result.mean_macro_f1,
+            baseline_result.mean_macro_f1,
+        )
+    else:
+        summary = (
+            "Optimisation was skipped in favour of a supplied parameter set. The provided "
+            "configuration achieved a macro-F1 of {:.4f} across five fly-grouped folds, "
+            "outperforming the deterministic baseline macro-F1 of {:.4f}."
+        ).format(best_result.mean_macro_f1, baseline_result.mean_macro_f1)
 
     best_params_serialisable = dict(best_params)
     best_params_serialisable["hidden_layer_sizes"] = list(best_params_serialisable["hidden_layer_sizes"])
     baseline_params_serialisable = dict(baseline_params)
     baseline_params_serialisable["hidden_layer_sizes"] = list(baseline_params_serialisable["hidden_layer_sizes"])
+
+    if study is not None:
+        artefact_section = (
+            "## Optuna Study Artefacts\n\n"
+            "* Study database: `optuna_study.db`\n"
+            "* Trials table: `optuna_trials.csv`\n"
+            "* Optimisation history: `optuna_history.html`\n"
+            "* Hyperparameter importances: `optuna_importances.html`\n"
+        )
+        importance_section = (
+            "## Hyperparameter Importance Insights\n\n"
+            "The Optuna importance analysis ranks parameter influence on macro-F1 using the\n"
+            "functional ANOVA approach. Inspect `optuna_importances.html` for an interactive\n"
+            "view that highlights the relative contribution of PCA dimensionality alongside\n"
+            "network architecture choices.\n"
+        )
+    else:
+        artefact_section = (
+            "## Optuna Study Artefacts\n\n"
+            "Optuna was not executed during this run, so study artefacts were not generated.\n"
+        )
+        importance_section = (
+            "## Hyperparameter Importance Insights\n\n"
+            "Hyperparameter importance plots are unavailable because optimisation was bypassed.\n"
+            "Re-run Optuna to obtain interactive diagnostics.\n"
+        )
 
     contents = f"""# Optuna Tuning Report
 
@@ -580,12 +698,9 @@ Baseline parameters:
 * Positive-Class F1: {baseline_result.mean_positive_f1:.4f}
 * Negative-Class F1: {baseline_result.mean_negative_f1:.4f}
 
-## Hyperparameter Importance Insights
+{artefact_section}
 
-The Optuna importance analysis ranks parameter influence on macro-F1 using the
-functional ANOVA approach. Inspect `optuna_importances.html` for an interactive
-view that highlights the relative contribution of PCA dimensionality alongside
-network architecture choices.
+{importance_section}
 
 ## Recommendations for Production
 
@@ -609,13 +724,7 @@ def retrain_final_model(
     output_dir: Path,
     logger: logging.Logger,
 ) -> Path:
-    pipeline = build_pipeline(
-        n_components=int(best_params["n_components"]),
-        hidden_layer_sizes=tuple(best_params["hidden_layer_sizes"]),
-        alpha=float(best_params["alpha"]),
-        batch_size=int(best_params["batch_size"]),
-        learning_rate=float(best_params["learning_rate"]),
-    )
+    pipeline = build_pipeline_from_params(best_params)
 
     feature_frame = _prepare_dataframe_from_dataset(bundle)
     logger.info("Retraining best pipeline on the full dataset (%d samples)", len(feature_frame))
@@ -631,23 +740,32 @@ def retrain_final_model(
     return model_path
 
 
-def normalise_best_params(params: dict) -> dict:
+def normalise_best_params(params: Mapping[str, object]) -> dict:
     best_params = dict(params)
-    architecture = best_params.get("architecture")
-    if architecture == ARCHITECTURE_SINGLE:
-        hidden = (int(best_params.get("h1")),)
-    else:
-        layer_config = best_params.get("layer_config")
-        if layer_config is None:
-            raise ValueError("Two-layer architecture missing layer_config parameter.")
-        hidden = tuple(int(part) for part in str(layer_config).split("_"))
+    hidden = resolve_hidden_layer_sizes_from_params(best_params)
+
+    learning_rate_key = "learning_rate_init" if "learning_rate_init" in best_params else "learning_rate"
+
     best_params_consolidated = {
         "n_components": int(best_params["n_components"]),
         "alpha": float(best_params["alpha"]),
         "batch_size": int(best_params["batch_size"]),
-        "learning_rate": float(best_params["learning_rate_init"]),
+        "learning_rate_init": float(best_params[learning_rate_key]),
         "hidden_layer_sizes": hidden,
     }
+
+    architecture = best_params.get("architecture")
+    if architecture is not None:
+        best_params_consolidated["architecture"] = str(architecture)
+        if architecture == ARCHITECTURE_SINGLE:
+            h1 = best_params.get("h1") or hidden[0]
+            best_params_consolidated["h1"] = int(h1)
+        elif architecture == ARCHITECTURE_TWO_LAYER:
+            layer_config = best_params.get("layer_config")
+            if layer_config is None:
+                layer_config = "_".join(str(size) for size in hidden)
+            best_params_consolidated["layer_config"] = str(layer_config)
+
     return best_params_consolidated
 
 
@@ -675,40 +793,45 @@ def main(argv: Sequence[str] | None = None) -> None:
         logger=logger,
     )
 
-    storage_path = args.output_dir / "optuna_study.db"
-    storage = optuna.storages.RDBStorage(url=f"sqlite:///{storage_path}")
-    study = optuna.create_study(
-        study_name=args.study_name,
-        storage=storage,
-        load_if_exists=True,
-        direction="maximize",
-        sampler=TPESampler(seed=42),
-        pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=2, interval_steps=1),
-    )
+    study: optuna.Study | None = None
+    if args.best_params_json is not None:
+        logger.info(
+            "Bypassing optimisation; loading parameter set from %s", args.best_params_json
+        )
+        best_params_raw = json.loads(args.best_params_json.read_text())
+        best_params = normalise_best_params(best_params_raw)
+        best_pipeline = build_pipeline_from_params(best_params)
+        best_result = evaluate_pipeline(pipeline=best_pipeline, bundle=bundle, logger=logger)
+    else:
+        storage_path = args.output_dir / "optuna_study.db"
+        storage = optuna.storages.RDBStorage(url=f"sqlite:///{storage_path}")
+        study = optuna.create_study(
+            study_name=args.study_name,
+            storage=storage,
+            load_if_exists=True,
+            direction="maximize",
+            sampler=TPESampler(seed=42),
+            pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=2, interval_steps=1),
+        )
 
-    objective = objective_factory(bundle=bundle, logger=logger)
-    timeout = None if args.timeout == 0 else args.timeout
-    study.optimize(objective, n_trials=args.n_trials, timeout=timeout)
+        objective = objective_factory(bundle=bundle, logger=logger)
+        timeout = None if args.timeout == 0 else args.timeout
+        study.optimize(objective, n_trials=args.n_trials, timeout=timeout)
 
-    logger.info("Optimisation finished | best value=%.4f", study.best_value)
-    logger.info("Best trial parameters: %s", study.best_trial.params)
+        logger.info("Optimisation finished | best value=%.4f", study.best_value)
+        logger.info("Best trial parameters: %s", study.best_trial.params)
 
-    best_params = normalise_best_params(study.best_trial.params)
-    best_pipeline = build_pipeline(
-        n_components=best_params["n_components"],
-        hidden_layer_sizes=best_params["hidden_layer_sizes"],
-        alpha=best_params["alpha"],
-        batch_size=best_params["batch_size"],
-        learning_rate=best_params["learning_rate"],
-    )
-    best_result = evaluate_pipeline(pipeline=best_pipeline, bundle=bundle, logger=logger)
+        best_params = normalise_best_params(study.best_trial.params)
+        best_pipeline = build_pipeline_from_params(best_params)
+        best_result = evaluate_pipeline(pipeline=best_pipeline, bundle=bundle, logger=logger)
 
     retrain_final_model(bundle=bundle, best_params=best_params, output_dir=args.output_dir, logger=logger)
 
-    trials_df = study.trials_dataframe()
-    trials_path = args.output_dir / "optuna_trials.csv"
-    trials_df.to_csv(trials_path, index=False)
-    logger.info("Exported Optuna trials to %s", trials_path)
+    if study is not None:
+        trials_df = study.trials_dataframe()
+        trials_path = args.output_dir / "optuna_trials.csv"
+        trials_df.to_csv(trials_path, index=False)
+        logger.info("Exported Optuna trials to %s", trials_path)
 
     best_params_path = args.output_dir / "best_params.json"
     serialisable_params = dict(best_params)
@@ -716,7 +839,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     best_params_path.write_text(json.dumps(serialisable_params, indent=2))
     logger.info("Saved best parameters to %s", best_params_path)
 
-    save_visualisations(study, args.output_dir, logger)
+    if study is not None:
+        save_visualisations(study, args.output_dir, logger)
+
     save_report(
         output_dir=args.output_dir,
         logger=logger,
