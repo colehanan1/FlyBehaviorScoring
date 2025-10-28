@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Dict, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,6 +19,7 @@ from .features import build_column_transformer, validate_features
 from .io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, MERGE_KEYS, load_dataset
 from .logging_utils import get_logger
 from .modeling import (
+    MODEL_FP_OPTIMIZED_MLP,
     MODEL_LDA,
     MODEL_LOGREG,
     MODEL_MLP,
@@ -31,6 +32,70 @@ from .weights import expand_samples_by_weight
 def _set_seeds(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
+
+
+def _stratified_train_val_test_split(
+    *,
+    y: pd.Series,
+    seed: int,
+    train_size: float,
+    val_size: float,
+    test_size: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return stratified indices for an explicit train/validation/test split.
+
+    The helper keeps class proportions stable across all partitions by chaining
+    two stratified ``train_test_split`` calls that share a deterministic
+    ``random_state``. The requested fractions must sum to one.
+    """
+
+    total = train_size + val_size + test_size
+    if not np.isclose(total, 1.0):
+        raise ValueError("Train/validation/test fractions must sum to 1.0")
+    indices = np.arange(len(y))
+    train_val_idx, test_idx = train_test_split(
+        indices,
+        test_size=test_size,
+        stratify=y,
+        random_state=seed,
+    )
+    relative_val_fraction = val_size / (train_size + val_size)
+    train_idx, val_idx = train_test_split(
+        train_val_idx,
+        test_size=relative_val_fraction,
+        stratify=y.iloc[train_val_idx],
+        random_state=seed,
+    )
+    return np.asarray(train_idx), np.asarray(val_idx), np.asarray(test_idx)
+
+
+def _combine_sample_and_class_weights(
+    labels: pd.Series,
+    sample_weights: pd.Series,
+    class_weight: Dict[int, float],
+) -> np.ndarray:
+    """Multiply proportional sample weights by class-based penalties.
+
+    Parameters
+    ----------
+    labels:
+        Series of binary labels aligned with ``sample_weights``.
+    sample_weights:
+        Base weights derived from label intensity.
+    class_weight:
+        Mapping from class label to multiplicative weight (e.g. ``{0: 1.0, 1: 2.0}``).
+
+    Returns
+    -------
+    np.ndarray
+        Combined weights ready to forward to ``MLPClassifier.fit``.
+    """
+
+    combined = sample_weights.to_numpy(dtype=float, copy=True)
+    label_array = labels.to_numpy()
+    for class_label, multiplier in class_weight.items():
+        combined[label_array == class_label] *= float(multiplier)
+    return combined
 
 
 def train_models(
@@ -223,10 +288,16 @@ def train_models(
     X = dataset.frame.drop(columns=drop_columns, errors="ignore")
     y = dataset.frame[LABEL_COLUMN].astype(int)
 
+    use_fp_optimised_split = MODEL_FP_OPTIMIZED_MLP in requested_models
+    class_weight_dict: Dict[int, float] | None = None
+    val_idx: np.ndarray | None = None
+
+    effective_test_size = 0.15 if use_fp_optimised_split else test_size
+
     if groups_series is not None:
         splitter = GroupShuffleSplit(
             n_splits=1,
-            test_size=test_size,
+            test_size=effective_test_size,
             random_state=seed,
         )
         train_idx, test_idx = next(splitter.split(X, y, groups_series))
@@ -237,28 +308,87 @@ def train_models(
             raise RuntimeError(
                 "Group leakage detected across splits for groups: %s" % sorted(overlap)
             )
+        if use_fp_optimised_split:
+            logger.warning(
+                "Group-aware split in use; fp_optimized_mlp validation fold may not remain class stratified."
+            )
+            train_idx = np.asarray(train_idx)
+            test_idx = np.asarray(test_idx)
+            inner_split = GroupShuffleSplit(
+                n_splits=1,
+                test_size=effective_test_size / (1 - effective_test_size),
+                random_state=seed,
+            )
+            rel_train_idx, rel_val_idx = next(
+                inner_split.split(
+                    np.zeros(len(train_idx)),
+                    None,
+                    groups_series.iloc[train_idx],
+                )
+            )
+            val_idx = train_idx[np.asarray(rel_val_idx)]
+            train_idx = train_idx[np.asarray(rel_train_idx)]
     else:
-        train_idx, test_idx = train_test_split(
-            np.arange(len(X)),
-            test_size=test_size,
-            stratify=y,
-            random_state=seed,
-        )
+        if use_fp_optimised_split:
+            train_idx, val_idx, test_idx = _stratified_train_val_test_split(
+                y=y,
+                seed=seed,
+                train_size=0.70,
+                val_size=0.15,
+                test_size=0.15,
+            )
+        else:
+            train_idx, test_idx = train_test_split(
+                np.arange(len(X)),
+                test_size=test_size,
+                stratify=y,
+                random_state=seed,
+            )
 
     X_train = X.iloc[train_idx]
-    X_test = X.iloc[test_idx]
     y_train = y.iloc[train_idx]
-    y_test = y.iloc[test_idx]
     sw_train = sample_weights.iloc[train_idx]
+
+    X_test = X.iloc[test_idx]
+    y_test = y.iloc[test_idx]
     sw_test = sample_weights.iloc[test_idx]
 
-    logger.info(
-        "Split data into training (%d samples, reaction rate=%.2f) and test (%d samples, reaction rate=%.2f)",
-        len(y_train),
-        float(y_train.mean()) if len(y_train) else 0.0,
-        len(y_test),
-        float(y_test.mean()) if len(y_test) else 0.0,
-    )
+    if use_fp_optimised_split and val_idx is None:
+        raise RuntimeError(
+            "fp_optimized_mlp requested but validation split could not be produced."
+        )
+
+    if val_idx is not None:
+        X_val = X.iloc[val_idx]
+        y_val = y.iloc[val_idx]
+        sw_val = sample_weights.iloc[val_idx]
+        logger.info(
+            "Split data into training (%d samples, reaction rate=%.2f), validation (%d samples, reaction rate=%.2f) and test (%d samples, reaction rate=%.2f)",
+            len(y_train),
+            float(y_train.mean()) if len(y_train) else 0.0,
+            len(y_val),
+            float(y_val.mean()) if len(y_val) else 0.0,
+            len(y_test),
+            float(y_test.mean()) if len(y_test) else 0.0,
+        )
+    else:
+        X_val = None
+        y_val = None
+        sw_val = None
+        logger.info(
+            "Split data into training (%d samples, reaction rate=%.2f) and test (%d samples, reaction rate=%.2f)",
+            len(y_train),
+            float(y_train.mean()) if len(y_train) else 0.0,
+            len(y_test),
+            float(y_test.mean()) if len(y_test) else 0.0,
+        )
+
+    if use_fp_optimised_split:
+        class_weight_dict = {0: 1.0, 1: 2.0}
+        logger.info(
+            "fp_optimized_mlp will apply class weights %s on top of proportional sample weights.",
+            class_weight_dict,
+        )
 
     metrics: Dict[str, Dict[str, object]] = {}
 
@@ -336,6 +466,8 @@ def train_models(
             manifest = pd.DataFrame(index=dataset.frame.index)
         manifest["split"] = "train"
         manifest.loc[X_test.index, "split"] = "test"
+        if X_val is not None:
+            manifest.loc[X_val.index, "split"] = "validation"
         if resolved_group_column:
             manifest[resolved_group_column] = dataset.frame[resolved_group_column]
         manifest["granularity"] = dataset.granularity
@@ -359,6 +491,14 @@ def train_models(
             fit_kwargs = {}
             if model_name in {MODEL_LOGREG, MODEL_MLP}:
                 fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
+            if model_name == MODEL_FP_OPTIMIZED_MLP:
+                assert class_weight_dict is not None
+                combined_weights = _combine_sample_and_class_weights(
+                    y_train,
+                    sw_train,
+                    class_weight_dict,
+                )
+                fit_kwargs["model__sample_weight"] = combined_weights
             pipeline.fit(
                 X_train,
                 y_train,
@@ -371,13 +511,23 @@ def train_models(
             y_train,
             sample_weight=sw_train,
         )[model_name]
+        metrics[model_name] = train_metrics
+
+        if X_val is not None and y_val is not None:
+            val_metrics = evaluate_models(
+                {model_name: pipeline},
+                X_val,
+                y_val,
+                sample_weight=sw_val,
+            )[model_name]
+            metrics[model_name]["validation"] = val_metrics
+
         test_metrics = evaluate_models(
             {model_name: pipeline},
             X_test,
             y_test,
             sample_weight=sw_test,
         )[model_name]
-        metrics[model_name] = train_metrics
         metrics[model_name]["test"] = test_metrics
 
         logger.info(
@@ -392,6 +542,21 @@ def train_models(
             train_metrics["f1_binary"],
             test_metrics["f1_binary"],
         )
+        if model_name == MODEL_FP_OPTIMIZED_MLP and X_val is not None and y_val is not None:
+            logger.info(
+                "Model %s precision -> train: %.3f | validation: %.3f | test: %.3f",
+                model_name,
+                train_metrics["precision"],
+                metrics[model_name]["validation"]["precision"],
+                test_metrics["precision"],
+            )
+            logger.info(
+                "Model %s false positive rate -> train: %.3f | validation: %.3f | test: %.3f",
+                model_name,
+                train_metrics["false_positive_rate"],
+                metrics[model_name]["validation"]["false_positive_rate"],
+                test_metrics["false_positive_rate"],
+            )
         model_step = pipeline.named_steps["model"]
         if hasattr(model_step, "n_iter_"):
             n_iter = model_step.n_iter_
@@ -425,6 +590,7 @@ def train_models(
                 cv=cv,
                 seed=seed,
                 sample_weights=sw_train,
+                class_weight=class_weight_dict if model_name == MODEL_FP_OPTIMIZED_MLP else None,
                 groups=cv_groups,
             )
             metrics[model_name]["cross_validation"] = cv_metrics
@@ -451,6 +617,15 @@ def train_models(
                 y_split=y_test,
                 weights_split=sw_test,
             )
+            if X_val is not None and y_val is not None:
+                _write_split_predictions(
+                    split_name="validation",
+                    model_name=model_name,
+                    pipeline=pipeline,
+                    X_split=X_val,
+                    y_split=y_val,
+                    weights_split=sw_val,
+                )
 
             cm = np.array(test_metrics["confusion_matrix"]["raw"], dtype=int)
             fig, ax = plt.subplots(figsize=(5, 5))

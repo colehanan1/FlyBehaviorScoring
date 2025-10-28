@@ -13,6 +13,7 @@ from .sample_weighted_mlp import SampleWeightedMLPClassifier
 MODEL_LDA = "lda"
 MODEL_LOGREG = "logreg"
 MODEL_MLP = "mlp"
+MODEL_FP_OPTIMIZED_MLP = "fp_optimized_mlp"
 
 
 def create_estimator(
@@ -36,6 +37,18 @@ def create_estimator(
         return SampleWeightedMLPClassifier(
             hidden_layer_sizes=10000,
             max_iter=1000,
+            random_state=seed,
+        )
+    if model_type == MODEL_FP_OPTIMIZED_MLP:
+        return SampleWeightedMLPClassifier(
+            hidden_layer_sizes=(256, 128),
+            activation="relu",
+            solver="adam",
+            max_iter=100,
+            batch_size=32,
+            early_stopping=True,
+            validation_fraction=0.15,
+            n_iter_no_change=10,
             random_state=seed,
         )
     raise ValueError(f"Unsupported model type: {model_type}")
@@ -63,4 +76,4 @@ def build_model_pipeline(
 
 
 def supported_models() -> Iterable[str]:
-    return [MODEL_LDA, MODEL_LOGREG, MODEL_MLP]
+    return [MODEL_LDA, MODEL_LOGREG, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP]
