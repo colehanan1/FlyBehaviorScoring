@@ -100,6 +100,7 @@ def generate_visuals(
     output_dir: Path,
     verbose: bool,
     trace_prefixes: Sequence[str] | None = None,
+    include_traces: bool = True,
 ) -> Dict[str, Path]:
     logger = get_logger(__name__, verbose=verbose)
     dataset = load_and_merge(
@@ -107,6 +108,7 @@ def generate_visuals(
         labels_csv,
         logger_name=__name__,
         trace_prefixes=trace_prefixes,
+        include_trace_columns=include_traces,
     )
     config_path = run_dir / "config.json"
     if not config_path.exists():
@@ -114,7 +116,16 @@ def generate_visuals(
     config = PipelineConfig.from_json(config_path)
     plots: Dict[str, Path] = {}
     labels = dataset.frame[LABEL_COLUMN].astype(int)
-    plots["pc_scatter"] = plot_pc_scatter(dataset.frame, dataset.trace_columns, labels, output_dir / "pc_scatter.png", seed)
+    if dataset.trace_columns:
+        plots["pc_scatter"] = plot_pc_scatter(
+            dataset.frame,
+            dataset.trace_columns,
+            labels,
+            output_dir / "pc_scatter.png",
+            seed,
+        )
+    else:
+        logger.info("Skipping PC scatter plot because raw trace columns are unavailable.")
 
     lda_path = run_dir / "model_lda.joblib"
     if lda_path.exists():

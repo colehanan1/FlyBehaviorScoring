@@ -33,6 +33,7 @@ class PipelineConfig:
     label_weight_summary: Dict[str, float]
     label_weight_strategy: str
     trace_series_prefixes: List[str] = field(default_factory=list)
+    use_trace_series: bool = True
     data_format: str = "tabular"
     dataset_granularity: str = "trial"
     group_column: str | None = None
@@ -53,6 +54,7 @@ class PipelineConfig:
         data.setdefault("label_weight_summary", {})
         data.setdefault("label_weight_strategy", "proportional_intensity")
         data.setdefault("trace_series_prefixes", [])
+        data.setdefault("use_trace_series", True)
         data.setdefault("data_format", "tabular")
         data.setdefault("dataset_granularity", "trial")
         data.setdefault("group_column", None)
