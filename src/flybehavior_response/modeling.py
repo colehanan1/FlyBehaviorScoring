@@ -34,8 +34,8 @@ def create_estimator(
         )
     if model_type == MODEL_MLP:
         return SampleWeightedMLPClassifier(
-            hidden_layer_sizes=10000,
-            max_iter=1000,
+            hidden_layer_sizes=7500,
+            max_iter=10000,
             random_state=seed,
         )
     raise ValueError(f"Unsupported model type: {model_type}")
