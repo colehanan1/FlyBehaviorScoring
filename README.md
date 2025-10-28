@@ -405,7 +405,7 @@ After installation, the `flybehavior-response` command becomes available. Common
 - `--include-auc-before`: Adds `AUC-Before` to the feature set.
 - `--use-raw-pca` / `--no-use-raw-pca`: Toggle raw trace PCA (default enabled).
 - `--n-pcs`: Number of PCA components (default 5).
-- `--model`: `lda`, `logreg`, `mlp`, `both`, or `all` (default `all`).
+- `--model`: `lda`, `logreg`, `mlp`, `fp_optimized_mlp`, `both`, or `all` (default `all`).
 - `--logreg-solver`: Logistic regression solver (`lbfgs`, `liblinear`, `saga`; default `lbfgs`).
 - `--logreg-max-iter`: Iteration cap for logistic regression (default `1000`; increase if convergence warnings appear).
 - `--cv`: Stratified folds for cross-validation (default 0 for none).
@@ -454,14 +454,30 @@ flybehavior-response predict --data-csv /home/ramanlab/Documents/cole/Data/Opto/
   --output-csv artifacts/predictions_envelope_t2.csv
 ```
 
-## Training with the MLP classifier
+## Training with the neural network classifiers
 
-- `--model all` trains LDA, logistic regression, and the new MLP classifier using a shared stratified 80/20 split and writes per-model confusion matrices into the run directory.
-- Each training run now exports `predictions_<model>_{train,test}.csv` so you can audit which trials were classified correctly, along with their reaction probabilities and sample weights.
-- `--model mlp` isolates the neural network if you want to iterate quickly without re-fitting the classical baselines.
-- The `mlp` option instantiates scikit-learn's `MLPClassifier` with a single hidden layer of 100 neurons sandwiched between the input features (raw PCA scores plus any engineered features you kept) and the two-unit output layer for the binary reaction task. This structure mirrors the default `hidden_layer_sizes=(100,)`, so you effectively have three layers end-to-end: an input layer sized to your feature count, one hidden representation, and an output layer producing the reaction logits.
-- Existing scripts that still pass `--model both` continue to run LDA + logistic regression only; update them to `--model all` to include the MLP.
-- Inspect `metrics.json` for `test` entries to verify held-out accuracy/F1 scores, and review `confusion_matrix_<model>.png` in the run directory for quick diagnostics.
+- `--model all` trains LDA, logistic regression, and both neural network configurations using a shared stratified split and writes per-model confusion matrices into the run directory.
+- Each training run exports `predictions_<model>_{train,test}.csv` (and `validation` when applicable) so you can audit which trials were classified correctly, along with their reaction probabilities and sample weights.
+- `--model mlp` isolates the legacy neural baseline: a scikit-learn `MLPClassifier` with a single hidden layer of 100 neurons between the feature input and the binary output unit.
+- `--model fp_optimized_mlp` activates the new false-positive minimising architecture. It stacks two ReLU-activated hidden layers sized 256 and 128, uses Adam with a 0.001 learning rate, honours proportional intensity weights, and multiplies responder samples (`label==1`) by an additional class weight of 2.0. Training automatically performs a stratified 70/15/15 train/validation/test split, monitors validation performance with early stopping (`n_iter_no_change=10`), and logs precision plus false-positive rates across all splits.
+- Inspect `metrics.json` for `test` (and `validation`) entries to verify held-out accuracy, precision, recall, F1, and false-positive rates. Review `confusion_matrix_<model>.png` in the run directory for quick diagnostics.
+- Existing scripts that still pass `--model both` continue to run LDA + logistic regression only; update them to `--model all` to include the neural networks when desired.
+
+Example run focused on minimising false positives:
+
+```bash
+flybehavior-response train \
+  --data-csv stats/wide_features.csv \
+  --labels-csv stats/labels.csv \
+  --features "AUC-During,Peak-Value,global_max,local_min,local_max" \
+  --series-prefixes "dir_val" \
+  --model fp_optimized_mlp \
+  --n-pcs 5 \
+  --cv 5 \
+  --artifacts-dir artifacts/fp_optimized
+```
+
+The run directory records the combined sample/class weights, validation metrics, and a confusion matrix that highlights the reduced false-positive rate.
 
 ## Preparing raw coordinate inputs
 

@@ -416,12 +416,16 @@ def _configure_parser() -> argparse.ArgumentParser:
         help="Disable PCA on raw trace columns",
     )
     common_parser.add_argument("--n-pcs", type=int, default=5, help="Number of principal components to use for traces")
+    model_choices = list(supported_models()) + ["both", "all"]
     common_parser.add_argument(
         "--model",
         type=str,
-        choices=["lda", "logreg", "mlp", "both", "all"],
+        choices=model_choices,
         default="all",
-        help="Model to train/evaluate ('all' runs every supported model; 'both' keeps LDA+logreg)",
+        help=(
+            "Model to train/evaluate ('all' runs every supported model; 'both' keeps LDA+logreg; "
+            "'fp_optimized_mlp' minimises false positives with class-weighted training)"
+        ),
     )
     common_parser.add_argument("--cv", type=int, default=0, help="Number of stratified folds for cross-validation")
     common_parser.add_argument(

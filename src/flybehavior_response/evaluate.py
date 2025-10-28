@@ -9,10 +9,23 @@ from typing import Dict, List, Mapping, Sequence
 import numpy as np
 import pandas as pd
 from joblib import load
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import GroupKFold, StratifiedKFold
 
-from .modeling import MODEL_LDA, MODEL_LOGREG, MODEL_MLP, build_model_pipeline
+from .modeling import (
+    MODEL_FP_OPTIMIZED_MLP,
+    MODEL_LDA,
+    MODEL_LOGREG,
+    MODEL_MLP,
+    build_model_pipeline,
+)
 from .weights import expand_samples_by_weight
 
 
@@ -30,17 +43,40 @@ def compute_metrics(
 ) -> Dict[str, object]:
     metrics: Dict[str, object] = {}
     metrics["accuracy"] = float(accuracy_score(y_true, y_pred))
-    metrics["f1_macro"] = float(f1_score(y_true, y_pred, average="macro"))
-    metrics["f1_binary"] = float(f1_score(y_true, y_pred, average="binary"))
+    metrics["precision"] = float(
+        precision_score(y_true, y_pred, zero_division=0)
+    )
+    metrics["recall"] = float(
+        recall_score(y_true, y_pred, zero_division=0)
+    )
+    metrics["f1_macro"] = float(
+        f1_score(y_true, y_pred, average="macro", zero_division=0)
+    )
+    metrics["f1_binary"] = float(
+        f1_score(y_true, y_pred, average="binary", zero_division=0)
+    )
     raw_cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
     norm_cm = confusion_matrix(y_true, y_pred, labels=[0, 1], normalize="true")
     norm_cm = np.nan_to_num(norm_cm)
+    tn, fp, fn, tp = raw_cm.ravel()
+    fp_denom = tn + fp
+    fn_denom = tp + fn
+    metrics["false_positive_rate"] = float(fp / fp_denom) if fp_denom else 0.0
+    metrics["true_negative_rate"] = float(tn / fp_denom) if fp_denom else 0.0
+    metrics["false_negative_rate"] = float(fn / fn_denom) if fn_denom else 0.0
     metrics["confusion_matrix"] = {
         "raw": _serialize_confusion(raw_cm),
         "normalized": _serialize_confusion(norm_cm),
     }
-    if model_type in {MODEL_LOGREG, MODEL_MLP} and proba is not None:
-        metrics["roc_auc"] = float(roc_auc_score(y_true, proba[:, 1]))
+    if proba is not None:
+        if proba.ndim == 2 and proba.shape[1] >= 2:
+            positive_scores = proba[:, 1]
+        else:
+            positive_scores = proba.ravel()
+    else:
+        positive_scores = None
+    if model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP} and positive_scores is not None:
+        metrics["roc_auc"] = float(roc_auc_score(y_true, positive_scores))
     else:
         metrics["roc_auc"] = None
 
@@ -49,11 +85,33 @@ def compute_metrics(
         weighted_metrics["accuracy"] = float(
             accuracy_score(y_true, y_pred, sample_weight=sample_weight)
         )
+        weighted_metrics["precision"] = float(
+            precision_score(
+                y_true, y_pred, sample_weight=sample_weight, zero_division=0
+            )
+        )
+        weighted_metrics["recall"] = float(
+            recall_score(
+                y_true, y_pred, sample_weight=sample_weight, zero_division=0
+            )
+        )
         weighted_metrics["f1_macro"] = float(
-            f1_score(y_true, y_pred, average="macro", sample_weight=sample_weight)
+            f1_score(
+                y_true,
+                y_pred,
+                average="macro",
+                sample_weight=sample_weight,
+                zero_division=0,
+            )
         )
         weighted_metrics["f1_binary"] = float(
-            f1_score(y_true, y_pred, average="binary", sample_weight=sample_weight)
+            f1_score(
+                y_true,
+                y_pred,
+                average="binary",
+                sample_weight=sample_weight,
+                zero_division=0,
+            )
         )
         weighted_raw = confusion_matrix(
             y_true, y_pred, labels=[0, 1], sample_weight=sample_weight
@@ -66,13 +124,28 @@ def compute_metrics(
             sample_weight=sample_weight,
         )
         weighted_norm = np.nan_to_num(weighted_norm)
+        wtn, wfp, wfn, wtp = weighted_raw.ravel()
+        w_fp_denom = wtn + wfp
+        w_fn_denom = wtp + wfn
+        weighted_metrics["false_positive_rate"] = (
+            float(wfp / w_fp_denom) if w_fp_denom else 0.0
+        )
+        weighted_metrics["true_negative_rate"] = (
+            float(wtn / w_fp_denom) if w_fp_denom else 0.0
+        )
+        weighted_metrics["false_negative_rate"] = (
+            float(wfn / w_fn_denom) if w_fn_denom else 0.0
+        )
         weighted_metrics["confusion_matrix"] = {
             "raw": _serialize_confusion(weighted_raw),
             "normalized": _serialize_confusion(weighted_norm),
         }
-        if model_type in {MODEL_LOGREG, MODEL_MLP} and proba is not None:
+        if (
+            model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP}
+            and positive_scores is not None
+        ):
             weighted_metrics["roc_auc"] = float(
-                roc_auc_score(y_true, proba[:, 1], sample_weight=sample_weight)
+                roc_auc_score(y_true, positive_scores, sample_weight=sample_weight)
             )
         else:
             weighted_metrics["roc_auc"] = None
@@ -111,6 +184,7 @@ def perform_cross_validation(
     cv: int,
     seed: int,
     sample_weights: pd.Series | None = None,
+    class_weight: Mapping[int, float] | None = None,
     groups: pd.Series | Sequence[str] | None = None,
 ) -> Dict[str, float | List[List[float]] | None | Dict[str, List[List[float]]]]:
     if cv <= 1:
@@ -130,11 +204,31 @@ def perform_cross_validation(
         splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=seed)
         split_iterator = splitter.split(data, labels)
     aggregate_raw = np.zeros((2, 2), dtype=float)
-    metrics_accum: Dict[str, List[float]] = {"accuracy": [], "f1_macro": [], "f1_binary": [], "roc_auc": []}
+    metrics_accum: Dict[str, List[float]] = {
+        "accuracy": [],
+        "precision": [],
+        "recall": [],
+        "f1_macro": [],
+        "f1_binary": [],
+        "false_positive_rate": [],
+        "false_negative_rate": [],
+        "true_negative_rate": [],
+        "roc_auc": [],
+    }
     weighted_accum: Dict[str, List[float]] | None = None
     aggregate_weighted_raw: np.ndarray | None = None
     if sample_weights is not None:
-        weighted_accum = {"accuracy": [], "f1_macro": [], "f1_binary": [], "roc_auc": []}
+        weighted_accum = {
+            "accuracy": [],
+            "precision": [],
+            "recall": [],
+            "f1_macro": [],
+            "f1_binary": [],
+            "false_positive_rate": [],
+            "false_negative_rate": [],
+            "true_negative_rate": [],
+            "roc_auc": [],
+        }
         aggregate_weighted_raw = np.zeros((2, 2), dtype=float)
     for train_idx, test_idx in split_iterator:
         model = build_model_pipeline(preprocessor, model_type=model_type, seed=seed)
@@ -146,7 +240,12 @@ def perform_cross_validation(
         else:
             fit_kwargs = {}
             if sample_weights is not None:
-                fit_kwargs["model__sample_weight"] = sample_weights.iloc[train_idx].to_numpy()
+                weight_array = sample_weights.iloc[train_idx].to_numpy()
+                if class_weight is not None and model_type == MODEL_FP_OPTIMIZED_MLP:
+                    label_slice = labels.iloc[train_idx].to_numpy()
+                    for class_label, multiplier in class_weight.items():
+                        weight_array[label_slice == class_label] *= float(multiplier)
+                fit_kwargs["model__sample_weight"] = weight_array
             model.fit(data.iloc[train_idx], labels.iloc[train_idx], **fit_kwargs)
         fold_sample_weight = None
         if sample_weights is not None:
@@ -159,16 +258,40 @@ def perform_cross_validation(
             sample_weight=fold_sample_weight,
         )
         aggregate_raw += np.array(fold_metrics["confusion_matrix"]["raw"], dtype=float)
-        for key in ["accuracy", "f1_macro", "f1_binary"]:
+        for key in [
+            "accuracy",
+            "precision",
+            "recall",
+            "f1_macro",
+            "f1_binary",
+            "false_positive_rate",
+            "false_negative_rate",
+            "true_negative_rate",
+        ]:
             metrics_accum[key].append(float(fold_metrics[key]))
-        if model_type in {MODEL_LOGREG, MODEL_MLP} and fold_metrics.get("roc_auc") is not None:
+        if (
+            model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP}
+            and fold_metrics.get("roc_auc") is not None
+        ):
             metrics_accum["roc_auc"].append(float(fold_metrics["roc_auc"]))
         if weighted_accum is not None and "weighted" in fold_metrics:
             weighted = fold_metrics["weighted"]
             aggregate_weighted_raw += np.array(weighted["confusion_matrix"]["raw"], dtype=float)
-            for key in ["accuracy", "f1_macro", "f1_binary"]:
+            for key in [
+                "accuracy",
+                "precision",
+                "recall",
+                "f1_macro",
+                "f1_binary",
+                "false_positive_rate",
+                "false_negative_rate",
+                "true_negative_rate",
+            ]:
                 weighted_accum[key].append(float(weighted[key]))
-            if model_type in {MODEL_LOGREG, MODEL_MLP} and weighted.get("roc_auc") is not None:
+            if (
+                model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP}
+                and weighted.get("roc_auc") is not None
+            ):
                 weighted_accum["roc_auc"].append(float(weighted["roc_auc"]))
     averaged = {key: float(np.mean(values)) if values else None for key, values in metrics_accum.items()}
     normalized = np.divide(
