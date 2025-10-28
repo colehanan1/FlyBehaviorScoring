@@ -186,6 +186,7 @@ def perform_cross_validation(
     sample_weights: pd.Series | None = None,
     class_weight: Mapping[int, float] | None = None,
     groups: pd.Series | Sequence[str] | None = None,
+    mlp_params: Mapping[str, object] | None = None,
 ) -> Dict[str, float | List[List[float]] | None | Dict[str, List[List[float]]]]:
     if cv <= 1:
         raise ValueError("Cross-validation requires cv >= 2")
@@ -231,7 +232,12 @@ def perform_cross_validation(
         }
         aggregate_weighted_raw = np.zeros((2, 2), dtype=float)
     for train_idx, test_idx in split_iterator:
-        model = build_model_pipeline(preprocessor, model_type=model_type, seed=seed)
+        model = build_model_pipeline(
+            preprocessor,
+            model_type=model_type,
+            seed=seed,
+            mlp_params=mlp_params if model_type == MODEL_MLP else None,
+        )
         if sample_weights is not None and model_type == MODEL_LDA:
             train_data, train_labels = expand_samples_by_weight(
                 data.iloc[train_idx], labels.iloc[train_idx], sample_weights.iloc[train_idx]

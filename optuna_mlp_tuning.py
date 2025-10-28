@@ -49,10 +49,12 @@ from flybehavior_response.logging_utils import get_logger  # noqa: E402
 from flybehavior_response.sample_weighted_mlp import (  # noqa: E402
     SampleWeightedMLPClassifier,
 )
-
-
-ARCHITECTURE_SINGLE = "single"
-ARCHITECTURE_TWO_LAYER = "two_layer"
+from flybehavior_response.modeling import (  # noqa: E402
+    ARCHITECTURE_SINGLE,
+    ARCHITECTURE_TWO_LAYER,
+    normalise_mlp_params,
+    resolve_hidden_layer_sizes_from_params,
+)
 
 
 @dataclass(slots=True)
@@ -319,58 +321,6 @@ def build_pipeline(
         ]
     )
     return pipeline
-
-
-def resolve_hidden_layer_sizes_from_params(params: Mapping[str, object]) -> Tuple[int, ...]:
-    """Derive the MLP hidden layer configuration from a parameter mapping."""
-
-    if "hidden_layer_sizes" in params and params["hidden_layer_sizes"] is not None:
-        raw_sizes = params["hidden_layer_sizes"]
-        if isinstance(raw_sizes, (list, tuple)):
-            return tuple(int(size) for size in raw_sizes)
-        if isinstance(raw_sizes, str):
-            cleaned = raw_sizes.strip().replace("(", "").replace(")", "")
-            cleaned = cleaned.replace(" ", "")
-            if not cleaned:
-                raise ValueError("hidden_layer_sizes string cannot be empty")
-            if "_" in cleaned:
-                tokens = cleaned.split("_")
-            else:
-                tokens = [token for token in cleaned.split(",") if token]
-            return tuple(int(token) for token in tokens)
-        if isinstance(raw_sizes, int):
-            return (int(raw_sizes),)
-        raise TypeError(
-            "Unsupported hidden_layer_sizes type: " f"{type(raw_sizes)!r}."
-        )
-
-    architecture = params.get("architecture")
-    if architecture == ARCHITECTURE_SINGLE:
-        h1 = params.get("h1")
-        if h1 is None:
-            raise ValueError("Single-layer architecture requires an 'h1' parameter.")
-        return (int(h1),)
-
-    if architecture == ARCHITECTURE_TWO_LAYER:
-        layer_config = params.get("layer_config")
-        if layer_config is None:
-            raise ValueError("Two-layer architecture requires a 'layer_config' parameter.")
-        if isinstance(layer_config, str):
-            tokens = layer_config.replace(" ", "").split("_")
-        elif isinstance(layer_config, (list, tuple)):
-            tokens = [str(value) for value in layer_config]
-        else:
-            raise TypeError(
-                "Unsupported layer_config type: " f"{type(layer_config)!r}."
-            )
-        return tuple(int(token) for token in tokens if token)
-
-    raise ValueError(
-        "Unable to resolve hidden_layer_sizes. Provide either hidden_layer_sizes, "
-        "architecture with h1, or architecture with layer_config."
-    )
-
-
 def build_pipeline_from_params(params: Mapping[str, object]) -> Pipeline:
     """Convenience helper to construct a pipeline from a parameter mapping."""
 
@@ -739,36 +689,6 @@ def retrain_final_model(
     logger.info("Saved retrained pipeline to %s", model_path)
     return model_path
 
-
-def normalise_best_params(params: Mapping[str, object]) -> dict:
-    best_params = dict(params)
-    hidden = resolve_hidden_layer_sizes_from_params(best_params)
-
-    learning_rate_key = "learning_rate_init" if "learning_rate_init" in best_params else "learning_rate"
-
-    best_params_consolidated = {
-        "n_components": int(best_params["n_components"]),
-        "alpha": float(best_params["alpha"]),
-        "batch_size": int(best_params["batch_size"]),
-        "learning_rate_init": float(best_params[learning_rate_key]),
-        "hidden_layer_sizes": hidden,
-    }
-
-    architecture = best_params.get("architecture")
-    if architecture is not None:
-        best_params_consolidated["architecture"] = str(architecture)
-        if architecture == ARCHITECTURE_SINGLE:
-            h1 = best_params.get("h1") or hidden[0]
-            best_params_consolidated["h1"] = int(h1)
-        elif architecture == ARCHITECTURE_TWO_LAYER:
-            layer_config = best_params.get("layer_config")
-            if layer_config is None:
-                layer_config = "_".join(str(size) for size in hidden)
-            best_params_consolidated["layer_config"] = str(layer_config)
-
-    return best_params_consolidated
-
-
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     logger = configure_logging(args.verbose)
@@ -799,7 +719,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "Bypassing optimisation; loading parameter set from %s", args.best_params_json
         )
         best_params_raw = json.loads(args.best_params_json.read_text())
-        best_params = normalise_best_params(best_params_raw)
+        best_params = normalise_mlp_params(best_params_raw)
         best_pipeline = build_pipeline_from_params(best_params)
         best_result = evaluate_pipeline(pipeline=best_pipeline, bundle=bundle, logger=logger)
     else:
@@ -821,7 +741,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         logger.info("Optimisation finished | best value=%.4f", study.best_value)
         logger.info("Best trial parameters: %s", study.best_trial.params)
 
-        best_params = normalise_best_params(study.best_trial.params)
+        best_params = normalise_mlp_params(study.best_trial.params)
         best_pipeline = build_pipeline_from_params(best_params)
         best_result = evaluate_pipeline(pipeline=best_pipeline, bundle=bundle, logger=logger)
 

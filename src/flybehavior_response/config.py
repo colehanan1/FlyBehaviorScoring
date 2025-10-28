@@ -41,6 +41,7 @@ class PipelineConfig:
     geometry_normalization: str = "none"
     geometry_trial_summary: str | None = None
     geometry_feature_columns: List[str] = field(default_factory=list)
+    mlp_params: Dict[str, object] | None = None
 
     def to_json(self, path: Path) -> None:
         path.write_text(json.dumps(dataclasses.asdict(self), indent=2), encoding="utf-8")
@@ -62,6 +63,7 @@ class PipelineConfig:
         data.setdefault("geometry_normalization", "none")
         data.setdefault("geometry_trial_summary", None)
         data.setdefault("geometry_feature_columns", [])
+        data.setdefault("mlp_params", None)
         data["label_intensity_counts"] = {
             str(k): int(v) for k, v in data["label_intensity_counts"].items()
         }
@@ -73,6 +75,12 @@ class PipelineConfig:
         data["geometry_feature_columns"] = list(data["geometry_feature_columns"])
         if data["group_column"] is not None:
             data["group_column"] = str(data["group_column"])
+        if data["mlp_params"] is not None:
+            mlp_params = dict(data["mlp_params"])
+            hidden = mlp_params.get("hidden_layer_sizes")
+            if isinstance(hidden, list):
+                mlp_params["hidden_layer_sizes"] = tuple(int(v) for v in hidden)
+            data["mlp_params"] = mlp_params
         return cls(**data)
 
 

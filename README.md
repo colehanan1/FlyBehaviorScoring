@@ -77,6 +77,27 @@ trains the `SampleWeightedMLPClassifier` end to end with the saved hyperparamete
 All downstream artefacts (model, report, and parameter snapshot) are refreshed
 to reflect the supplied configuration.
 
+### Training the CLI with tuned hyperparameters
+
+Once `best_params.json` is available, the primary CLI can consume it directly so
+you can train every supported model—MLP included—without rerunning Optuna:
+
+```bash
+flybehavior-response train \
+  --data-csv /path/to/all_envelope_rows_wide.csv \
+  --labels-csv /path/to/labels.csv \
+  --model all \
+  --best-params-json optuna_results/best_params.json \
+  --artifacts-dir artifacts
+```
+
+Providing `--best-params-json` automatically enables PCA on the raw traces,
+overrides `--n-pcs` with the tuned `n_components`, and instantiates the
+`SampleWeightedMLPClassifier` with the Optuna-selected architecture, learning
+rate, regularisation, and batch size. The generated `config.json` embedded in
+each run directory now records the consolidated Optuna payload so downstream
+evaluation jobs can trace exactly which hyperparameters were used.
+
 ### Using this package from another repository
 
 - **Pin it as a dependency.** In the consuming project (e.g. [`Ramanlab-Auto-Data-Analysis`](https://github.com/colehanan1/Ramanlab-Auto-Data-Analysis)), add the git URL to your dependency file so the environment always installs the latest revision of this project:
