@@ -8,6 +8,53 @@ This package trains, evaluates, and visualizes supervised models that predict fl
 pip install -e .
 ```
 
+## Optuna MLP Hyperparameter Tuning
+
+The repository now ships with `optuna_mlp_tuning.py`, a production-grade search
+script that co-optimises PCA dimensionality and the
+`SampleWeightedMLPClassifier`. The workflow enforces fly-level leakage guards
+via `GroupKFold`, up-weights high-intensity class-5 responders, and evaluates
+macro-F1 as the primary score.
+
+### Running the tuner
+
+```bash
+python optuna_mlp_tuning.py \
+  --data-csv /path/to/all_envelope_rows_wide.csv \
+  --labels-csv /path/to/labels.csv \
+  --n-trials 100 \
+  --timeout 7200 \
+  --output-dir optuna_results
+```
+
+* Provide `--labels-csv` when using the canonical wide export split across data
+  and label tables. If labels are embedded in the features CSV, ensure a
+  `reaction_strength` column is present and omit `--labels-csv`.
+* Each trial prunes early when the interim macro-F1 under-performs the running
+  Optuna median after two folds, keeping runtime within the two-hour budget.
+* Sample weights default to 1.0 for non-responders and lower-intensity
+  responses, with class-5 trials receiving a 5× multiplier during optimisation.
+
+### Generated artefacts
+
+The command writes all deliverables into `--output-dir` (defaults to
+`optuna_results/`):
+
+| File | Description |
+| --- | --- |
+| `optuna_study.db` | SQLite storage for resuming or auditing the study. |
+| `optuna_trials.csv` | Tabular export of every trial with metrics and timings. |
+| `optuna_history.html` | Interactive optimisation trace (Plotly). |
+| `optuna_importances.html` | Hyperparameter importance plot emphasising PCA components. |
+| `best_params.json` | Best configuration with consolidated hidden-layer sizes. |
+| `best_mlp_model.joblib` | Retrained preprocessing + MLP pipeline for deployment. |
+| `TUNING_REPORT.md` | Auto-generated summary comparing the tuned model with the baseline. |
+
+The retrained pipeline includes the median imputer, scaler, PCA transform, and
+the optimised neural network, allowing drop-in inference via
+`joblib.load(output_dir / "best_mlp_model.joblib")`. Because `.joblib` files are
+ignored by Git, they remain local run artefacts.
+
 ### Using this package from another repository
 
 - **Pin it as a dependency.** In the consuming project (e.g. [`Ramanlab-Auto-Data-Analysis`](https://github.com/colehanan1/Ramanlab-Auto-Data-Analysis)), add the git URL to your dependency file so the environment always installs the latest revision of this project:
