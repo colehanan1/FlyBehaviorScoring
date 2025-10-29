@@ -29,7 +29,7 @@ from .io import (
     write_parquet,
 )
 from .logging_utils import get_logger, set_global_logging
-from .modeling import supported_models
+from .modeling import supported_models, normalise_mlp_params, MODEL_MLP
 from .prepare_raw import (
     DEFAULT_OUTPUT_PATH as RAW_DEFAULT_OUTPUT_PATH,
     DEFAULT_PREFIXES as RAW_DEFAULT_PREFIXES,

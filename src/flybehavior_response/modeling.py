@@ -179,20 +179,20 @@ def create_estimator(
         if mlp_params is not None:
             return _build_mlp_from_params(mlp_params, seed)
         return SampleWeightedMLPClassifier(
-            hidden_layer_sizes=10000,
+            hidden_layer_sizes=128,
             max_iter=1000,
             random_state=seed,
         )
     if model_type == MODEL_FP_OPTIMIZED_MLP:
         return SampleWeightedMLPClassifier(
-            hidden_layer_sizes=(256, 128),
+            hidden_layer_sizes=(32, 512),
             activation="relu",
             solver="adam",
-            max_iter=100,
-            batch_size=32,
+            max_iter=1000,
+            batch_size=16,
             early_stopping=True,
             validation_fraction=0.15,
-            n_iter_no_change=10,
+            n_iter_no_change=50,
             random_state=seed,
         )
     raise ValueError(f"Unsupported model type: {model_type}")
