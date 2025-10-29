@@ -690,6 +690,7 @@ The loader detects that engineered features are missing, logs a trace-only messa
 - Training uses proportional sample weights derived from label intensity so stronger reactions (e.g., `5`) contribute more than weaker ones (e.g., `1`). Review the logged weight summaries if model behaviour seems unexpected.
 - Duplicate keys across CSVs (`dataset`, `fly`, `fly_number`, `trial_type`, `trial_label`) raise errors to prevent ambiguous merges.
 - Ratio features (`AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`) are supported but produce warnings because they are unstable.
+- The CLI recognises the following engineered scalar columns out of the box: `AUC-Before`, `AUC-During`, `AUC-After`, `AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`, `TimeToPeak-During`, `Peak-Value`, `global_min`, `global_max`, `local_min`, `local_max`, `local_min_during`, `local_max_during`, `local_max_over_global_min`, `local_max_during_over_global_min`, `local_max_during_odor`, and `local_max_during_odor_over_global_min`. Any subset passed via `--features` (or baked into `best_params.json`) is validated against this list so feature-only runs fail fast when a requested column is absent.
 - Use `--dry-run` to confirm configuration before writing artifacts.
 - The CLI automatically selects the newest run directory containing model artifacts. Override with `--run-dir` if you maintain
   multiple artifact trees (e.g., `artifacts/projections`).
