@@ -53,6 +53,16 @@ FEATURE_COLUMNS = {
     "AUC-After-Before-Ratio",
     "TimeToPeak-During",
     "Peak-Value",
+    "global_min",
+    "global_max",
+    "local_min",
+    "local_max",
+    "local_min_during",
+    "local_max_during",
+    "local_max_over_global_min",
+    "local_max_during_over_global_min",
+    "local_max_during_odor",
+    "local_max_during_odor_over_global_min",
 }
 
 TRIAL_SUMMARY_REQUIRED_COLUMNS = [
