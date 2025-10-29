@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import Dict, Sequence, Tuple
+from typing import Dict, Mapping, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -131,6 +131,7 @@ def train_models(
     group_column: str = "fly",
     group_override: str | None = None,
     test_size: float = 0.2,
+    mlp_params: Mapping[str, object] | None = None,
 ) -> Dict[str, Dict[str, object]]:
     logger = get_logger(__name__, verbose=verbose)
     _set_seeds(seed)
@@ -252,6 +253,28 @@ def train_models(
     }
 
     logger.info("Trace series prefixes: %s", resolved_prefixes)
+    if mlp_params is not None:
+        if not use_raw_pca:
+            logger.info(
+                "Enabling PCA preprocessing to honour Optuna n_components=%d.",
+                int(mlp_params["n_components"]),
+            )
+            use_raw_pca = True
+        if n_pcs != int(mlp_params["n_components"]):
+            logger.info(
+                "Overriding n_pcs=%d with Optuna-derived n_components=%d.",
+                n_pcs,
+                int(mlp_params["n_components"]),
+            )
+            n_pcs = int(mlp_params["n_components"])
+        logger.info(
+            "Applying Optuna-derived MLP hyperparameters: hidden=%s | alpha=%.3g | batch_size=%d | lr=%.3g | n_components=%d",
+            mlp_params.get("hidden_layer_sizes"),
+            float(mlp_params["alpha"]),
+            int(mlp_params["batch_size"]),
+            float(mlp_params["learning_rate_init"]),
+            int(mlp_params["n_components"]),
+        )
 
     data_path = geometry_source if geometry_source is not None else data_csv
     if data_path is None:
@@ -392,6 +415,13 @@ def train_models(
 
     metrics: Dict[str, Dict[str, object]] = {}
 
+    mlp_params_for_config = None
+    if mlp_params is not None:
+        mlp_params_for_config = dict(mlp_params)
+        hidden_layers = mlp_params_for_config.get("hidden_layer_sizes")
+        if isinstance(hidden_layers, tuple):
+            mlp_params_for_config["hidden_layer_sizes"] = list(hidden_layers)
+
     config = PipelineConfig(
         features=list(selected_features),
         n_pcs=n_pcs,
@@ -417,6 +447,7 @@ def train_models(
         geometry_normalization=dataset.normalization,
         geometry_trial_summary=str(geom_trial_summary) if geom_trial_summary is not None else None,
         geometry_feature_columns=list(geom_feature_columns or []),
+        mlp_params=mlp_params_for_config,
     )
 
     def _write_split_predictions(
@@ -483,6 +514,7 @@ def train_models(
             seed=seed,
             logreg_solver=logreg_solver,
             logreg_max_iter=logreg_max_iter,
+            mlp_params=mlp_params if model_name == MODEL_MLP else None,
         )
         if model_name == MODEL_LDA:
             X_fit, y_fit = expand_samples_by_weight(X_train, y_train, sw_train)
@@ -592,6 +624,7 @@ def train_models(
                 sample_weights=sw_train,
                 class_weight=class_weight_dict if model_name == MODEL_FP_OPTIMIZED_MLP else None,
                 groups=cv_groups,
+                mlp_params=mlp_params if model_name == MODEL_MLP else None,
             )
             metrics[model_name]["cross_validation"] = cv_metrics
 
