@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import json
 import numpy as np
 import pandas as pd
 
@@ -12,6 +13,7 @@ from flybehavior_response.modeling import (
     MODEL_LOGREG,
     MODEL_MLP,
     build_model_pipeline,
+    normalise_mlp_params,
 )
 from flybehavior_response.train import train_models
 from flybehavior_response.weights import expand_samples_by_weight
@@ -85,6 +87,61 @@ def test_model_pipelines_fit(tmp_path: Path) -> None:
     assert liblinear_pipeline.predict(X).shape == (6,)
 
 
+def test_build_model_pipeline_applies_mlp_params(tmp_path: Path) -> None:
+    data_path, labels_path = _create_dataset(tmp_path)
+    dataset = load_and_merge(data_path, labels_path)
+    features = validate_features(["AUC-During", "TimeToPeak-During", "Peak-Value"], dataset.feature_columns)
+    preprocessor = build_column_transformer(
+        dataset.trace_columns,
+        dataset.feature_columns,
+        features,
+        use_raw_pca=True,
+        n_pcs=2,
+        seed=42,
+    )
+
+    params = normalise_mlp_params(
+        {
+            "n_components": 2,
+            "alpha": 0.001,
+            "batch_size": 16,
+            "learning_rate_init": 0.005,
+            "hidden_layer_sizes": [128, 64],
+        }
+    )
+    pipeline = build_model_pipeline(
+        preprocessor,
+        model_type=MODEL_MLP,
+        seed=42,
+        mlp_params=params,
+    )
+    model = pipeline.named_steps["model"]
+    assert model.hidden_layer_sizes == params["hidden_layer_sizes"]
+    assert model.alpha == params["alpha"]
+    assert model.batch_size == params["batch_size"]
+    assert model.learning_rate_init == params["learning_rate_init"]
+    assert model.early_stopping is True
+
+
+def test_normalise_mlp_params_handles_two_layer_architecture() -> None:
+    params = normalise_mlp_params(
+        {
+            "n_components": 12,
+            "alpha": 0.0003,
+            "batch_size": 24,
+            "learning_rate_init": 0.0015,
+            "architecture": "two_layer",
+            "h1": 384,
+            "h2": 192,
+        }
+    )
+
+    assert params["hidden_layer_sizes"] == (384, 192)
+    assert params["h1"] == 384
+    assert params["h2"] == 192
+    assert params["layer_config"] == "384_192"
+
+
 def test_train_models_returns_metrics(tmp_path: Path) -> None:
     data_path, labels_path = _create_dataset(tmp_path)
     metrics = train_models(
@@ -153,6 +210,65 @@ def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
     train_ids = set(manifest.loc[manifest["split"] == "train", "fly"])
     test_ids = set(manifest.loc[manifest["split"] == "test", "fly"])
     assert train_ids.isdisjoint(test_ids), "Detected group leakage between train and test splits"
+
+
+def test_train_models_serialises_mlp_params(tmp_path: Path) -> None:
+    data_path, labels_path = _create_dataset(tmp_path)
+    data_df = pd.read_csv(data_path)
+    labels_df = pd.read_csv(labels_path)
+    augmented_data = [data_df]
+    augmented_labels = [labels_df]
+    for idx in range(3):
+        suffix = f"_dup{idx}"
+        duplicated_data = data_df.copy()
+        duplicated_labels = labels_df.copy()
+        duplicated_data["trial_label"] = duplicated_data["trial_label"] + suffix
+        duplicated_labels["trial_label"] = duplicated_labels["trial_label"] + suffix
+        augmented_data.append(duplicated_data)
+        augmented_labels.append(duplicated_labels)
+    pd.concat(augmented_data, ignore_index=True).to_csv(data_path, index=False)
+    pd.concat(augmented_labels, ignore_index=True).to_csv(labels_path, index=False)
+
+    best_params = normalise_mlp_params(
+        {
+            "n_components": 3,
+            "alpha": 0.0005,
+            "batch_size": 32,
+            "learning_rate_init": 0.001,
+            "hidden_layer_sizes": [96, 32],
+        }
+    )
+
+    artifacts_dir = tmp_path / "artifacts"
+    metrics = train_models(
+        data_csv=data_path,
+        labels_csv=labels_path,
+        features=["AUC-During", "TimeToPeak-During", "Peak-Value"],
+        include_traces=True,
+        use_raw_pca=False,
+        n_pcs=2,
+        models=[MODEL_MLP],
+        artifacts_dir=artifacts_dir,
+        cv=0,
+        seed=0,
+        verbose=False,
+        dry_run=False,
+        mlp_params=best_params,
+    )
+
+    assert MODEL_MLP in metrics["models"]
+
+    run_dirs = [path for path in artifacts_dir.iterdir() if path.is_dir()]
+    assert run_dirs, "Expected artifacts directory to be created"
+    latest = max(run_dirs, key=lambda path: path.stat().st_mtime)
+    config_path = latest / "config.json"
+    assert config_path.exists()
+    config = json.loads(config_path.read_text())
+    assert config["use_raw_pca"] is True
+    assert config["n_pcs"] == 3
+    assert config["mlp_params"]["n_components"] == 3
+    assert config["mlp_params"]["hidden_layer_sizes"] == [96, 32]
+    assert config["mlp_params"]["batch_size"] == 32
 
 
 def test_train_models_geometry_without_traces(tmp_path: Path) -> None:
