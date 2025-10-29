@@ -18,6 +18,9 @@ MODEL_FP_OPTIMIZED_MLP = "fp_optimized_mlp"
 ARCHITECTURE_SINGLE = "single"
 ARCHITECTURE_TWO_LAYER = "two_layer"
 
+ALLOWED_BATCH_SIZES: Tuple[int, ...] = (8, 16, 32, 64, 128, 256, 512, 1024)
+ALLOWED_LAYER_WIDTHS: Tuple[int, ...] = (8, 16, 32, 64, 128, 256, 512, 1024)
+
 
 def _parse_int_sequence(raw: Sequence[object] | str) -> Tuple[int, ...]:
     """Coerce a sequence representation into integer layer widths."""
@@ -112,13 +115,27 @@ def normalise_mlp_params(params: Mapping[str, object]) -> dict:
 
     hidden_layers = resolve_hidden_layer_sizes_from_params(params)
 
+    batch_size_value = int(params["batch_size"])
+    if batch_size_value not in ALLOWED_BATCH_SIZES:
+        raise ValueError(
+            "Batch size must be one of the supported powers of two: "
+            f"{ALLOWED_BATCH_SIZES}. Received {batch_size_value}."
+        )
+
     consolidated: dict = {
         "n_components": int(params["n_components"]),
         "alpha": float(params["alpha"]),
-        "batch_size": int(params["batch_size"]),
+        "batch_size": batch_size_value,
         "learning_rate_init": float(learning_rate_value),
         "hidden_layer_sizes": hidden_layers,
     }
+
+    for width in hidden_layers:
+        if int(width) not in ALLOWED_LAYER_WIDTHS:
+            raise ValueError(
+                "Hidden layer widths must be selected from the supported set "
+                f"{ALLOWED_LAYER_WIDTHS}. Received {hidden_layers}."
+            )
 
     if "selected_features" in params and params["selected_features"] is not None:
         feature_subset = params["selected_features"]

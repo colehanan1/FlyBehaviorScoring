@@ -129,18 +129,18 @@ def test_normalise_mlp_params_handles_two_layer_architecture() -> None:
         {
             "n_components": 12,
             "alpha": 0.0003,
-            "batch_size": 24,
+            "batch_size": 64,
             "learning_rate_init": 0.0015,
             "architecture": "two_layer",
-            "h1": 384,
-            "h2": 192,
+            "h1": 512,
+            "h2": 256,
         }
     )
 
-    assert params["hidden_layer_sizes"] == (384, 192)
-    assert params["h1"] == 384
-    assert params["h2"] == 192
-    assert params["layer_config"] == "384_192"
+    assert params["hidden_layer_sizes"] == (512, 256)
+    assert params["h1"] == 512
+    assert params["h2"] == 256
+    assert params["layer_config"] == "512_256"
 
 
 def test_normalise_mlp_params_preserves_selected_features() -> None:
@@ -318,7 +318,7 @@ def test_train_models_serialises_mlp_params(tmp_path: Path) -> None:
             "alpha": 0.0005,
             "batch_size": 32,
             "learning_rate_init": 0.001,
-            "hidden_layer_sizes": [96, 32],
+            "hidden_layer_sizes": [128, 32],
         }
     )
 
@@ -350,7 +350,7 @@ def test_train_models_serialises_mlp_params(tmp_path: Path) -> None:
     assert config["use_raw_pca"] is True
     assert config["n_pcs"] == 3
     assert config["mlp_params"]["n_components"] == 3
-    assert config["mlp_params"]["hidden_layer_sizes"] == [96, 32]
+    assert config["mlp_params"]["hidden_layer_sizes"] == [128, 32]
     assert config["mlp_params"]["batch_size"] == 32
 
 

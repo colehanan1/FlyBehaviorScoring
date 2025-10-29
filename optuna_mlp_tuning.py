@@ -50,6 +50,8 @@ from flybehavior_response.sample_weighted_mlp import (  # noqa: E402
     SampleWeightedMLPClassifier,
 )
 from flybehavior_response.modeling import (  # noqa: E402
+    ALLOWED_BATCH_SIZES,
+    ALLOWED_LAYER_WIDTHS,
     ARCHITECTURE_SINGLE,
     ARCHITECTURE_TWO_LAYER,
     normalise_mlp_params,
@@ -219,6 +221,18 @@ def _normalise_feature_list(raw: Optional[str]) -> Optional[Tuple[str, ...]]:
     for token in filtered:
         seen.setdefault(token, None)
     return tuple(seen.keys())
+
+
+def _generate_component_candidates(feature_dim: int) -> Tuple[int, ...]:
+    """Return the permissible PCA component counts for the given feature space."""
+
+    if feature_dim <= 0:
+        raise ValueError("Feature dimensionality must be positive to derive PCA candidates.")
+
+    upper = min(64, feature_dim)
+    if upper < 3:
+        return tuple(range(1, upper + 1))
+    return tuple(range(3, upper + 1))
 
 
 def _prepare_dataframe_from_dataset(
@@ -500,27 +514,24 @@ def objective_factory(
             "No feature columns available for optimisation. Ensure --features yields at least one column."
         )
 
-    max_components = min(64, feature_dim)
-    min_components = 3 if feature_dim >= 3 else feature_dim
-    if min_components == 0:
-        raise ValueError(
-            "PCA cannot operate without features. Provide at least one feature column."
-        )
+    component_candidates = _generate_component_candidates(feature_dim)
 
     def objective(trial: Trial) -> float:
-        n_components = trial.suggest_int("n_components", int(min_components), int(max_components))
+        n_components = int(
+            trial.suggest_categorical("n_components", component_candidates)
+        )
         alpha = trial.suggest_float("alpha", 1e-5, 1e-2, log=True)
-        batch_size = trial.suggest_int("batch_size", 8, 64)
+        batch_size = int(trial.suggest_categorical("batch_size", ALLOWED_BATCH_SIZES))
         learning_rate_init = trial.suggest_float("learning_rate_init", 1e-4, 1e-2, log=True)
 
         architecture = trial.suggest_categorical("architecture", [ARCHITECTURE_SINGLE, ARCHITECTURE_TWO_LAYER])
         if architecture == ARCHITECTURE_SINGLE:
-            hidden_size = trial.suggest_int("h1", 96, 750)
-            hidden_layer_sizes = (int(hidden_size),)
+            hidden_size = int(trial.suggest_categorical("h1", ALLOWED_LAYER_WIDTHS))
+            hidden_layer_sizes = (hidden_size,)
         else:
-            h1 = trial.suggest_int("h1", 96, 750)
-            h2 = trial.suggest_int("h2", 96, 750)
-            hidden_layer_sizes = (int(h1), int(h2))
+            h1 = int(trial.suggest_categorical("h1", ALLOWED_LAYER_WIDTHS))
+            h2 = int(trial.suggest_categorical("h2", ALLOWED_LAYER_WIDTHS))
+            hidden_layer_sizes = (h1, h2)
 
         pipeline = build_pipeline(
             n_components=int(n_components),
@@ -596,17 +607,9 @@ def _apply_component_constraints(
 ) -> dict:
     """Ensure PCA components respect the available feature dimensionality."""
 
-    if feature_dim == 0:
-        raise ValueError(
-            "No feature columns available for optimisation. Verify the dataset or the --features flag."
-        )
-
-    max_components = min(feature_dim, 64)
-    min_components = 3 if feature_dim >= 3 else feature_dim
-    if min_components == 0:
-        raise ValueError(
-            "PCA requires at least one feature column after feature selection."
-        )
+    component_candidates = _generate_component_candidates(feature_dim)
+    min_components = min(component_candidates)
+    max_components = max(component_candidates)
 
     requested = int(params["n_components"])
     if requested < min_components:
@@ -645,8 +648,11 @@ def run_baseline(
     same engineered feature subset supplied via the command line.
     """
 
-    if not 96 <= int(hidden) <= 750:
-        raise ValueError("Baseline hidden size must lie between 96 and 750.")
+    if int(hidden) not in ALLOWED_LAYER_WIDTHS:
+        raise ValueError(
+            "Baseline hidden size must be chosen from the supported widths "
+            f"{ALLOWED_LAYER_WIDTHS}. Received {hidden}."
+        )
 
     params = _baseline_params(hidden, components)
     params = _apply_component_constraints(
