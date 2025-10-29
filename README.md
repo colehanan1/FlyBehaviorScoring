@@ -34,6 +34,11 @@ python optuna_mlp_tuning.py \
   curated subset of engineered scalars. The tuner validates every requested
   column, removes duplicates, and records the final selection alongside the
   saved hyperparameters.
+* Whenever a feature subset leaves fewer usable columns than the requested PCA
+  dimensionality, the tuner, deterministic baseline, best-parameter replay, and
+  final retraining all clamp `n_components` to the available feature count while
+  enforcing the minimum viable dimension. This guard stops PCA from erroring out
+  on engineered-only configurations with very few predictors.
 * Each trial prunes early when the interim macro-F1 under-performs the running
   Optuna median after two folds, keeping runtime within the two-hour budget.
 * Sample weights default to 1.0 for non-responders and lower-intensity
@@ -85,7 +90,9 @@ trains the `SampleWeightedMLPClassifier` end to end with the saved hyperparamete
 All downstream artefacts (model, report, and parameter snapshot) are refreshed
 to reflect the supplied configuration. When a feature subset was enforced, the
 `selected_features` array persisted in `best_params.json` is honoured so the
-re-evaluation mirrors the original search space.
+re-evaluation mirrors the original search space. Any PCA dimensionality in the
+payload that exceeds the reduced feature set is automatically clamped to keep
+the reconstruction numerically valid.
 
 ### Training the CLI with tuned hyperparameters
 

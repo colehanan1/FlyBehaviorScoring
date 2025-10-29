@@ -494,8 +494,21 @@ def objective_factory(
         Optional tuple of engineered features retained in ``feature_frame``.
     """
 
+    feature_dim = feature_frame.shape[1]
+    if feature_dim == 0:
+        raise ValueError(
+            "No feature columns available for optimisation. Ensure --features yields at least one column."
+        )
+
+    max_components = min(64, feature_dim)
+    min_components = 3 if feature_dim >= 3 else feature_dim
+    if min_components == 0:
+        raise ValueError(
+            "PCA cannot operate without features. Provide at least one feature column."
+        )
+
     def objective(trial: Trial) -> float:
-        n_components = trial.suggest_int("n_components", 3, 64)
+        n_components = trial.suggest_int("n_components", int(min_components), int(max_components))
         alpha = trial.suggest_float("alpha", 1e-5, 1e-2, log=True)
         batch_size = trial.suggest_int("batch_size", 8, 64)
         learning_rate_init = trial.suggest_float("learning_rate_init", 1e-4, 1e-2, log=True)
@@ -574,6 +587,49 @@ def _baseline_params(hidden: int, components: int) -> dict:
     }
 
 
+def _apply_component_constraints(
+    params: Mapping[str, object],
+    *,
+    feature_dim: int,
+    logger: logging.Logger,
+    context: str,
+) -> dict:
+    """Ensure PCA components respect the available feature dimensionality."""
+
+    if feature_dim == 0:
+        raise ValueError(
+            "No feature columns available for optimisation. Verify the dataset or the --features flag."
+        )
+
+    max_components = min(feature_dim, 64)
+    min_components = 3 if feature_dim >= 3 else feature_dim
+    if min_components == 0:
+        raise ValueError(
+            "PCA requires at least one feature column after feature selection."
+        )
+
+    requested = int(params["n_components"])
+    if requested < min_components:
+        raise ValueError(
+            f"{context} PCA components {requested} fall below the minimum allowable "
+            f"{min_components} for {feature_dim} feature columns."
+        )
+
+    adjusted = int(min(requested, max_components))
+    if adjusted != requested:
+        logger.warning(
+            "%s PCA components %d exceed the available feature dimension (%d); using %d instead.",
+            context,
+            requested,
+            feature_dim,
+            adjusted,
+        )
+
+    constrained = dict(params)
+    constrained["n_components"] = adjusted
+    return constrained
+
+
 def run_baseline(
     *,
     bundle: DatasetBundle,
@@ -591,14 +647,18 @@ def run_baseline(
 
     if not 96 <= int(hidden) <= 750:
         raise ValueError("Baseline hidden size must lie between 96 and 750.")
-    if not 3 <= int(components) <= 64:
-        raise ValueError("Baseline PCA components must lie between 3 and 64.")
 
     params = _baseline_params(hidden, components)
+    params = _apply_component_constraints(
+        params,
+        feature_dim=feature_frame.shape[1],
+        logger=logger,
+        context="Baseline",
+    )
     pipeline = build_pipeline_from_params(params)
     logger.info(
         "Evaluating baseline model | components=%d | hidden=%d",
-        components,
+        params["n_components"],
         hidden,
     )
     result = evaluate_pipeline(
@@ -781,7 +841,13 @@ def retrain_final_model(
     engineered feature subset that produced the winning score.
     """
 
-    pipeline = build_pipeline_from_params(best_params)
+    constrained_params = _apply_component_constraints(
+        best_params,
+        feature_dim=feature_frame.shape[1],
+        logger=logger,
+        context="Final retraining",
+    )
+    pipeline = build_pipeline_from_params(constrained_params)
 
     logger.info("Retraining best pipeline on the full dataset (%d samples)", len(feature_frame))
     pipeline.fit(
@@ -842,6 +908,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         best_params_raw = json.loads(args.best_params_json.read_text())
         best_params = normalise_mlp_params(best_params_raw)
+        best_params = _apply_component_constraints(
+            best_params,
+            feature_dim=feature_frame.shape[1],
+            logger=logger,
+            context="Best-parameter replay",
+        )
         best_pipeline = build_pipeline_from_params(best_params)
         best_result = evaluate_pipeline(
             pipeline=best_pipeline,
@@ -875,6 +947,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         logger.info("Best trial parameters: %s", study.best_trial.params)
 
         best_params = normalise_mlp_params(study.best_trial.params)
+        best_params = _apply_component_constraints(
+            best_params,
+            feature_dim=feature_frame.shape[1],
+            logger=logger,
+            context="Optuna best trial",
+        )
         best_pipeline = build_pipeline_from_params(best_params)
         best_result = evaluate_pipeline(
             pipeline=best_pipeline,
