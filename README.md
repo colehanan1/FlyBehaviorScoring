@@ -34,6 +34,10 @@ python optuna_mlp_tuning.py \
   Optuna median after two folds, keeping runtime within the two-hour budget.
 * Sample weights default to 1.0 for non-responders and lower-intensity
   responses, with class-5 trials receiving a 5× multiplier during optimisation.
+* The search space spans continuous integer ranges: PCA components anywhere from
+  3 to 64, mini-batch sizes between 8 and 64, and hidden-layer widths from 96 up
+  to 750 neurons per layer. Saved JSON payloads may therefore contain any
+  integer within those bounds, and both the tuner and CLI will honour them.
 * Provide `--best-params-json /path/to/best_params.json` to skip optimisation and
   retrain/evaluate using a previously exported Optuna configuration. The JSON
   may contain either the raw Optuna trial parameters (`architecture`, `h1`,

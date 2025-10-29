@@ -123,6 +123,25 @@ def test_build_model_pipeline_applies_mlp_params(tmp_path: Path) -> None:
     assert model.early_stopping is True
 
 
+def test_normalise_mlp_params_handles_two_layer_architecture() -> None:
+    params = normalise_mlp_params(
+        {
+            "n_components": 12,
+            "alpha": 0.0003,
+            "batch_size": 24,
+            "learning_rate_init": 0.0015,
+            "architecture": "two_layer",
+            "h1": 384,
+            "h2": 192,
+        }
+    )
+
+    assert params["hidden_layer_sizes"] == (384, 192)
+    assert params["h1"] == 384
+    assert params["h2"] == 192
+    assert params["layer_config"] == "384_192"
+
+
 def test_train_models_returns_metrics(tmp_path: Path) -> None:
     data_path, labels_path = _create_dataset(tmp_path)
     metrics = train_models(

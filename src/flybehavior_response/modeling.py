@@ -60,20 +60,37 @@ def resolve_hidden_layer_sizes_from_params(params: Mapping[str, object]) -> Tupl
     arch_token = str(architecture).strip().lower()
     if arch_token == ARCHITECTURE_SINGLE:
         h1 = params.get("h1")
-        if h1 is None:
-            raise ValueError("Single-layer architecture requires an 'h1' parameter.")
-        return (int(h1),)
+        if h1 is not None:
+            return (int(h1),)
+        hidden_keys = sorted(
+            [key for key in params if key.lower().startswith("h") and key[1:].isdigit()],
+            key=lambda name: int(name[1:]),
+        )
+        if hidden_keys:
+            return (int(params[hidden_keys[0]]),)
+        raise ValueError("Single-layer architecture requires an 'h1' parameter or explicit hidden sizes.")
 
     if arch_token == ARCHITECTURE_TWO_LAYER:
         layer_config = params.get("layer_config")
-        if layer_config is None:
-            raise ValueError("Two-layer architecture requires a 'layer_config' parameter.")
-        if isinstance(layer_config, (list, tuple)):
-            tokens = [str(value) for value in layer_config]
-        else:
-            tokens = _parse_int_sequence(layer_config)
-            return tokens
-        return tuple(int(token) for token in tokens if token)
+        if layer_config is not None:
+            if isinstance(layer_config, (list, tuple)):
+                tokens = [str(value) for value in layer_config]
+                return tuple(int(token) for token in tokens if token)
+            return _parse_int_sequence(layer_config)
+
+        hidden_keys = sorted(
+            [key for key in params if key.lower().startswith("h") and key[1:].isdigit()],
+            key=lambda name: int(name[1:]),
+        )
+        if hidden_keys:
+            widths = tuple(int(params[key]) for key in hidden_keys)
+            if len(widths) < 2:
+                raise ValueError("Two-layer architecture requires at least h1 and h2 values.")
+            return widths
+
+        raise ValueError(
+            "Two-layer architecture requires layer widths via layer_config, hidden_layer_sizes, or explicit h1/h2 keys."
+        )
 
     raise ValueError(
         "Unsupported architecture token when resolving hidden_layer_sizes: "
@@ -108,14 +125,15 @@ def normalise_mlp_params(params: Mapping[str, object]) -> dict:
         arch_token = str(architecture).strip().lower()
         consolidated["architecture"] = arch_token
         if arch_token == ARCHITECTURE_SINGLE:
-            h1 = params.get("h1")
-            if h1 is not None:
-                consolidated["h1"] = int(h1)
+            if hidden_layers:
+                consolidated["h1"] = int(hidden_layers[0])
         elif arch_token == ARCHITECTURE_TWO_LAYER:
             layer_config = params.get("layer_config")
             if layer_config is None:
                 layer_config = "_".join(str(size) for size in hidden_layers)
             consolidated["layer_config"] = str(layer_config)
+            for idx, width in enumerate(hidden_layers, start=1):
+                consolidated[f"h{idx}"] = int(width)
 
     return consolidated
 

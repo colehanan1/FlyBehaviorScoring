@@ -169,14 +169,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--baseline-hidden",
         type=int,
         default=128,
-        choices=[96, 128, 192],
         help="Hidden width for the single-layer baseline comparison.",
     )
     parser.add_argument(
         "--baseline-components",
         type=int,
         default=40,
-        choices=[32, 40, 48, 56, 64],
         help="Number of PCA components used in the baseline model.",
     )
     parser.add_argument(
@@ -440,18 +438,19 @@ def objective_factory(
     """Create the Optuna objective closure bound to the dataset and logger."""
 
     def objective(trial: Trial) -> float:
-        n_components = trial.suggest_categorical("n_components", [32, 40, 48, 56, 64])
+        n_components = trial.suggest_int("n_components", 3, 64)
         alpha = trial.suggest_float("alpha", 1e-5, 1e-2, log=True)
-        batch_size = trial.suggest_categorical("batch_size", [16, 32])
+        batch_size = trial.suggest_int("batch_size", 8, 64)
         learning_rate_init = trial.suggest_float("learning_rate_init", 1e-4, 1e-2, log=True)
 
         architecture = trial.suggest_categorical("architecture", [ARCHITECTURE_SINGLE, ARCHITECTURE_TWO_LAYER])
         if architecture == ARCHITECTURE_SINGLE:
-            hidden_size = trial.suggest_categorical("h1", [96, 128, 192])
+            hidden_size = trial.suggest_int("h1", 96, 750)
             hidden_layer_sizes = (int(hidden_size),)
         else:
-            layer_config = trial.suggest_categorical("layer_config", ["96_32", "128_64", "192_96"])
-            hidden_layer_sizes = tuple(int(part) for part in layer_config.split("_"))
+            h1 = trial.suggest_int("h1", 96, 750)
+            h2 = trial.suggest_int("h2", 96, 750)
+            hidden_layer_sizes = (int(h1), int(h2))
 
         pipeline = build_pipeline(
             n_components=int(n_components),
@@ -462,11 +461,12 @@ def objective_factory(
         )
 
         logger.info(
-            "Trial %d configuration | components=%s | alpha=%.3e | batch=%d | lr=%.3e | hidden=%s",
+            "Trial %d configuration | architecture=%s | components=%d | alpha=%.3e | batch=%d | lr=%.3e | hidden=%s",
             trial.number,
-            n_components,
+            architecture,
+            int(n_components),
             alpha,
-            batch_size,
+            int(batch_size),
             learning_rate_init,
             hidden_layer_sizes,
         )
@@ -518,6 +518,11 @@ def run_baseline(
     logger: logging.Logger,
 ) -> Tuple[dict, EvaluationResult]:
     """Evaluate a deterministic baseline configuration for reporting."""
+
+    if not 96 <= int(hidden) <= 750:
+        raise ValueError("Baseline hidden size must lie between 96 and 750.")
+    if not 3 <= int(components) <= 64:
+        raise ValueError("Baseline PCA components must lie between 3 and 64.")
 
     params = _baseline_params(hidden, components)
     pipeline = build_pipeline_from_params(params)
