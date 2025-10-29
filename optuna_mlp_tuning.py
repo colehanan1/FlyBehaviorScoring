@@ -16,7 +16,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Mapping, Sequence, Tuple
+from typing import Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import joblib
 import numpy as np
@@ -156,6 +156,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Optional global timeout (seconds). Use 0 to disable the limit.",
     )
     parser.add_argument(
+        "--features",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of engineered feature columns to retain. When omitted, "
+            "all available scalar features are used."
+        ),
+    )
+    parser.add_argument(
         "--best-params-json",
         type=Path,
         default=None,
@@ -193,12 +202,43 @@ def configure_logging(verbose: bool) -> logging.Logger:
     return logger
 
 
-def _prepare_dataframe_from_dataset(bundle: DatasetBundle) -> pd.DataFrame:
+def _normalise_feature_list(raw: Optional[str]) -> Optional[Tuple[str, ...]]:
+    """Parse a comma-separated feature string into a normalised tuple."""
+
+    if raw is None:
+        return None
+
+    tokens = [token.strip() for token in raw.split(",")]
+    filtered = [token for token in tokens if token]
+
+    if not filtered:
+        raise ValueError("--features was provided but no valid feature names were detected.")
+
+    # Preserve order while removing duplicates
+    seen = {}
+    for token in filtered:
+        seen.setdefault(token, None)
+    return tuple(seen.keys())
+
+
+def _prepare_dataframe_from_dataset(
+    bundle: DatasetBundle,
+    selected_features: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
     """Return the feature matrix stripped of identifier and label columns."""
 
     drop_columns = [*MERGE_KEYS, LABEL_COLUMN, LABEL_INTENSITY_COLUMN, "reaction_strength"]
     available_to_drop = [col for col in drop_columns if col in bundle.features.columns]
     feature_frame = bundle.features.drop(columns=available_to_drop, errors="ignore")
+
+    if selected_features is not None:
+        missing = [name for name in selected_features if name not in feature_frame.columns]
+        if missing:
+            raise ValueError(
+                "Requested engineered features are missing from the dataset: "
+                f"{missing}"
+            )
+        feature_frame = feature_frame.loc[:, list(dict.fromkeys(selected_features))]
     return feature_frame
 
 
@@ -319,6 +359,8 @@ def build_pipeline(
         ]
     )
     return pipeline
+
+
 def build_pipeline_from_params(params: Mapping[str, object]) -> Pipeline:
     """Convenience helper to construct a pipeline from a parameter mapping."""
 
@@ -348,10 +390,13 @@ def evaluate_pipeline(
     bundle: DatasetBundle,
     logger: logging.Logger,
     trial: Trial | None = None,
+    feature_frame: pd.DataFrame | None = None,
+    selected_features: Optional[Sequence[str]] = None,
 ) -> EvaluationResult:
     """Execute grouped cross-validation and report metrics."""
 
-    feature_frame = _prepare_dataframe_from_dataset(bundle)
+    if feature_frame is None:
+        feature_frame = _prepare_dataframe_from_dataset(bundle, selected_features)
     cv = GroupKFold(n_splits=5)
 
     fold_macro_f1: List[float] = []
@@ -434,11 +479,36 @@ def objective_factory(
     *,
     bundle: DatasetBundle,
     logger: logging.Logger,
+    feature_frame: pd.DataFrame,
+    selected_features: Optional[Sequence[str]],
 ) -> optuna.ObjectiveFuncType:
-    """Create the Optuna objective closure bound to the dataset and logger."""
+    """Create the Optuna objective closure bound to the dataset and logger.
+
+    Parameters
+    ----------
+    feature_frame:
+        Pre-sliced feature matrix that respects the caller's engineered feature
+        selection. Sharing a single DataFrame avoids redundant column drops for
+        every trial.
+    selected_features:
+        Optional tuple of engineered features retained in ``feature_frame``.
+    """
+
+    feature_dim = feature_frame.shape[1]
+    if feature_dim == 0:
+        raise ValueError(
+            "No feature columns available for optimisation. Ensure --features yields at least one column."
+        )
+
+    max_components = min(64, feature_dim)
+    min_components = 3 if feature_dim >= 3 else feature_dim
+    if min_components == 0:
+        raise ValueError(
+            "PCA cannot operate without features. Provide at least one feature column."
+        )
 
     def objective(trial: Trial) -> float:
-        n_components = trial.suggest_int("n_components", 3, 64)
+        n_components = trial.suggest_int("n_components", int(min_components), int(max_components))
         alpha = trial.suggest_float("alpha", 1e-5, 1e-2, log=True)
         batch_size = trial.suggest_int("batch_size", 8, 64)
         learning_rate_init = trial.suggest_float("learning_rate_init", 1e-4, 1e-2, log=True)
@@ -472,7 +542,14 @@ def objective_factory(
         )
 
         try:
-            result = evaluate_pipeline(pipeline=pipeline, bundle=bundle, logger=logger, trial=trial)
+            result = evaluate_pipeline(
+                pipeline=pipeline,
+                bundle=bundle,
+                logger=logger,
+                trial=trial,
+                feature_frame=feature_frame,
+                selected_features=selected_features,
+            )
         except optuna.TrialPruned:
             raise
         except Exception as exc:
@@ -510,28 +587,88 @@ def _baseline_params(hidden: int, components: int) -> dict:
     }
 
 
+def _apply_component_constraints(
+    params: Mapping[str, object],
+    *,
+    feature_dim: int,
+    logger: logging.Logger,
+    context: str,
+) -> dict:
+    """Ensure PCA components respect the available feature dimensionality."""
+
+    if feature_dim == 0:
+        raise ValueError(
+            "No feature columns available for optimisation. Verify the dataset or the --features flag."
+        )
+
+    max_components = min(feature_dim, 64)
+    min_components = 3 if feature_dim >= 3 else feature_dim
+    if min_components == 0:
+        raise ValueError(
+            "PCA requires at least one feature column after feature selection."
+        )
+
+    requested = int(params["n_components"])
+    if requested < min_components:
+        raise ValueError(
+            f"{context} PCA components {requested} fall below the minimum allowable "
+            f"{min_components} for {feature_dim} feature columns."
+        )
+
+    adjusted = int(min(requested, max_components))
+    if adjusted != requested:
+        logger.warning(
+            "%s PCA components %d exceed the available feature dimension (%d); using %d instead.",
+            context,
+            requested,
+            feature_dim,
+            adjusted,
+        )
+
+    constrained = dict(params)
+    constrained["n_components"] = adjusted
+    return constrained
+
+
 def run_baseline(
     *,
     bundle: DatasetBundle,
     hidden: int,
     components: int,
     logger: logging.Logger,
+    feature_frame: pd.DataFrame,
+    selected_features: Optional[Sequence[str]],
 ) -> Tuple[dict, EvaluationResult]:
-    """Evaluate a deterministic baseline configuration for reporting."""
+    """Evaluate a deterministic baseline configuration for reporting.
+
+    The precomputed ``feature_frame`` ensures that baseline scoring honours the
+    same engineered feature subset supplied via the command line.
+    """
 
     if not 96 <= int(hidden) <= 750:
         raise ValueError("Baseline hidden size must lie between 96 and 750.")
-    if not 3 <= int(components) <= 64:
-        raise ValueError("Baseline PCA components must lie between 3 and 64.")
 
     params = _baseline_params(hidden, components)
+    params = _apply_component_constraints(
+        params,
+        feature_dim=feature_frame.shape[1],
+        logger=logger,
+        context="Baseline",
+    )
     pipeline = build_pipeline_from_params(params)
     logger.info(
         "Evaluating baseline model | components=%d | hidden=%d",
-        components,
+        params["n_components"],
         hidden,
     )
-    result = evaluate_pipeline(pipeline=pipeline, bundle=bundle, logger=logger, trial=None)
+    result = evaluate_pipeline(
+        pipeline=pipeline,
+        bundle=bundle,
+        logger=logger,
+        trial=None,
+        feature_frame=feature_frame,
+        selected_features=selected_features,
+    )
     return params, result
 
 
@@ -566,6 +703,7 @@ def save_report(
     best_params: dict,
     best_result: EvaluationResult,
     study: optuna.Study | None,
+    selected_features: Optional[Sequence[str]],
 ) -> None:
     report_path = output_dir / "TUNING_REPORT.md"
 
@@ -592,6 +730,9 @@ def save_report(
 
     best_params_serialisable = dict(best_params)
     best_params_serialisable["hidden_layer_sizes"] = list(best_params_serialisable["hidden_layer_sizes"])
+    best_params_serialisable["selected_features"] = (
+        list(selected_features) if selected_features is not None else None
+    )
     baseline_params_serialisable = dict(baseline_params)
     baseline_params_serialisable["hidden_layer_sizes"] = list(baseline_params_serialisable["hidden_layer_sizes"])
 
@@ -621,11 +762,25 @@ def save_report(
             "Re-run Optuna to obtain interactive diagnostics.\n"
         )
 
+    if selected_features is None:
+        feature_summary = (
+            "All engineered scalar features present in the dataset were included in the search."
+        )
+    else:
+        feature_summary = (
+            "The optimisation was restricted to the following engineered features: "
+            + ", ".join(selected_features)
+        )
+
     contents = f"""# Optuna Tuning Report
 
 ## Executive Summary
 
 {summary}
+
+## Feature Configuration
+
+{feature_summary}
 
 ## Best Hyperparameters
 
@@ -678,10 +833,22 @@ def retrain_final_model(
     best_params: dict,
     output_dir: Path,
     logger: logging.Logger,
+    feature_frame: pd.DataFrame,
 ) -> Path:
-    pipeline = build_pipeline_from_params(best_params)
+    """Retrain the best-scoring pipeline on the full dataset.
 
-    feature_frame = _prepare_dataframe_from_dataset(bundle)
+    The provided ``feature_frame`` guarantees that retraining honours the same
+    engineered feature subset that produced the winning score.
+    """
+
+    constrained_params = _apply_component_constraints(
+        best_params,
+        feature_dim=feature_frame.shape[1],
+        logger=logger,
+        context="Final retraining",
+    )
+    pipeline = build_pipeline_from_params(constrained_params)
+
     logger.info("Retraining best pipeline on the full dataset (%d samples)", len(feature_frame))
     pipeline.fit(
         feature_frame,
@@ -711,11 +878,27 @@ def main(argv: Sequence[str] | None = None) -> None:
         logger=logger,
     )
 
+    selected_features = _normalise_feature_list(args.features)
+    feature_frame = _prepare_dataframe_from_dataset(bundle, selected_features)
+    if selected_features is None:
+        logger.info(
+            "Optimisation will consider all %d engineered features.",
+            feature_frame.shape[1],
+        )
+    else:
+        logger.info(
+            "Restricting optimisation to %d user-specified features: %s",
+            len(selected_features),
+            ", ".join(selected_features),
+        )
+
     baseline_params, baseline_result = run_baseline(
         bundle=bundle,
         hidden=args.baseline_hidden,
         components=args.baseline_components,
         logger=logger,
+        feature_frame=feature_frame,
+        selected_features=selected_features,
     )
 
     study: optuna.Study | None = None
@@ -725,8 +908,20 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         best_params_raw = json.loads(args.best_params_json.read_text())
         best_params = normalise_mlp_params(best_params_raw)
+        best_params = _apply_component_constraints(
+            best_params,
+            feature_dim=feature_frame.shape[1],
+            logger=logger,
+            context="Best-parameter replay",
+        )
         best_pipeline = build_pipeline_from_params(best_params)
-        best_result = evaluate_pipeline(pipeline=best_pipeline, bundle=bundle, logger=logger)
+        best_result = evaluate_pipeline(
+            pipeline=best_pipeline,
+            bundle=bundle,
+            logger=logger,
+            feature_frame=feature_frame,
+            selected_features=selected_features,
+        )
     else:
         storage_path = args.output_dir / "optuna_study.db"
         storage = optuna.storages.RDBStorage(url=f"sqlite:///{storage_path}")
@@ -739,7 +934,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=2, interval_steps=1),
         )
 
-        objective = objective_factory(bundle=bundle, logger=logger)
+        objective = objective_factory(
+            bundle=bundle,
+            logger=logger,
+            feature_frame=feature_frame,
+            selected_features=selected_features,
+        )
         timeout = None if args.timeout == 0 else args.timeout
         study.optimize(objective, n_trials=args.n_trials, timeout=timeout)
 
@@ -747,10 +947,28 @@ def main(argv: Sequence[str] | None = None) -> None:
         logger.info("Best trial parameters: %s", study.best_trial.params)
 
         best_params = normalise_mlp_params(study.best_trial.params)
+        best_params = _apply_component_constraints(
+            best_params,
+            feature_dim=feature_frame.shape[1],
+            logger=logger,
+            context="Optuna best trial",
+        )
         best_pipeline = build_pipeline_from_params(best_params)
-        best_result = evaluate_pipeline(pipeline=best_pipeline, bundle=bundle, logger=logger)
+        best_result = evaluate_pipeline(
+            pipeline=best_pipeline,
+            bundle=bundle,
+            logger=logger,
+            feature_frame=feature_frame,
+            selected_features=selected_features,
+        )
 
-    retrain_final_model(bundle=bundle, best_params=best_params, output_dir=args.output_dir, logger=logger)
+    retrain_final_model(
+        bundle=bundle,
+        best_params=best_params,
+        output_dir=args.output_dir,
+        logger=logger,
+        feature_frame=feature_frame,
+    )
 
     if study is not None:
         trials_df = study.trials_dataframe()
@@ -761,6 +979,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     best_params_path = args.output_dir / "best_params.json"
     serialisable_params = dict(best_params)
     serialisable_params["hidden_layer_sizes"] = list(serialisable_params["hidden_layer_sizes"])
+    if selected_features is not None:
+        serialisable_params["selected_features"] = list(selected_features)
+    else:
+        serialisable_params["selected_features"] = None
     best_params_path.write_text(json.dumps(serialisable_params, indent=2))
     logger.info("Saved best parameters to %s", best_params_path)
 
@@ -775,6 +997,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         best_params=best_params,
         best_result=best_result,
         study=study,
+        selected_features=selected_features,
     )
 
 
