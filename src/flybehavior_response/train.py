@@ -16,7 +16,13 @@ from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from .config import PipelineConfig, compute_class_balance, hash_file, make_run_artifacts
 from .evaluate import evaluate_models, perform_cross_validation, save_metrics
 from .features import build_column_transformer, validate_features
-from .io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, MERGE_KEYS, load_dataset
+from .io import (
+    LABEL_COLUMN,
+    LABEL_INTENSITY_COLUMN,
+    MERGE_KEYS,
+    NON_REACTIVE_FLAG_COLUMN,
+    load_dataset,
+)
 from .logging_utils import get_logger
 from .modeling import (
     MODEL_FP_OPTIMIZED_MLP,
@@ -159,19 +165,36 @@ def train_models(
     resolved_prefixes = list(dataset.trace_prefixes)
     logger.debug("Trace prefixes resolved to: %s", resolved_prefixes)
 
-    if dataset.feature_columns:
+    available_features = list(dataset.feature_columns)
+    if (
+        NON_REACTIVE_FLAG_COLUMN in dataset.frame.columns
+        and NON_REACTIVE_FLAG_COLUMN not in available_features
+    ):
+        available_features.append(NON_REACTIVE_FLAG_COLUMN)
+
+    if available_features:
         try:
             selected_features = validate_features(
-                features, dataset.feature_columns, logger_name=__name__
+                features, available_features, logger_name=__name__
             )
         except ValueError as exc:
-            available = ", ".join(dataset.feature_columns)
-            logger.error(
-                "Requested engineered features %s are not fully available. Dataset columns: %s.",
+            available_set = set(available_features)
+            requested_available = [
+                feat for feat in features if feat in available_set
+            ]
+            if requested_available:
+                available = ", ".join(available_features)
+                logger.error(
+                    "Requested engineered features %s are not fully available. Dataset columns: %s.",
+                    sorted(features),
+                    available,
+                )
+                raise
+            logger.warning(
+                "Requested engineered features %s are unavailable for this dataset; proceeding without engineered scalars.",
                 sorted(features),
-                available,
             )
-            raise
+            selected_features = []
         logger.debug("Selected features: %s", selected_features)
     else:
         if features:

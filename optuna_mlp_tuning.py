@@ -45,6 +45,7 @@ from flybehavior_response.io import (  # noqa: E402
     LABEL_COLUMN,
     LABEL_INTENSITY_COLUMN,
     MERGE_KEYS,
+    NON_REACTIVE_FLAG_COLUMN,
     load_dataset,
 )
 from flybehavior_response.logging_utils import get_logger  # noqa: E402
@@ -316,6 +317,7 @@ def load_training_data(
         labels = (intensity > 0).astype(int)
         frame[LABEL_INTENSITY_COLUMN] = intensity
         frame[LABEL_COLUMN] = labels
+        frame[NON_REACTIVE_FLAG_COLUMN] = (labels == 0).astype(int)
 
     logger.info("Binary label distribution: %s", labels.value_counts().sort_index().to_dict())
     logger.info(

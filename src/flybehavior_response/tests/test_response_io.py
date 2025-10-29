@@ -9,6 +9,7 @@ import pytest
 from flybehavior_response.io import (
     LABEL_COLUMN,
     LABEL_INTENSITY_COLUMN,
+    NON_REACTIVE_FLAG_COLUMN,
     DataValidationError,
     RAW_TRACE_PREFIXES,
     TRACE_PATTERN,
@@ -67,6 +68,7 @@ def test_load_and_merge_filters_traces(sample_csvs: tuple[Path, Path]) -> None:
     assert dataset.trace_columns[-1] == "dir_val_3600"
     assert dataset.frame[LABEL_COLUMN].tolist() == [0, 1]
     assert dataset.frame[LABEL_INTENSITY_COLUMN].tolist() == [0, 5]
+    assert dataset.frame[NON_REACTIVE_FLAG_COLUMN].tolist() == [1, 0]
     assert dataset.sample_weights.tolist() == [1.0, 5.0]
 
 
@@ -734,6 +736,7 @@ def test_load_geometry_dataset_trial_granularity(geometry_csvs: tuple[Path, Path
     assert LABEL_COLUMN in dataset.frame.columns
     assert LABEL_INTENSITY_COLUMN in dataset.frame.columns
     assert dataset.frame[LABEL_COLUMN].tolist() == [0, 1]
+    assert dataset.frame[NON_REACTIVE_FLAG_COLUMN].tolist() == [1, 0]
     assert "x_mean" in dataset.frame.columns
     assert dataset.frame["x_mean"].dtype == "float32"
     assert dataset.feature_columns and "x_mean" in dataset.feature_columns
@@ -756,6 +759,7 @@ def test_load_geometry_dataset_merges_trial_summary(
     assert dataset.frame["frac_high_ext_during"].tolist() == pytest.approx([0.2, 0.30000000000000004], rel=1e-6)
     assert "rise_speed" in dataset.feature_columns
     assert "W_est_fly" in dataset.feature_columns
+    assert dataset.frame[NON_REACTIVE_FLAG_COLUMN].tolist() == [1, 0]
 
 
 def test_load_geometry_dataset_summary_requires_trial(
@@ -818,6 +822,7 @@ def test_load_geometry_dataset_includes_responder_features(tmp_path: Path) -> No
     assert pytest.approx(row["r_during_mean"], rel=1e-6) == pytest.approx(190.0 / 3.0, rel=1e-6)
     assert pytest.approx(row["r_during_minus_before_mean"], rel=1e-6) == pytest.approx(190.0 / 3.0 - 10.0, rel=1e-6)
     assert pytest.approx(row["cos_theta_during_mean"], rel=1e-6) == 1.0
+    assert row[NON_REACTIVE_FLAG_COLUMN] == 0
     assert pytest.approx(row["sin_theta_during_mean"], rel=1e-6) == 0.0
     assert pytest.approx(row["direction_consistency"], rel=1e-6) == 1.0
     assert pytest.approx(row["frac_high_ext_during"], rel=1e-6) == pytest.approx(2.0 / 3.0, rel=1e-6)
@@ -1017,6 +1022,7 @@ def test_load_geometry_dataset_frame_granularity(geometry_csvs: tuple[Path, Path
     assert dataset.granularity == "frame"
     assert len(dataset.frame) == 6
     assert dataset.frame[LABEL_COLUMN].isin({0, 1}).all()
+    assert set(dataset.frame[NON_REACTIVE_FLAG_COLUMN].unique()) <= {0, 1}
     assert dataset.feature_columns
     first_feature = dataset.feature_columns[0]
     assert dataset.frame[first_feature].dtype == "float32"
