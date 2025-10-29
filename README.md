@@ -8,6 +8,118 @@ This package trains, evaluates, and visualizes supervised models that predict fl
 pip install -e .
 ```
 
+## Optuna MLP Hyperparameter Tuning
+
+The repository now ships with `optuna_mlp_tuning.py`, a production-grade search
+script that co-optimises PCA dimensionality and the
+`SampleWeightedMLPClassifier`. The workflow enforces fly-level leakage guards
+via `GroupKFold`, up-weights high-intensity class-5 responders, and evaluates
+macro-F1 as the primary score.
+
+### Running the tuner
+
+```bash
+python optuna_mlp_tuning.py \
+  --data-csv /path/to/all_envelope_rows_wide.csv \
+  --labels-csv /path/to/labels.csv \
+  --n-trials 100 \
+  --timeout 7200 \
+  --output-dir optuna_results
+```
+
+* Provide `--labels-csv` when using the canonical wide export split across data
+  and label tables. If labels are embedded in the features CSV, ensure a
+  `reaction_strength` column is present and omit `--labels-csv`.
+* Add `--features "AUC-During,global_max,..."` to constrain the search to a
+  curated subset of engineered scalars. The tuner validates every requested
+  column, removes duplicates, and records the final selection alongside the
+  saved hyperparameters.
+* Whenever a feature subset leaves fewer usable columns than the requested PCA
+  dimensionality, the tuner, deterministic baseline, best-parameter replay, and
+  final retraining all clamp `n_components` to the available feature count while
+  enforcing the minimum viable dimension. This guard stops PCA from erroring out
+  on engineered-only configurations with very few predictors.
+* Each trial prunes early when the interim macro-F1 under-performs the running
+  Optuna median after two folds, keeping runtime within the two-hour budget.
+* Sample weights default to 1.0 for non-responders and lower-intensity
+  responses, with class-5 trials receiving a 5× multiplier during optimisation.
+* The search space spans continuous integer ranges: PCA components anywhere from
+  3 to 64, mini-batch sizes between 8 and 64, and hidden-layer widths from 96 up
+  to 750 neurons per layer. Saved JSON payloads may therefore contain any
+  integer within those bounds, and both the tuner and CLI will honour them.
+* Provide `--best-params-json /path/to/best_params.json` to skip optimisation and
+  retrain/evaluate using a previously exported Optuna configuration. The JSON
+  may contain either the raw Optuna trial parameters (`architecture`, `h1`,
+  `layer_config`, etc.) or the normalised output written by this script.
+
+### Generated artefacts
+
+The command writes all deliverables into `--output-dir` (defaults to
+`optuna_results/`):
+
+| File | Description |
+| --- | --- |
+| `optuna_study.db` | SQLite storage for resuming or auditing the study. |
+| `optuna_trials.csv` | Tabular export of every trial with metrics and timings. |
+| `optuna_history.html` | Interactive optimisation trace (Plotly). |
+| `optuna_importances.html` | Hyperparameter importance plot emphasising PCA components. |
+| `best_params.json` | Best configuration including architecture, optimiser settings, and the selected engineered features. |
+| `best_mlp_model.joblib` | Retrained preprocessing + MLP pipeline for deployment. |
+| `TUNING_REPORT.md` | Auto-generated summary comparing the tuned model with the baseline. |
+
+The retrained pipeline includes the median imputer, scaler, PCA transform, and
+the optimised neural network, allowing drop-in inference via
+`joblib.load(output_dir / "best_mlp_model.joblib")`. Because `.joblib` files are
+ignored by Git, they remain local run artefacts.
+
+### Reusing a saved configuration
+
+After a successful Optuna run, you can rebuild and retrain the best pipeline
+without repeating the search:
+
+```bash
+python optuna_mlp_tuning.py \
+  --data-csv /path/to/all_envelope_rows_wide.csv \
+  --labels-csv /path/to/labels.csv \
+  --best-params-json optuna_results/best_params.json \
+  --output-dir optuna_results
+```
+
+The script normalises the JSON payload, resolves the hidden-layer topology, and
+trains the `SampleWeightedMLPClassifier` end to end with the saved hyperparameters.
+All downstream artefacts (model, report, and parameter snapshot) are refreshed
+to reflect the supplied configuration. When a feature subset was enforced, the
+`selected_features` array persisted in `best_params.json` is honoured so the
+re-evaluation mirrors the original search space. Any PCA dimensionality in the
+payload that exceeds the reduced feature set is automatically clamped to keep
+the reconstruction numerically valid.
+
+### Training the CLI with tuned hyperparameters
+
+Once `best_params.json` is available, the primary CLI can consume it directly so
+you can train every supported model—MLP included—without rerunning Optuna:
+
+```bash
+flybehavior-response train \
+  --data-csv /path/to/all_envelope_rows_wide.csv \
+  --labels-csv /path/to/labels.csv \
+  --model all \
+  --best-params-json optuna_results/best_params.json \
+  --artifacts-dir artifacts
+```
+
+Providing `--best-params-json` automatically enables PCA on the raw traces,
+overrides `--n-pcs` with the tuned `n_components`, and instantiates the
+`SampleWeightedMLPClassifier` with the Optuna-selected architecture, learning
+rate, regularisation, and batch size. The generated `config.json` embedded in
+each run directory now records the consolidated Optuna payload so downstream
+evaluation jobs can trace exactly which hyperparameters were used. When the
+payload enumerates a `selected_features` subset, the training command enforces
+that exact list—even if a different `--features` string is supplied—so
+retraining stays faithful to the search space. Missing columns now trigger a
+hard failure with the full list of available engineered features to help you fix
+typos before any models are saved.
+
 ### Using this package from another repository
 
 - **Pin it as a dependency.** In the consuming project (e.g. [`Ramanlab-Auto-Data-Analysis`](https://github.com/colehanan1/Ramanlab-Auto-Data-Analysis)), add the git URL to your dependency file so the environment always installs the latest revision of this project:
@@ -400,6 +512,8 @@ After installation, the `flybehavior-response` command becomes available. Common
 - `--data-csv`: Wide proboscis trace CSV.
 - `--labels-csv`: Labels CSV with `user_score_odor` scores (0 = no response, 1-5 = increasing response strength).
 - `--features`: Comma-separated engineered feature list (default: `AUC-During,TimeToPeak-During,Peak-Value`).
+  Every entry must match a column in the merged dataset. The trainer now aborts when a requested feature is missing instead of
+  silently reverting to the full feature set, keeping curated subsets intact.
 - `--raw-series`: Prioritize the default raw coordinate prefixes (eye/proboscis channels).
 - `--no-raw`: Drop all trace columns so only engineered features feed the models.
 - `--include-auc-before`: Adds `AUC-Before` to the feature set.
