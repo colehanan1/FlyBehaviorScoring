@@ -195,7 +195,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--baseline-hidden",
         type=int,
         default=128,
-        help="Hidden width for the single-layer baseline comparison.",
+        help=(
+            "Hidden width for the baseline comparison. For fp_optimized_mlp the value "
+            "sets the first layer and a smaller second layer is derived automatically."
+        ),
     )
     parser.add_argument(
         "--baseline-components",
@@ -248,6 +251,14 @@ def _generate_component_candidates(feature_dim: int) -> Tuple[int, ...]:
     if upper < 3:
         return tuple(range(1, upper + 1))
     return tuple(range(3, upper + 1))
+
+
+def _architecture_candidates_for_model(model_type: str) -> Tuple[str, ...]:
+    """Return the permissible architecture tokens for the requested model variant."""
+
+    if model_type == MODEL_FP_OPTIMIZED_MLP:
+        return (ARCHITECTURE_TWO_LAYER,)
+    return (ARCHITECTURE_SINGLE, ARCHITECTURE_TWO_LAYER)
 
 
 def _prepare_dataframe_from_dataset(
@@ -419,6 +430,22 @@ def _combine_sample_and_class_weights(
     return combined
 
 
+def _derive_two_layer_baseline(hidden: int) -> Tuple[int, int]:
+    """Derive a deterministic two-layer baseline shape from the requested width."""
+
+    if hidden not in ALLOWED_LAYER_WIDTHS:
+        raise ValueError(
+            "Baseline hidden size must belong to the supported width set. Received "
+            f"{hidden}."
+        )
+
+    ordered_widths = sorted(ALLOWED_LAYER_WIDTHS)
+    index = ordered_widths.index(hidden)
+    if index == 0:
+        return hidden, hidden
+    return hidden, ordered_widths[index - 1]
+
+
 def _verify_group_separation(groups: pd.Series, train_idx: Iterable[int], val_idx: Iterable[int]) -> None:
     """Raise if any fly identifiers leak between train and validation folds."""
 
@@ -535,6 +562,7 @@ def objective_factory(
     feature_frame: pd.DataFrame,
     selected_features: Optional[Sequence[str]],
     class_weight: Mapping[int, float] | None,
+    model_type: str,
 ) -> optuna.ObjectiveFuncType:
     """Create the Optuna objective closure bound to the dataset and logger.
 
@@ -556,6 +584,8 @@ def objective_factory(
 
     component_candidates = _generate_component_candidates(feature_dim)
 
+    architecture_candidates = _architecture_candidates_for_model(model_type)
+
     def objective(trial: Trial) -> float:
         n_components = int(
             trial.suggest_categorical("n_components", component_candidates)
@@ -564,7 +594,7 @@ def objective_factory(
         batch_size = int(trial.suggest_categorical("batch_size", ALLOWED_BATCH_SIZES))
         learning_rate_init = trial.suggest_float("learning_rate_init", 1e-4, 1e-2, log=True)
 
-        architecture = trial.suggest_categorical("architecture", [ARCHITECTURE_SINGLE, ARCHITECTURE_TWO_LAYER])
+        architecture = trial.suggest_categorical("architecture", architecture_candidates)
         if architecture == ARCHITECTURE_SINGLE:
             hidden_size = int(trial.suggest_categorical("h1", ALLOWED_LAYER_WIDTHS))
             hidden_layer_sizes = (hidden_size,)
@@ -591,6 +621,9 @@ def objective_factory(
             learning_rate_init,
             hidden_layer_sizes,
         )
+
+        trial.set_user_attr("architecture", architecture)
+        trial.set_user_attr("model_type", model_type)
 
         try:
             result = evaluate_pipeline(
@@ -636,14 +669,30 @@ def _baseline_params(
 ) -> dict:
     params = {
         "n_components": components,
-        "hidden_layer_sizes": (hidden,),
         "alpha": 1e-4,
         "batch_size": 32,
         "learning_rate_init": 1e-3,
-        "architecture": ARCHITECTURE_SINGLE,
-        "h1": hidden,
         "model_type": model_type,
     }
+    if model_type == MODEL_FP_OPTIMIZED_MLP:
+        first, second = _derive_two_layer_baseline(hidden)
+        params.update(
+            {
+                "hidden_layer_sizes": (first, second),
+                "architecture": ARCHITECTURE_TWO_LAYER,
+                "layer_config": f"{first}_{second}",
+                "h1": first,
+                "h2": second,
+            }
+        )
+    else:
+        params.update(
+            {
+                "hidden_layer_sizes": (hidden,),
+                "architecture": ARCHITECTURE_SINGLE,
+                "h1": hidden,
+            }
+        )
     if class_weight is not None:
         params["class_weight"] = {int(k): float(v) for k, v in class_weight.items()}
     return params
@@ -709,7 +758,7 @@ def run_baseline(
     params = _baseline_params(
         hidden,
         components,
-        model_type=MODEL_FP_OPTIMIZED_MLP if class_weight is not None else MODEL_MLP,
+        model_type=model_type,
         class_weight=class_weight,
     )
     params = _apply_component_constraints(
@@ -720,9 +769,10 @@ def run_baseline(
     )
     pipeline = build_pipeline_from_params(params)
     logger.info(
-        "Evaluating baseline model | components=%d | hidden=%d",
+        "Evaluating baseline model | architecture=%s | components=%d | hidden_layers=%s",
+        params["architecture"],
         params["n_components"],
-        hidden,
+        params["hidden_layer_sizes"],
     )
     result = evaluate_pipeline(
         pipeline=pipeline,
@@ -1004,6 +1054,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         feature_frame=feature_frame,
         selected_features=selected_features,
         class_weight=class_weight,
+        model_type=model_type,
     )
 
     study: optuna.Study | None = None
@@ -1052,6 +1103,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             feature_frame=feature_frame,
             selected_features=selected_features,
             class_weight=class_weight,
+            model_type=model_type,
         )
         timeout = None if args.timeout == 0 else args.timeout
         study.optimize(objective, n_trials=args.n_trials, timeout=timeout)

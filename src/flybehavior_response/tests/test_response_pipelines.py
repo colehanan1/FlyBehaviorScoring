@@ -144,6 +144,38 @@ def test_normalise_mlp_params_handles_two_layer_architecture() -> None:
     assert params["layer_config"] == "512_256"
 
 
+def test_normalise_mlp_params_enforces_two_layers_for_fp_variant() -> None:
+    with pytest.raises(ValueError):
+        normalise_mlp_params(
+            {
+                "n_components": 8,
+                "alpha": 0.001,
+                "batch_size": 32,
+                "learning_rate_init": 0.005,
+                "hidden_layer_sizes": [128],
+                "model_type": MODEL_FP_OPTIMIZED_MLP,
+            }
+        )
+
+
+def test_normalise_mlp_params_populates_fp_architecture_metadata() -> None:
+    params = normalise_mlp_params(
+        {
+            "n_components": 10,
+            "alpha": 0.0008,
+            "batch_size": 16,
+            "learning_rate_init": 0.004,
+            "hidden_layer_sizes": [256, 128],
+            "model_type": MODEL_FP_OPTIMIZED_MLP,
+        }
+    )
+
+    assert params["architecture"] == "two_layer"
+    assert params["layer_config"] == "256_128"
+    assert params["h1"] == 256
+    assert params["h2"] == 128
+
+
 def test_normalise_mlp_params_preserves_selected_features() -> None:
     params = normalise_mlp_params(
         {
@@ -166,7 +198,7 @@ def test_normalise_mlp_params_preserves_model_variant_and_class_weights() -> Non
             "alpha": 0.0005,
             "batch_size": 64,
             "learning_rate_init": 0.002,
-            "hidden_layer_sizes": [128],
+            "hidden_layer_sizes": [256, 128],
             "model_type": MODEL_FP_OPTIMIZED_MLP,
             "class_weight": {"0": 1.0, "1": 1.8},
         }
@@ -174,6 +206,7 @@ def test_normalise_mlp_params_preserves_model_variant_and_class_weights() -> Non
 
     assert params["model_type"] == MODEL_FP_OPTIMIZED_MLP
     assert params["class_weight"] == {0: 1.0, 1: 1.8}
+    assert params["hidden_layer_sizes"] == (256, 128)
 
 
 def test_train_models_returns_metrics(tmp_path: Path) -> None:

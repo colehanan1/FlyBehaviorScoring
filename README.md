@@ -38,6 +38,11 @@ python optuna_mlp_tuning.py \
   multiplies responder samples by an additional `{0: 1.0, 1: 2.0}` class weight on
   top of the intensity-derived sample weights so the tuned network mirrors the
   false-positive minimising production variant.
+* When `--model fp_optimized_mlp` is selected, Optuna now samples only two-layer
+  architectures. Baseline reporting and saved JSON payloads therefore always
+  include exactly two hidden widths, and the CLI rejects single-layer
+  configurations for this variant to keep deployment aligned with the production
+  topology.
 * Whenever a feature subset leaves fewer usable columns than the requested PCA
   dimensionality, the tuner, deterministic baseline, best-parameter replay, and
   final retraining all clamp `n_components` to the available feature count while
@@ -584,6 +589,7 @@ flybehavior-response predict --data-csv /home/ramanlab/Documents/cole/Data/Opto/
 - Each training run exports `predictions_<model>_{train,test}.csv` (and `validation` when applicable) so you can audit which trials were classified correctly, along with their reaction probabilities and sample weights.
 - `--model mlp` isolates the legacy neural baseline: a scikit-learn `MLPClassifier` with a single hidden layer of 100 neurons between the feature input and the binary output unit.
 - `--model fp_optimized_mlp` activates the new false-positive minimising architecture. It stacks two ReLU-activated hidden layers sized 256 and 128, uses Adam with a 0.001 learning rate, honours proportional intensity weights, and multiplies responder samples (`label==1`) by an additional class weight of 2.0. Training automatically performs a stratified 70/15/15 train/validation/test split, monitors validation performance with early stopping (`n_iter_no_change=10`), and logs precision plus false-positive rates across all splits.
+- Optuna-generated payloads and manual configurations targeting `fp_optimized_mlp` must now specify exactly two hidden widths. The CLI enforces this constraint and raises if a single-layer payload is supplied, preventing accidental regressions when reusing tuned configurations.
 - Inspect `metrics.json` for `test` (and `validation`) entries to verify held-out accuracy, precision, recall, F1, and false-positive rates. Review `confusion_matrix_<model>.png` in the run directory for quick diagnostics.
 - Existing scripts that still pass `--model both` continue to run LDA + logistic regression only; update them to `--model all` to include the neural networks when desired.
 

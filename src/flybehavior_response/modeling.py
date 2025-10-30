@@ -115,6 +115,14 @@ def normalise_mlp_params(params: Mapping[str, object]) -> dict:
 
     hidden_layers = resolve_hidden_layer_sizes_from_params(params)
 
+    raw_model_type = params.get("model_type")
+    model_variant = str(raw_model_type) if raw_model_type is not None else MODEL_MLP
+    if model_variant == MODEL_FP_OPTIMIZED_MLP and len(hidden_layers) != 2:
+        raise ValueError(
+            "fp_optimized_mlp requires exactly two hidden layers; received "
+            f"{hidden_layers}."
+        )
+
     batch_size_value = int(params["batch_size"])
     if batch_size_value not in ALLOWED_BATCH_SIZES:
         raise ValueError(
@@ -158,14 +166,18 @@ def normalise_mlp_params(params: Mapping[str, object]) -> dict:
             for class_label, multiplier in class_weight.items()
         }
 
-    model_type = params.get("model_type")
-    if model_type is not None:
-        consolidated["model_type"] = str(model_type)
+    if raw_model_type is not None:
+        consolidated["model_type"] = model_variant
 
     architecture = params.get("architecture")
     if architecture is not None:
         arch_token = str(architecture).strip().lower()
         consolidated["architecture"] = arch_token
+        if model_variant == MODEL_FP_OPTIMIZED_MLP and arch_token != ARCHITECTURE_TWO_LAYER:
+            raise ValueError(
+                "fp_optimized_mlp requires a two-layer architecture; received "
+                f"{arch_token}."
+            )
         if arch_token == ARCHITECTURE_SINGLE:
             if hidden_layers:
                 consolidated["h1"] = int(hidden_layers[0])
@@ -176,6 +188,12 @@ def normalise_mlp_params(params: Mapping[str, object]) -> dict:
             consolidated["layer_config"] = str(layer_config)
             for idx, width in enumerate(hidden_layers, start=1):
                 consolidated[f"h{idx}"] = int(width)
+
+    elif model_variant == MODEL_FP_OPTIMIZED_MLP:
+        consolidated["architecture"] = ARCHITECTURE_TWO_LAYER
+        consolidated["layer_config"] = "_".join(str(int(size)) for size in hidden_layers)
+        for idx, width in enumerate(hidden_layers, start=1):
+            consolidated[f"h{idx}"] = int(width)
 
     return consolidated
 
