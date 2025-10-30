@@ -37,7 +37,9 @@ python optuna_mlp_tuning.py \
 * Set `--model` to either `mlp` (default) or `fp_optimized_mlp`. The latter
   multiplies responder samples by an additional `{0: 1.0, 1: 2.0}` class weight on
   top of the intensity-derived sample weights so the tuned network mirrors the
-  false-positive minimising production variant.
+  false-positive minimising production variant. The deterministic baseline run
+  now honours the same variant, ensuring the headline comparison reflects the
+  precise architecture and class weighting you intend to deploy.
 * When `--model fp_optimized_mlp` is selected, Optuna now samples only two-layer
   architectures. Baseline reporting and saved JSON payloads therefore always
   include exactly two hidden widths, and the CLI rejects single-layer

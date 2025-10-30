@@ -742,6 +742,7 @@ def run_baseline(
     feature_frame: pd.DataFrame,
     selected_features: Optional[Sequence[str]],
     class_weight: Mapping[int, float] | None,
+    model_type: str,
 ) -> Tuple[dict, EvaluationResult]:
     """Evaluate a deterministic baseline configuration for reporting.
 
