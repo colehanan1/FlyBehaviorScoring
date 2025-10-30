@@ -9,6 +9,7 @@ integrates tightly with the existing :mod:`flybehavior_response` package.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import random
@@ -147,8 +148,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--study-name",
         type=str,
-        default="mlp_tuning",
-        help="Optuna study name for resuming runs.",
+        default=None,
+        help=(
+            "Optional Optuna study name. When omitted, a name is derived from the selected "
+            "model variant and engineered feature subset."
+        ),
     )
     parser.add_argument(
         "--n-trials",
@@ -259,6 +263,56 @@ def _architecture_candidates_for_model(model_type: str) -> Tuple[str, ...]:
     if model_type == MODEL_FP_OPTIMIZED_MLP:
         return (ARCHITECTURE_TWO_LAYER,)
     return (ARCHITECTURE_SINGLE, ARCHITECTURE_TWO_LAYER)
+
+
+def _default_study_name(
+    model_type: str, selected_features: Optional[Sequence[str]]
+) -> str:
+    """Derive a deterministic study name for the current configuration."""
+
+    if selected_features is None:
+        feature_tag = "all"
+    else:
+        joined = "|".join(selected_features)
+        digest = hashlib.sha1(joined.encode("utf-8")).hexdigest()[:8]
+        feature_tag = f"{len(selected_features)}f_{digest}"
+    return f"mlp_tuning_{model_type}_{feature_tag}"
+
+
+def _ensure_study_search_space(
+    study: optuna.Study,
+    *,
+    architecture_candidates: Sequence[str],
+    component_candidates: Sequence[int],
+    logger: logging.Logger,
+) -> None:
+    """Validate that the resumed study matches the current search space."""
+
+    stored_arch = study.system_attrs.get("architecture_candidates")
+    arch_tuple = tuple(architecture_candidates)
+    if stored_arch is None:
+        study.set_system_attr("architecture_candidates", list(arch_tuple))
+    elif tuple(stored_arch) != arch_tuple:
+        raise ValueError(
+            "Existing study was created with architecture choices "
+            f"{stored_arch}; current run expects {list(arch_tuple)}. "
+            "Specify a new --study-name or delete the old study to avoid the "
+            "dynamic search space conflict."
+        )
+
+    stored_components = study.system_attrs.get("component_candidates")
+    component_tuple = tuple(int(v) for v in component_candidates)
+    if stored_components is None:
+        study.set_system_attr("component_candidates", list(component_tuple))
+    elif tuple(int(v) for v in stored_components) != component_tuple:
+        logger.error(
+            "Existing study was created with PCA component candidates %s; current run "
+            "requires %s. Please provide a new --study-name or remove the previous "
+            "study database.",
+            stored_components,
+            list(component_tuple),
+        )
+        raise ValueError("Incompatible PCA component candidate set for resumed study.")
 
 
 def _prepare_dataframe_from_dataset(
@@ -563,6 +617,8 @@ def objective_factory(
     selected_features: Optional[Sequence[str]],
     class_weight: Mapping[int, float] | None,
     model_type: str,
+    component_candidates: Sequence[int],
+    architecture_candidates: Sequence[str],
 ) -> optuna.ObjectiveFuncType:
     """Create the Optuna objective closure bound to the dataset and logger.
 
@@ -581,10 +637,6 @@ def objective_factory(
         raise ValueError(
             "No feature columns available for optimisation. Ensure --features yields at least one column."
         )
-
-    component_candidates = _generate_component_candidates(feature_dim)
-
-    architecture_candidates = _architecture_candidates_for_model(model_type)
 
     def objective(trial: Trial) -> float:
         n_components = int(
@@ -1047,6 +1099,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     else:
         class_weight = None
 
+    component_candidates = _generate_component_candidates(feature_frame.shape[1])
+    architecture_candidates = _architecture_candidates_for_model(model_type)
+
+    study_name = args.study_name or _default_study_name(model_type, selected_features)
+    if args.study_name is None:
+        logger.info("Auto-selected study name %s based on configuration", study_name)
+
     baseline_params, baseline_result = run_baseline(
         bundle=bundle,
         hidden=args.baseline_hidden,
@@ -1090,12 +1149,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         storage_path = args.output_dir / "optuna_study.db"
         storage = optuna.storages.RDBStorage(url=f"sqlite:///{storage_path}")
         study = optuna.create_study(
-            study_name=args.study_name,
+            study_name=study_name,
             storage=storage,
             load_if_exists=True,
             direction="maximize",
             sampler=TPESampler(seed=42),
             pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=2, interval_steps=1),
+        )
+
+        _ensure_study_search_space(
+            study,
+            architecture_candidates=architecture_candidates,
+            component_candidates=component_candidates,
+            logger=logger,
         )
 
         objective = objective_factory(
@@ -1105,6 +1171,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             selected_features=selected_features,
             class_weight=class_weight,
             model_type=model_type,
+            component_candidates=component_candidates,
+            architecture_candidates=architecture_candidates,
         )
         timeout = None if args.timeout == 0 else args.timeout
         study.optimize(objective, n_trials=args.n_trials, timeout=timeout)
