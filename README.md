@@ -37,10 +37,11 @@ python optuna_mlp_tuning.py \
 * Omit `--study-name` to let the script derive a study label from the selected
   model variant and engineered feature subset (for example,
   `mlp_tuning_fp_optimized_mlp_7f_d3e41a2c`). Provide an explicit name only when
-  you intend to resume the exact same search space. The tuner now persists the
-  architecture and PCA component candidates in the Optuna storage and will halt
-  early with a clear error message if you try to resume a study whose search
-  space no longer matches the requested configuration.
+  you intend to resume the exact same search space. The tuner persists the
+  architecture and PCA component candidates as Optuna user attributes and will
+  halt early with a clear error message if you try to resume a study whose
+  search space no longer matches the requested configuration—without triggering
+  the deprecated `system_attr` warnings emitted by older revisions.
 * Set `--model` to either `mlp` (default) or `fp_optimized_mlp`. The latter
   multiplies responder samples by an additional `{0: 1.0, 1: 2.0}` class weight on
   top of the intensity-derived sample weights so the tuned network mirrors the

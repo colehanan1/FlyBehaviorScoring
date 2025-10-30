@@ -288,10 +288,10 @@ def _ensure_study_search_space(
 ) -> None:
     """Validate that the resumed study matches the current search space."""
 
-    stored_arch = study.system_attrs.get("architecture_candidates")
+    stored_arch = study.user_attrs.get("architecture_candidates")
     arch_tuple = tuple(architecture_candidates)
     if stored_arch is None:
-        study.set_system_attr("architecture_candidates", list(arch_tuple))
+        study.set_user_attr("architecture_candidates", list(arch_tuple))
     elif tuple(stored_arch) != arch_tuple:
         raise ValueError(
             "Existing study was created with architecture choices "
@@ -300,10 +300,10 @@ def _ensure_study_search_space(
             "dynamic search space conflict."
         )
 
-    stored_components = study.system_attrs.get("component_candidates")
+    stored_components = study.user_attrs.get("component_candidates")
     component_tuple = tuple(int(v) for v in component_candidates)
     if stored_components is None:
-        study.set_system_attr("component_candidates", list(component_tuple))
+        study.set_user_attr("component_candidates", list(component_tuple))
     elif tuple(int(v) for v in stored_components) != component_tuple:
         logger.error(
             "Existing study was created with PCA component candidates %s; current run "
