@@ -448,10 +448,23 @@ def train_models(
             float(y_test.mean()) if len(y_test) else 0.0,
         )
 
-    if use_fp_optimised_split:
+    # Check for custom class weights
+    if mlp_params is not None and "class_weight" in mlp_params:
+        class_weight_dict = mlp_params["class_weight"]
+        if use_fp_optimised_split:
+            logger.info(
+                "fp_optimized_mlp will apply CUSTOM class weights %s on top of proportional sample weights.",
+                class_weight_dict,
+            )
+        else:
+            logger.info(
+                "MLP models will apply custom class weights %s on top of proportional sample weights.",
+                class_weight_dict,
+            )
+    elif use_fp_optimised_split:
         class_weight_dict = {0: 1.0, 1: 2.0}
         logger.info(
-            "fp_optimized_mlp will apply class weights %s on top of proportional sample weights.",
+            "fp_optimized_mlp will apply default class weights %s on top of proportional sample weights.",
             class_weight_dict,
         )
 
@@ -566,16 +579,19 @@ def train_models(
             pipeline.fit(X_fit, y_fit)
         else:
             fit_kwargs = {}
-            if model_name in {MODEL_LOGREG, MODEL_MLP}:
+            if model_name == MODEL_LOGREG:
                 fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
-            if model_name == MODEL_FP_OPTIMIZED_MLP:
-                assert class_weight_dict is not None
-                combined_weights = _combine_sample_and_class_weights(
-                    y_train,
-                    sw_train,
-                    class_weight_dict,
-                )
-                fit_kwargs["model__sample_weight"] = combined_weights
+            elif model_name in {MODEL_MLP, MODEL_FP_OPTIMIZED_MLP}:
+                # Apply class weights if provided, otherwise just use sample weights
+                if class_weight_dict is not None:
+                    combined_weights = _combine_sample_and_class_weights(
+                        y_train,
+                        sw_train,
+                        class_weight_dict,
+                    )
+                    fit_kwargs["model__sample_weight"] = combined_weights
+                else:
+                    fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
             pipeline.fit(
                 X_train,
                 y_train,
@@ -667,9 +683,9 @@ def train_models(
                 cv=cv,
                 seed=seed,
                 sample_weights=sw_train,
-                class_weight=class_weight_dict if model_name == MODEL_FP_OPTIMIZED_MLP else None,
+                class_weight=class_weight_dict if model_name in (MODEL_MLP, MODEL_FP_OPTIMIZED_MLP) else None,
                 groups=cv_groups,
-                mlp_params=mlp_params if model_name == MODEL_MLP else None,
+                mlp_params=mlp_params if model_name in (MODEL_MLP, MODEL_FP_OPTIMIZED_MLP) else None,
             )
             metrics[model_name]["cross_validation"] = cv_metrics
 

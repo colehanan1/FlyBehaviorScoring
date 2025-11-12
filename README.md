@@ -20,8 +20,8 @@ macro-F1 as the primary score.
 
 ```bash
 python optuna_mlp_tuning.py \
-  --data-csv /path/to/all_envelope_rows_wide.csv \
-  --labels-csv /path/to/labels.csv \
+  --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
   --n-trials 100 \
   --timeout 7200 \
   --output-dir optuna_results
@@ -104,8 +104,8 @@ without repeating the search:
 
 ```bash
 python optuna_mlp_tuning.py \
-  --data-csv /path/to/all_envelope_rows_wide.csv \
-  --labels-csv /path/to/labels.csv \
+  --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
   --best-params-json optuna_results/best_params.json \
   --output-dir optuna_results
 ```
@@ -126,8 +126,8 @@ you can train every supported model—MLP included—without rerunning Optuna:
 
 ```bash
 flybehavior-response train \
-  --data-csv /path/to/all_envelope_rows_wide.csv \
-  --labels-csv /path/to/labels.csv \
+  --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
+  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
   --model all \
   --best-params-json optuna_results/best_params.json \
   --artifacts-dir artifacts

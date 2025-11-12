@@ -555,6 +555,15 @@ def _configure_parser() -> argparse.ArgumentParser:
             "When provided, the hyperparameters are reused for the MLP model."
         ),
     )
+    train_parser.add_argument(
+        "--class-weights",
+        type=str,
+        help=(
+            "Custom class weights for MLP models (e.g., '0:2.0,1:1.0'). "
+            "Higher weight on class 0 reduces false positives. "
+            "Default for fp_optimized_mlp is '0:1.0,1:2.0'."
+        ),
+    )
     eval_parser = subparsers.add_parser(
         "eval",
         parents=[common_parser],
@@ -598,6 +607,12 @@ def _configure_parser() -> argparse.ArgumentParser:
         "--testing-trial",
         type=str,
         help="Legacy alias for --trial-label when datasets expose a testing_trial column",
+    )
+    predict_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.5,
+        help="Decision threshold for binary classification (default: 0.5). Use higher values (e.g., 0.65) to reduce false positives.",
     )
 
     return parser
@@ -749,6 +764,27 @@ def _handle_train(args: argparse.Namespace) -> None:
                     int(mlp_params["n_components"]),
                 )
             n_pcs = int(mlp_params["n_components"])
+
+    # Parse custom class weights if provided
+    if args.class_weights is not None:
+        class_weight_dict = {}
+        for pair in args.class_weights.split(","):
+            pair = pair.strip()
+            if ":" not in pair:
+                raise ValueError(
+                    f"Invalid class weight pair '{pair}'. Expected format: '0:2.0,1:1.0'"
+                )
+            class_str, weight_str = pair.split(":", 1)
+            class_label = int(class_str.strip())
+            weight_value = float(weight_str.strip())
+            class_weight_dict[class_label] = weight_value
+
+        logger.info("Using custom class weights: %s", class_weight_dict)
+
+        # Add to mlp_params or create it
+        if mlp_params is None:
+            mlp_params = {}
+        mlp_params["class_weight"] = class_weight_dict
 
     metrics = train_models(
         data_csv=args.data_csv,
@@ -1021,7 +1057,21 @@ def _handle_predict(args: argparse.Namespace) -> None:
     logger.info(
         "Scoring %d row(s) with model %s", len(filtered_df), args.model_path.name
     )
-    predictions = model.predict(feature_df)
+
+    # Use custom threshold if model supports probabilities
+    if hasattr(model, "predict_proba"):
+        proba = model.predict_proba(feature_df)
+        if proba.ndim == 2 and proba.shape[1] >= 2:
+            proba_positive = proba[:, 1]
+            predictions = (proba_positive >= args.threshold).astype(int)
+            if args.threshold != 0.5:
+                logger.info("Applying custom decision threshold: %.2f", args.threshold)
+        else:
+            predictions = model.predict(feature_df)
+            proba_positive = None
+    else:
+        predictions = model.predict(feature_df)
+        proba_positive = None
 
     output_columns = [
         col
@@ -1031,10 +1081,8 @@ def _handle_predict(args: argparse.Namespace) -> None:
     output = filtered_df[output_columns].copy() if output_columns else pd.DataFrame()
     output["prediction"] = predictions.astype(int)
 
-    if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(feature_df)
-        if proba.ndim == 2 and proba.shape[1] >= 2:
-            output["probability"] = proba[:, 1]
+    if proba_positive is not None:
+        output["probability"] = proba_positive
 
     if args.dry_run:
         logger.info("Dry run enabled; predictions not written")
