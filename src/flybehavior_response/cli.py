@@ -555,6 +555,15 @@ def _configure_parser() -> argparse.ArgumentParser:
             "When provided, the hyperparameters are reused for the MLP model."
         ),
     )
+    train_parser.add_argument(
+        "--class-weights",
+        type=str,
+        help=(
+            "Custom class weights for MLP models (e.g., '0:2.0,1:1.0'). "
+            "Higher weight on class 0 reduces false positives. "
+            "Default for fp_optimized_mlp is '0:1.0,1:2.0'."
+        ),
+    )
     eval_parser = subparsers.add_parser(
         "eval",
         parents=[common_parser],
@@ -749,6 +758,27 @@ def _handle_train(args: argparse.Namespace) -> None:
                     int(mlp_params["n_components"]),
                 )
             n_pcs = int(mlp_params["n_components"])
+
+    # Parse custom class weights if provided
+    if args.class_weights is not None:
+        class_weight_dict = {}
+        for pair in args.class_weights.split(","):
+            pair = pair.strip()
+            if ":" not in pair:
+                raise ValueError(
+                    f"Invalid class weight pair '{pair}'. Expected format: '0:2.0,1:1.0'"
+                )
+            class_str, weight_str = pair.split(":", 1)
+            class_label = int(class_str.strip())
+            weight_value = float(weight_str.strip())
+            class_weight_dict[class_label] = weight_value
+
+        logger.info("Using custom class weights: %s", class_weight_dict)
+
+        # Add to mlp_params or create it
+        if mlp_params is None:
+            mlp_params = {}
+        mlp_params["class_weight"] = class_weight_dict
 
     metrics = train_models(
         data_csv=args.data_csv,
