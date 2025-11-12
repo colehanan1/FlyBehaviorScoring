@@ -18,7 +18,7 @@ MODEL_FP_OPTIMIZED_MLP = "fp_optimized_mlp"
 ARCHITECTURE_SINGLE = "single"
 ARCHITECTURE_TWO_LAYER = "two_layer"
 
-ALLOWED_BATCH_SIZES: Tuple[int, ...] = (8, 16, 32, 64, 128, 256, 512, 1024)
+ALLOWED_BATCH_SIZES: Tuple[int, ...] = (8, 16, 32)
 ALLOWED_LAYER_WIDTHS: Tuple[int, ...] = (8, 16, 32, 64, 128, 256, 512, 1024)
 
 
