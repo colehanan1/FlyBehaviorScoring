@@ -34,6 +34,25 @@ python optuna_mlp_tuning.py \
   curated subset of engineered scalars. The tuner validates every requested
   column, removes duplicates, and records the final selection alongside the
   saved hyperparameters.
+* Omit `--study-name` to let the script derive a study label from the selected
+  model variant and engineered feature subset (for example,
+  `mlp_tuning_fp_optimized_mlp_7f_d3e41a2c`). Provide an explicit name only when
+  you intend to resume the exact same search space. The tuner persists the
+  architecture and PCA component candidates as Optuna user attributes and will
+  halt early with a clear error message if you try to resume a study whose
+  search space no longer matches the requested configuration—without triggering
+  the deprecated `system_attr` warnings emitted by older revisions.
+* Set `--model` to either `mlp` (default) or `fp_optimized_mlp`. The latter
+  multiplies responder samples by an additional `{0: 1.0, 1: 2.0}` class weight on
+  top of the intensity-derived sample weights so the tuned network mirrors the
+  false-positive minimising production variant. The deterministic baseline run
+  now honours the same variant, ensuring the headline comparison reflects the
+  precise architecture and class weighting you intend to deploy.
+* When `--model fp_optimized_mlp` is selected, Optuna now samples only two-layer
+  architectures. Baseline reporting and saved JSON payloads therefore always
+  include exactly two hidden widths, and the CLI rejects single-layer
+  configurations for this variant to keep deployment aligned with the production
+  topology.
 * Whenever a feature subset leaves fewer usable columns than the requested PCA
   dimensionality, the tuner, deterministic baseline, best-parameter replay, and
   final retraining all clamp `n_components` to the available feature count while
@@ -43,10 +62,13 @@ python optuna_mlp_tuning.py \
   Optuna median after two folds, keeping runtime within the two-hour budget.
 * Sample weights default to 1.0 for non-responders and lower-intensity
   responses, with class-5 trials receiving a 5× multiplier during optimisation.
-* The search space spans continuous integer ranges: PCA components anywhere from
-  3 to 64, mini-batch sizes between 8 and 64, and hidden-layer widths from 96 up
-  to 750 neurons per layer. Saved JSON payloads may therefore contain any
-  integer within those bounds, and both the tuner and CLI will honour them.
+* The search space samples PCA dimensionalities from the admissible range of 3
+  to 64 (automatically truncated when a feature subset exposes fewer columns).
+  Mini-batch sizes and hidden-layer widths are now restricted to powers of two
+  – `(8, 16, 32, 64, 128, 256, 512, 1024)` – to keep the tuned architecture
+  aligned with production training runs. Saved JSON payloads therefore contain
+  only those discrete values, and the CLI will validate any external payload
+  against the same lists before training.
 * Provide `--best-params-json /path/to/best_params.json` to skip optimisation and
   retrain/evaluate using a previously exported Optuna configuration. The JSON
   may contain either the raw Optuna trial parameters (`architecture`, `h1`,
@@ -64,13 +86,16 @@ The command writes all deliverables into `--output-dir` (defaults to
 | `optuna_history.html` | Interactive optimisation trace (Plotly). |
 | `optuna_importances.html` | Hyperparameter importance plot emphasising PCA components. |
 | `best_params.json` | Best configuration including architecture, optimiser settings, and the selected engineered features. |
-| `best_mlp_model.joblib` | Retrained preprocessing + MLP pipeline for deployment. |
+| `best_<model>_model.joblib` | Retrained preprocessing + MLP pipeline for deployment. |
 | `TUNING_REPORT.md` | Auto-generated summary comparing the tuned model with the baseline. |
 
 The retrained pipeline includes the median imputer, scaler, PCA transform, and
 the optimised neural network, allowing drop-in inference via
-`joblib.load(output_dir / "best_mlp_model.joblib")`. Because `.joblib` files are
-ignored by Git, they remain local run artefacts.
+`joblib.load(output_dir / "best_<model>_model.joblib")`. Because `.joblib` files
+are ignored by Git, they remain local run artefacts. When `fp_optimized_mlp` is
+selected, the saved pipeline expects the responder-focused class weights to be
+applied at fit time and therefore reflects the precision-oriented behaviour of
+the production model.
 
 ### Reusing a saved configuration
 
@@ -113,7 +138,12 @@ overrides `--n-pcs` with the tuned `n_components`, and instantiates the
 `SampleWeightedMLPClassifier` with the Optuna-selected architecture, learning
 rate, regularisation, and batch size. The generated `config.json` embedded in
 each run directory now records the consolidated Optuna payload so downstream
-evaluation jobs can trace exactly which hyperparameters were used.
+evaluation jobs can trace exactly which hyperparameters were used. When the
+payload enumerates a `selected_features` subset, the training command enforces
+that exact list—even if a different `--features` string is supplied—so
+retraining stays faithful to the search space. Missing columns now trigger a
+hard failure with the full list of available engineered features to help you fix
+typos before any models are saved.
 
 ### Using this package from another repository
 
@@ -507,6 +537,8 @@ After installation, the `flybehavior-response` command becomes available. Common
 - `--data-csv`: Wide proboscis trace CSV.
 - `--labels-csv`: Labels CSV with `user_score_odor` scores (0 = no response, 1-5 = increasing response strength).
 - `--features`: Comma-separated engineered feature list (default: `AUC-During,TimeToPeak-During,Peak-Value`).
+  Every entry must match a column in the merged dataset. The trainer now aborts when a requested feature is missing instead of
+  silently reverting to the full feature set, keeping curated subsets intact.
 - `--raw-series`: Prioritize the default raw coordinate prefixes (eye/proboscis channels).
 - `--no-raw`: Drop all trace columns so only engineered features feed the models.
 - `--include-auc-before`: Adds `AUC-Before` to the feature set.
@@ -567,6 +599,7 @@ flybehavior-response predict --data-csv /home/ramanlab/Documents/cole/Data/Opto/
 - Each training run exports `predictions_<model>_{train,test}.csv` (and `validation` when applicable) so you can audit which trials were classified correctly, along with their reaction probabilities and sample weights.
 - `--model mlp` isolates the legacy neural baseline: a scikit-learn `MLPClassifier` with a single hidden layer of 100 neurons between the feature input and the binary output unit.
 - `--model fp_optimized_mlp` activates the new false-positive minimising architecture. It stacks two ReLU-activated hidden layers sized 256 and 128, uses Adam with a 0.001 learning rate, honours proportional intensity weights, and multiplies responder samples (`label==1`) by an additional class weight of 2.0. Training automatically performs a stratified 70/15/15 train/validation/test split, monitors validation performance with early stopping (`n_iter_no_change=10`), and logs precision plus false-positive rates across all splits.
+- Optuna-generated payloads and manual configurations targeting `fp_optimized_mlp` must now specify exactly two hidden widths. The CLI enforces this constraint and raises if a single-layer payload is supplied, preventing accidental regressions when reusing tuned configurations.
 - Inspect `metrics.json` for `test` (and `validation`) entries to verify held-out accuracy, precision, recall, F1, and false-positive rates. Review `confusion_matrix_<model>.png` in the run directory for quick diagnostics.
 - Existing scripts that still pass `--model both` continue to run LDA + logistic regression only; update them to `--model all` to include the neural networks when desired.
 
@@ -683,6 +716,7 @@ The loader detects that engineered features are missing, logs a trace-only messa
 - Training uses proportional sample weights derived from label intensity so stronger reactions (e.g., `5`) contribute more than weaker ones (e.g., `1`). Review the logged weight summaries if model behaviour seems unexpected.
 - Duplicate keys across CSVs (`dataset`, `fly`, `fly_number`, `trial_type`, `trial_label`) raise errors to prevent ambiguous merges.
 - Ratio features (`AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`) are supported but produce warnings because they are unstable.
+- The CLI recognises the following engineered scalar columns out of the box: `AUC-Before`, `AUC-During`, `AUC-After`, `AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`, `TimeToPeak-During`, `Peak-Value`, `global_min`, `global_max`, `local_min`, `local_max`, `local_min_during`, `local_max_during`, `local_max_over_global_min`, `local_max_during_over_global_min`, `local_max_during_odor`, `local_max_during_odor_over_global_min`, and the newly added `non_reactive_flag` (1 for non-responders, 0 otherwise). Any subset passed via `--features` (or baked into `best_params.json`) is validated against this list so feature-only runs fail fast when a requested column is absent. Because `non_reactive_flag` is derived directly from the binary label, only use it for auditing or rule-based workflows—feeding it into model training will trivially leak the target signal.
 - Use `--dry-run` to confirm configuration before writing artifacts.
 - The CLI automatically selects the newest run directory containing model artifacts. Override with `--run-dir` if you maintain
   multiple artifact trees (e.g., `artifacts/projections`).

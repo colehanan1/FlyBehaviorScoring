@@ -20,6 +20,7 @@ from .logging_utils import get_logger
 MERGE_KEYS = ["dataset", "fly", "fly_number", "trial_type", "trial_label"]
 LABEL_COLUMN = "user_score_odor"
 LABEL_INTENSITY_COLUMN = "user_score_odor_intensity"
+NON_REACTIVE_FLAG_COLUMN = "non_reactive_flag"
 TRACE_PATTERN = re.compile(r"^dir_val_(\d+)$")
 TRACE_RANGE = (0, 3600)
 DEFAULT_TRACE_PREFIXES = ["dir_val_"]
@@ -53,6 +54,17 @@ FEATURE_COLUMNS = {
     "AUC-After-Before-Ratio",
     "TimeToPeak-During",
     "Peak-Value",
+    "global_min",
+    "global_max",
+    "local_min",
+    "local_max",
+    "local_min_during",
+    "local_max_during",
+    "local_max_over_global_min",
+    "local_max_during_over_global_min",
+    "local_max_during_odor",
+    "local_max_during_odor_over_global_min",
+    NON_REACTIVE_FLAG_COLUMN,
 }
 
 TRIAL_SUMMARY_REQUIRED_COLUMNS = [
@@ -1740,6 +1752,7 @@ def load_and_merge(
     weights = _compute_sample_weights(intensity)
     merged[LABEL_INTENSITY_COLUMN] = intensity
     merged[LABEL_COLUMN] = (intensity > 0).astype(int)
+    merged[NON_REACTIVE_FLAG_COLUMN] = (merged[LABEL_COLUMN] == 0).astype(int)
 
     distribution = intensity.value_counts().sort_index().to_dict()
     logger.info("Label intensity distribution: %s", distribution)
@@ -1906,11 +1919,14 @@ def load_geometry_dataset(
             intensity = joined[LABEL_INTENSITY_COLUMN].astype(int)
             joined[LABEL_INTENSITY_COLUMN] = intensity
             joined[LABEL_COLUMN] = (intensity > 0).astype(int)
+            joined[NON_REACTIVE_FLAG_COLUMN] = (joined[LABEL_COLUMN] == 0).astype(int)
             weights = _compute_sample_weights(intensity)
         else:
             joined = aggregates
             intensity = None
             weights = None
+            if NON_REACTIVE_FLAG_COLUMN not in joined.columns:
+                joined[NON_REACTIVE_FLAG_COLUMN] = pd.NA
 
         ordered = joined.sort_values(list(MERGE_KEYS)).reset_index(drop=True)
         if trace_columns:
@@ -1923,7 +1939,11 @@ def load_geometry_dataset(
         if downcast and trace_columns:
             ordered = _downcast_numeric(ordered)
         feature_set = set(MERGE_KEYS)
-        exclusion = feature_set | {LABEL_COLUMN, LABEL_INTENSITY_COLUMN} | set(trace_columns)
+        exclusion = (
+            feature_set
+            | {LABEL_COLUMN, LABEL_INTENSITY_COLUMN, NON_REACTIVE_FLAG_COLUMN}
+            | set(trace_columns)
+        )
         available_features = [
             col
             for col in ordered.columns
@@ -2007,11 +2027,14 @@ def load_geometry_dataset(
         coerced_frame_labels = _coerce_labels(combined[LABEL_COLUMN], labels_csv)
         combined[LABEL_INTENSITY_COLUMN] = coerced_frame_labels.astype(int)
         combined[LABEL_COLUMN] = (coerced_frame_labels > 0).astype(int)
+        combined[NON_REACTIVE_FLAG_COLUMN] = (combined[LABEL_COLUMN] == 0).astype(int)
         intensity = combined[LABEL_INTENSITY_COLUMN]
         weights = _compute_sample_weights(intensity)
     else:
         intensity = None
         weights = None
+        if NON_REACTIVE_FLAG_COLUMN not in combined.columns:
+            combined[NON_REACTIVE_FLAG_COLUMN] = pd.NA
 
     sort_keys = [
         col
@@ -2026,7 +2049,7 @@ def load_geometry_dataset(
     feature_columns = [
         col
         for col in geometry_columns
-        if col != LABEL_COLUMN and col != LABEL_INTENSITY_COLUMN
+        if col not in {LABEL_COLUMN, LABEL_INTENSITY_COLUMN, NON_REACTIVE_FLAG_COLUMN}
     ]
     if feature_filter_set is not None:
         missing = sorted(feature_filter_set - set(feature_columns))

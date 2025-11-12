@@ -9,6 +9,7 @@ integrates tightly with the existing :mod:`flybehavior_response` package.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import random
@@ -39,10 +40,13 @@ SRC_DIR = ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+CLASS_WEIGHT_FP_OPTIMIZED: Mapping[int, float] = {0: 1.0, 1: 2.0}
+
 from flybehavior_response.io import (  # noqa: E402
     LABEL_COLUMN,
     LABEL_INTENSITY_COLUMN,
     MERGE_KEYS,
+    NON_REACTIVE_FLAG_COLUMN,
     load_dataset,
 )
 from flybehavior_response.logging_utils import get_logger  # noqa: E402
@@ -50,8 +54,12 @@ from flybehavior_response.sample_weighted_mlp import (  # noqa: E402
     SampleWeightedMLPClassifier,
 )
 from flybehavior_response.modeling import (  # noqa: E402
+    ALLOWED_BATCH_SIZES,
+    ALLOWED_LAYER_WIDTHS,
     ARCHITECTURE_SINGLE,
     ARCHITECTURE_TWO_LAYER,
+    MODEL_FP_OPTIMIZED_MLP,
+    MODEL_MLP,
     normalise_mlp_params,
     resolve_hidden_layer_sizes_from_params,
 )
@@ -140,8 +148,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--study-name",
         type=str,
-        default="mlp_tuning",
-        help="Optuna study name for resuming runs.",
+        default=None,
+        help=(
+            "Optional Optuna study name. When omitted, a name is derived from the selected "
+            "model variant and engineered feature subset."
+        ),
     )
     parser.add_argument(
         "--n-trials",
@@ -165,6 +176,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--model",
+        type=str,
+        default=MODEL_MLP,
+        choices=[MODEL_MLP, MODEL_FP_OPTIMIZED_MLP],
+        help=(
+            "MLP variant to tune. Use 'fp_optimized_mlp' to apply the responder-focused "
+            "class weighting during optimisation."
+        ),
+    )
+    parser.add_argument(
         "--best-params-json",
         type=Path,
         default=None,
@@ -178,7 +199,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--baseline-hidden",
         type=int,
         default=128,
-        help="Hidden width for the single-layer baseline comparison.",
+        help=(
+            "Hidden width for the baseline comparison. For fp_optimized_mlp the value "
+            "sets the first layer and a smaller second layer is derived automatically."
+        ),
     )
     parser.add_argument(
         "--baseline-components",
@@ -219,6 +243,76 @@ def _normalise_feature_list(raw: Optional[str]) -> Optional[Tuple[str, ...]]:
     for token in filtered:
         seen.setdefault(token, None)
     return tuple(seen.keys())
+
+
+def _generate_component_candidates(feature_dim: int) -> Tuple[int, ...]:
+    """Return the permissible PCA component counts for the given feature space."""
+
+    if feature_dim <= 0:
+        raise ValueError("Feature dimensionality must be positive to derive PCA candidates.")
+
+    upper = min(64, feature_dim)
+    if upper < 3:
+        return tuple(range(1, upper + 1))
+    return tuple(range(3, upper + 1))
+
+
+def _architecture_candidates_for_model(model_type: str) -> Tuple[str, ...]:
+    """Return the permissible architecture tokens for the requested model variant."""
+
+    if model_type == MODEL_FP_OPTIMIZED_MLP:
+        return (ARCHITECTURE_TWO_LAYER,)
+    return (ARCHITECTURE_SINGLE, ARCHITECTURE_TWO_LAYER)
+
+
+def _default_study_name(
+    model_type: str, selected_features: Optional[Sequence[str]]
+) -> str:
+    """Derive a deterministic study name for the current configuration."""
+
+    if selected_features is None:
+        feature_tag = "all"
+    else:
+        joined = "|".join(selected_features)
+        digest = hashlib.sha1(joined.encode("utf-8")).hexdigest()[:8]
+        feature_tag = f"{len(selected_features)}f_{digest}"
+    return f"mlp_tuning_{model_type}_{feature_tag}"
+
+
+def _ensure_study_search_space(
+    study: optuna.Study,
+    *,
+    architecture_candidates: Sequence[str],
+    component_candidates: Sequence[int],
+    logger: logging.Logger,
+) -> None:
+    """Validate that the resumed study matches the current search space."""
+
+    stored_arch = study.user_attrs.get("architecture_candidates")
+    arch_tuple = tuple(architecture_candidates)
+    if stored_arch is None:
+        study.set_user_attr("architecture_candidates", list(arch_tuple))
+    elif tuple(stored_arch) != arch_tuple:
+        raise ValueError(
+            "Existing study was created with architecture choices "
+            f"{stored_arch}; current run expects {list(arch_tuple)}. "
+            "Specify a new --study-name or delete the old study to avoid the "
+            "dynamic search space conflict."
+        )
+
+    stored_components = study.user_attrs.get("component_candidates")
+    component_tuple = tuple(int(v) for v in component_candidates)
+    if stored_components is None:
+        study.set_user_attr("component_candidates", list(component_tuple))
+    elif tuple(int(v) for v in stored_components) != component_tuple:
+        logger.error(
+            "Existing study was created with PCA component candidates %s; current run "
+            "requires %s. Please provide a new --study-name or remove the previous "
+            "study database.",
+            stored_components,
+            list(component_tuple),
+        )
+        raise ValueError("Incompatible PCA component candidate set for resumed study.")
 
 
 def _prepare_dataframe_from_dataset(
@@ -288,6 +382,7 @@ def load_training_data(
         labels = (intensity > 0).astype(int)
         frame[LABEL_INTENSITY_COLUMN] = intensity
         frame[LABEL_COLUMN] = labels
+        frame[NON_REACTIVE_FLAG_COLUMN] = (labels == 0).astype(int)
 
     logger.info("Binary label distribution: %s", labels.value_counts().sort_index().to_dict())
     logger.info(
@@ -375,6 +470,36 @@ def build_pipeline_from_params(params: Mapping[str, object]) -> Pipeline:
     )
 
 
+def _combine_sample_and_class_weights(
+    labels: pd.Series,
+    sample_weights: pd.Series,
+    class_weight: Mapping[int, float],
+) -> np.ndarray:
+    """Multiply proportional sample weights by class penalties."""
+
+    combined = sample_weights.to_numpy(dtype=float, copy=True)
+    label_array = labels.to_numpy()
+    for class_label, multiplier in class_weight.items():
+        combined[label_array == int(class_label)] *= float(multiplier)
+    return combined
+
+
+def _derive_two_layer_baseline(hidden: int) -> Tuple[int, int]:
+    """Derive a deterministic two-layer baseline shape from the requested width."""
+
+    if hidden not in ALLOWED_LAYER_WIDTHS:
+        raise ValueError(
+            "Baseline hidden size must belong to the supported width set. Received "
+            f"{hidden}."
+        )
+
+    ordered_widths = sorted(ALLOWED_LAYER_WIDTHS)
+    index = ordered_widths.index(hidden)
+    if index == 0:
+        return hidden, hidden
+    return hidden, ordered_widths[index - 1]
+
+
 def _verify_group_separation(groups: pd.Series, train_idx: Iterable[int], val_idx: Iterable[int]) -> None:
     """Raise if any fly identifiers leak between train and validation folds."""
 
@@ -392,6 +517,7 @@ def evaluate_pipeline(
     trial: Trial | None = None,
     feature_frame: pd.DataFrame | None = None,
     selected_features: Optional[Sequence[str]] = None,
+    class_weight: Mapping[int, float] | None = None,
 ) -> EvaluationResult:
     """Execute grouped cross-validation and report metrics."""
 
@@ -422,10 +548,18 @@ def evaluate_pipeline(
         y_train = bundle.labels.iloc[train_idx]
         y_val = bundle.labels.iloc[val_idx]
         sw_train = bundle.sample_weights.iloc[train_idx]
+        if class_weight is not None:
+            sample_weight_array = _combine_sample_and_class_weights(
+                y_train,
+                sw_train,
+                class_weight,
+            )
+        else:
+            sample_weight_array = sw_train.to_numpy()
 
         start_time = time.perf_counter()
         try:
-            pipeline.fit(X_train, y_train, mlp__sample_weight=sw_train.to_numpy())
+            pipeline.fit(X_train, y_train, mlp__sample_weight=sample_weight_array)
         except Exception as exc:
             if trial is not None:
                 logger.error("Trial %s failed during fit on fold %d: %s", trial.number, fold_idx + 1, exc)
@@ -481,6 +615,10 @@ def objective_factory(
     logger: logging.Logger,
     feature_frame: pd.DataFrame,
     selected_features: Optional[Sequence[str]],
+    class_weight: Mapping[int, float] | None,
+    model_type: str,
+    component_candidates: Sequence[int],
+    architecture_candidates: Sequence[str],
 ) -> optuna.ObjectiveFuncType:
     """Create the Optuna objective closure bound to the dataset and logger.
 
@@ -500,27 +638,22 @@ def objective_factory(
             "No feature columns available for optimisation. Ensure --features yields at least one column."
         )
 
-    max_components = min(64, feature_dim)
-    min_components = 3 if feature_dim >= 3 else feature_dim
-    if min_components == 0:
-        raise ValueError(
-            "PCA cannot operate without features. Provide at least one feature column."
-        )
-
     def objective(trial: Trial) -> float:
-        n_components = trial.suggest_int("n_components", int(min_components), int(max_components))
+        n_components = int(
+            trial.suggest_categorical("n_components", component_candidates)
+        )
         alpha = trial.suggest_float("alpha", 1e-5, 1e-2, log=True)
-        batch_size = trial.suggest_int("batch_size", 8, 64)
+        batch_size = int(trial.suggest_categorical("batch_size", ALLOWED_BATCH_SIZES))
         learning_rate_init = trial.suggest_float("learning_rate_init", 1e-4, 1e-2, log=True)
 
-        architecture = trial.suggest_categorical("architecture", [ARCHITECTURE_SINGLE, ARCHITECTURE_TWO_LAYER])
+        architecture = trial.suggest_categorical("architecture", architecture_candidates)
         if architecture == ARCHITECTURE_SINGLE:
-            hidden_size = trial.suggest_int("h1", 96, 750)
-            hidden_layer_sizes = (int(hidden_size),)
+            hidden_size = int(trial.suggest_categorical("h1", ALLOWED_LAYER_WIDTHS))
+            hidden_layer_sizes = (hidden_size,)
         else:
-            h1 = trial.suggest_int("h1", 96, 750)
-            h2 = trial.suggest_int("h2", 96, 750)
-            hidden_layer_sizes = (int(h1), int(h2))
+            h1 = int(trial.suggest_categorical("h1", ALLOWED_LAYER_WIDTHS))
+            h2 = int(trial.suggest_categorical("h2", ALLOWED_LAYER_WIDTHS))
+            hidden_layer_sizes = (h1, h2)
 
         pipeline = build_pipeline(
             n_components=int(n_components),
@@ -541,6 +674,9 @@ def objective_factory(
             hidden_layer_sizes,
         )
 
+        trial.set_user_attr("architecture", architecture)
+        trial.set_user_attr("model_type", model_type)
+
         try:
             result = evaluate_pipeline(
                 pipeline=pipeline,
@@ -549,6 +685,7 @@ def objective_factory(
                 trial=trial,
                 feature_frame=feature_frame,
                 selected_features=selected_features,
+                class_weight=class_weight,
             )
         except optuna.TrialPruned:
             raise
@@ -575,16 +712,42 @@ def objective_factory(
     return objective
 
 
-def _baseline_params(hidden: int, components: int) -> dict:
-    return {
+def _baseline_params(
+    hidden: int,
+    components: int,
+    *,
+    model_type: str,
+    class_weight: Mapping[int, float] | None,
+) -> dict:
+    params = {
         "n_components": components,
-        "hidden_layer_sizes": (hidden,),
         "alpha": 1e-4,
         "batch_size": 32,
         "learning_rate_init": 1e-3,
-        "architecture": ARCHITECTURE_SINGLE,
-        "h1": hidden,
+        "model_type": model_type,
     }
+    if model_type == MODEL_FP_OPTIMIZED_MLP:
+        first, second = _derive_two_layer_baseline(hidden)
+        params.update(
+            {
+                "hidden_layer_sizes": (first, second),
+                "architecture": ARCHITECTURE_TWO_LAYER,
+                "layer_config": f"{first}_{second}",
+                "h1": first,
+                "h2": second,
+            }
+        )
+    else:
+        params.update(
+            {
+                "hidden_layer_sizes": (hidden,),
+                "architecture": ARCHITECTURE_SINGLE,
+                "h1": hidden,
+            }
+        )
+    if class_weight is not None:
+        params["class_weight"] = {int(k): float(v) for k, v in class_weight.items()}
+    return params
 
 
 def _apply_component_constraints(
@@ -596,17 +759,9 @@ def _apply_component_constraints(
 ) -> dict:
     """Ensure PCA components respect the available feature dimensionality."""
 
-    if feature_dim == 0:
-        raise ValueError(
-            "No feature columns available for optimisation. Verify the dataset or the --features flag."
-        )
-
-    max_components = min(feature_dim, 64)
-    min_components = 3 if feature_dim >= 3 else feature_dim
-    if min_components == 0:
-        raise ValueError(
-            "PCA requires at least one feature column after feature selection."
-        )
+    component_candidates = _generate_component_candidates(feature_dim)
+    min_components = min(component_candidates)
+    max_components = max(component_candidates)
 
     requested = int(params["n_components"])
     if requested < min_components:
@@ -638,6 +793,8 @@ def run_baseline(
     logger: logging.Logger,
     feature_frame: pd.DataFrame,
     selected_features: Optional[Sequence[str]],
+    class_weight: Mapping[int, float] | None,
+    model_type: str,
 ) -> Tuple[dict, EvaluationResult]:
     """Evaluate a deterministic baseline configuration for reporting.
 
@@ -645,10 +802,18 @@ def run_baseline(
     same engineered feature subset supplied via the command line.
     """
 
-    if not 96 <= int(hidden) <= 750:
-        raise ValueError("Baseline hidden size must lie between 96 and 750.")
+    if int(hidden) not in ALLOWED_LAYER_WIDTHS:
+        raise ValueError(
+            "Baseline hidden size must be chosen from the supported widths "
+            f"{ALLOWED_LAYER_WIDTHS}. Received {hidden}."
+        )
 
-    params = _baseline_params(hidden, components)
+    params = _baseline_params(
+        hidden,
+        components,
+        model_type=model_type,
+        class_weight=class_weight,
+    )
     params = _apply_component_constraints(
         params,
         feature_dim=feature_frame.shape[1],
@@ -657,9 +822,10 @@ def run_baseline(
     )
     pipeline = build_pipeline_from_params(params)
     logger.info(
-        "Evaluating baseline model | components=%d | hidden=%d",
+        "Evaluating baseline model | architecture=%s | components=%d | hidden_layers=%s",
+        params["architecture"],
         params["n_components"],
-        hidden,
+        params["hidden_layer_sizes"],
     )
     result = evaluate_pipeline(
         pipeline=pipeline,
@@ -668,6 +834,7 @@ def run_baseline(
         trial=None,
         feature_frame=feature_frame,
         selected_features=selected_features,
+        class_weight=class_weight,
     )
     return params, result
 
@@ -762,15 +929,32 @@ def save_report(
             "Re-run Optuna to obtain interactive diagnostics.\n"
         )
 
+    model_variant = best_params.get("model_type", MODEL_MLP)
+    if best_params.get("class_weight"):
+        weight_mapping = best_params["class_weight"]
+        class_weight_summary = (
+            "Responder-focused class weighting was enabled with the mapping "
+            f"{weight_mapping}."
+        )
+    else:
+        class_weight_summary = (
+            "No additional class weighting was applied beyond the intensity-derived sample weights."
+        )
+
     if selected_features is None:
-        feature_summary = (
+        feature_clause = (
             "All engineered scalar features present in the dataset were included in the search."
         )
     else:
-        feature_summary = (
+        feature_clause = (
             "The optimisation was restricted to the following engineered features: "
             + ", ".join(selected_features)
         )
+
+    feature_summary = (
+        f"The optimisation targeted the `{model_variant}` pipeline. "
+        f"{class_weight_summary} {feature_clause}"
+    )
 
     contents = f"""# Optuna Tuning Report
 
@@ -834,6 +1018,8 @@ def retrain_final_model(
     output_dir: Path,
     logger: logging.Logger,
     feature_frame: pd.DataFrame,
+    class_weight: Mapping[int, float] | None,
+    model_type: str,
 ) -> Path:
     """Retrain the best-scoring pipeline on the full dataset.
 
@@ -850,13 +1036,24 @@ def retrain_final_model(
     pipeline = build_pipeline_from_params(constrained_params)
 
     logger.info("Retraining best pipeline on the full dataset (%d samples)", len(feature_frame))
+    if class_weight is not None:
+        final_sample_weight = _combine_sample_and_class_weights(
+            bundle.labels,
+            bundle.sample_weights,
+            class_weight,
+        )
+    else:
+        final_sample_weight = bundle.sample_weights.to_numpy()
+
     pipeline.fit(
         feature_frame,
         bundle.labels,
-        mlp__sample_weight=bundle.sample_weights.to_numpy(),
+        mlp__sample_weight=final_sample_weight,
     )
 
-    model_path = output_dir / "best_mlp_model.joblib"
+    suffix = model_type
+    model_filename = f"best_{suffix}_model.joblib"
+    model_path = output_dir / model_filename
     joblib.dump(pipeline, model_path)
     logger.info("Saved retrained pipeline to %s", model_path)
     return model_path
@@ -892,6 +1089,23 @@ def main(argv: Sequence[str] | None = None) -> None:
             ", ".join(selected_features),
         )
 
+    model_type = args.model
+    if model_type == MODEL_FP_OPTIMIZED_MLP:
+        class_weight: Mapping[int, float] | None = CLASS_WEIGHT_FP_OPTIMIZED
+        logger.info(
+            "Applying responder-focused class weighting for fp_optimized_mlp: %s",
+            class_weight,
+        )
+    else:
+        class_weight = None
+
+    component_candidates = _generate_component_candidates(feature_frame.shape[1])
+    architecture_candidates = _architecture_candidates_for_model(model_type)
+
+    study_name = args.study_name or _default_study_name(model_type, selected_features)
+    if args.study_name is None:
+        logger.info("Auto-selected study name %s based on configuration", study_name)
+
     baseline_params, baseline_result = run_baseline(
         bundle=bundle,
         hidden=args.baseline_hidden,
@@ -899,6 +1113,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         logger=logger,
         feature_frame=feature_frame,
         selected_features=selected_features,
+        class_weight=class_weight,
+        model_type=model_type,
     )
 
     study: optuna.Study | None = None
@@ -908,6 +1124,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         best_params_raw = json.loads(args.best_params_json.read_text())
         best_params = normalise_mlp_params(best_params_raw)
+        if "model_type" not in best_params:
+            best_params["model_type"] = model_type
+        if class_weight is not None:
+            best_params["class_weight"] = {
+                int(k): float(v) for k, v in class_weight.items()
+            }
         best_params = _apply_component_constraints(
             best_params,
             feature_dim=feature_frame.shape[1],
@@ -921,12 +1143,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             logger=logger,
             feature_frame=feature_frame,
             selected_features=selected_features,
+            class_weight=class_weight,
         )
     else:
         storage_path = args.output_dir / "optuna_study.db"
         storage = optuna.storages.RDBStorage(url=f"sqlite:///{storage_path}")
         study = optuna.create_study(
-            study_name=args.study_name,
+            study_name=study_name,
             storage=storage,
             load_if_exists=True,
             direction="maximize",
@@ -934,11 +1157,22 @@ def main(argv: Sequence[str] | None = None) -> None:
             pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=2, interval_steps=1),
         )
 
+        _ensure_study_search_space(
+            study,
+            architecture_candidates=architecture_candidates,
+            component_candidates=component_candidates,
+            logger=logger,
+        )
+
         objective = objective_factory(
             bundle=bundle,
             logger=logger,
             feature_frame=feature_frame,
             selected_features=selected_features,
+            class_weight=class_weight,
+            model_type=model_type,
+            component_candidates=component_candidates,
+            architecture_candidates=architecture_candidates,
         )
         timeout = None if args.timeout == 0 else args.timeout
         study.optimize(objective, n_trials=args.n_trials, timeout=timeout)
@@ -947,6 +1181,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         logger.info("Best trial parameters: %s", study.best_trial.params)
 
         best_params = normalise_mlp_params(study.best_trial.params)
+        best_params["model_type"] = model_type
+        if class_weight is not None:
+            best_params["class_weight"] = {
+                int(k): float(v) for k, v in class_weight.items()
+            }
         best_params = _apply_component_constraints(
             best_params,
             feature_dim=feature_frame.shape[1],
@@ -960,6 +1199,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             logger=logger,
             feature_frame=feature_frame,
             selected_features=selected_features,
+            class_weight=class_weight,
         )
 
     retrain_final_model(
@@ -968,6 +1208,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         output_dir=args.output_dir,
         logger=logger,
         feature_frame=feature_frame,
+        class_weight=class_weight,
+        model_type=model_type,
     )
 
     if study is not None:

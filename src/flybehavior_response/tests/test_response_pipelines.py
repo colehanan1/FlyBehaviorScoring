@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import numpy as np
 import pandas as pd
+import pytest
 
 from flybehavior_response.features import build_column_transformer, validate_features
 from flybehavior_response.io import LABEL_COLUMN, LABEL_INTENSITY_COLUMN, load_and_merge
@@ -12,6 +13,7 @@ from flybehavior_response.modeling import (
     MODEL_LDA,
     MODEL_LOGREG,
     MODEL_MLP,
+    MODEL_FP_OPTIMIZED_MLP,
     build_model_pipeline,
     normalise_mlp_params,
 )
@@ -128,18 +130,83 @@ def test_normalise_mlp_params_handles_two_layer_architecture() -> None:
         {
             "n_components": 12,
             "alpha": 0.0003,
-            "batch_size": 24,
+            "batch_size": 64,
             "learning_rate_init": 0.0015,
             "architecture": "two_layer",
-            "h1": 384,
-            "h2": 192,
+            "h1": 512,
+            "h2": 256,
         }
     )
 
-    assert params["hidden_layer_sizes"] == (384, 192)
-    assert params["h1"] == 384
-    assert params["h2"] == 192
-    assert params["layer_config"] == "384_192"
+    assert params["hidden_layer_sizes"] == (512, 256)
+    assert params["h1"] == 512
+    assert params["h2"] == 256
+    assert params["layer_config"] == "512_256"
+
+
+def test_normalise_mlp_params_enforces_two_layers_for_fp_variant() -> None:
+    with pytest.raises(ValueError):
+        normalise_mlp_params(
+            {
+                "n_components": 8,
+                "alpha": 0.001,
+                "batch_size": 32,
+                "learning_rate_init": 0.005,
+                "hidden_layer_sizes": [128],
+                "model_type": MODEL_FP_OPTIMIZED_MLP,
+            }
+        )
+
+
+def test_normalise_mlp_params_populates_fp_architecture_metadata() -> None:
+    params = normalise_mlp_params(
+        {
+            "n_components": 10,
+            "alpha": 0.0008,
+            "batch_size": 16,
+            "learning_rate_init": 0.004,
+            "hidden_layer_sizes": [256, 128],
+            "model_type": MODEL_FP_OPTIMIZED_MLP,
+        }
+    )
+
+    assert params["architecture"] == "two_layer"
+    assert params["layer_config"] == "256_128"
+    assert params["h1"] == 256
+    assert params["h2"] == 128
+
+
+def test_normalise_mlp_params_preserves_selected_features() -> None:
+    params = normalise_mlp_params(
+        {
+            "n_components": 20,
+            "alpha": 0.0001,
+            "batch_size": 32,
+            "learning_rate_init": 0.001,
+            "hidden_layer_sizes": [256],
+            "selected_features": ["AUC-During", "Peak-Value"],
+        }
+    )
+
+    assert params["selected_features"] == ("AUC-During", "Peak-Value")
+
+
+def test_normalise_mlp_params_preserves_model_variant_and_class_weights() -> None:
+    params = normalise_mlp_params(
+        {
+            "n_components": 16,
+            "alpha": 0.0005,
+            "batch_size": 64,
+            "learning_rate_init": 0.002,
+            "hidden_layer_sizes": [256, 128],
+            "model_type": MODEL_FP_OPTIMIZED_MLP,
+            "class_weight": {"0": 1.0, "1": 1.8},
+        }
+    )
+
+    assert params["model_type"] == MODEL_FP_OPTIMIZED_MLP
+    assert params["class_weight"] == {0: 1.0, 1: 1.8}
+    assert params["hidden_layer_sizes"] == (256, 128)
 
 
 def test_train_models_returns_metrics(tmp_path: Path) -> None:
@@ -163,6 +230,73 @@ def test_train_models_returns_metrics(tmp_path: Path) -> None:
     assert "test" in metrics["models"][MODEL_LDA]
     assert "cross_validation" not in metrics["models"][MODEL_LDA]
     assert "weighted" in metrics["models"][MODEL_LOGREG]
+
+
+def test_train_models_raises_on_missing_features(tmp_path: Path) -> None:
+    data_path, labels_path = _create_dataset(tmp_path)
+    with pytest.raises(ValueError) as excinfo:
+        train_models(
+            data_csv=data_path,
+            labels_csv=labels_path,
+            features=["AUC-During", "Not-A-Feature"],
+            include_traces=True,
+            use_raw_pca=True,
+            n_pcs=2,
+            models=[MODEL_LOGREG],
+            artifacts_dir=tmp_path,
+            cv=0,
+            seed=42,
+            verbose=False,
+            dry_run=True,
+        )
+    assert "Not-A-Feature" in str(excinfo.value)
+
+
+def test_train_models_applies_optuna_selected_features(tmp_path: Path) -> None:
+    data_path, labels_path = _create_dataset(tmp_path)
+    data_df = pd.read_csv(data_path)
+    labels_df = pd.read_csv(labels_path)
+    expanded_data = [data_df]
+    expanded_labels = [labels_df]
+    for idx in range(4):
+        suffix = f"_rep{idx}"
+        clone_data = data_df.copy()
+        clone_labels = labels_df.copy()
+        clone_data["trial_label"] = clone_data["trial_label"] + suffix
+        clone_labels["trial_label"] = clone_labels["trial_label"] + suffix
+        expanded_data.append(clone_data)
+        expanded_labels.append(clone_labels)
+    pd.concat(expanded_data, ignore_index=True).to_csv(data_path, index=False)
+    pd.concat(expanded_labels, ignore_index=True).to_csv(labels_path, index=False)
+
+    best_params = normalise_mlp_params(
+        {
+            "n_components": 2,
+            "alpha": 0.001,
+            "batch_size": 16,
+            "learning_rate_init": 0.005,
+            "hidden_layer_sizes": [128],
+        }
+    )
+    best_params["selected_features"] = ("AUC-During", "Peak-Value")
+
+    metrics = train_models(
+        data_csv=data_path,
+        labels_csv=labels_path,
+        features=["AUC-During", "TimeToPeak-During", "Peak-Value"],
+        include_traces=True,
+        use_raw_pca=True,
+        n_pcs=2,
+        models=[MODEL_MLP],
+        artifacts_dir=tmp_path,
+        cv=0,
+        seed=42,
+        verbose=False,
+        dry_run=True,
+        mlp_params=best_params,
+    )
+
+    assert MODEL_MLP in metrics["models"]
 
 
 def test_train_models_writes_prediction_csv(tmp_path: Path) -> None:
@@ -235,7 +369,7 @@ def test_train_models_serialises_mlp_params(tmp_path: Path) -> None:
             "alpha": 0.0005,
             "batch_size": 32,
             "learning_rate_init": 0.001,
-            "hidden_layer_sizes": [96, 32],
+            "hidden_layer_sizes": [128, 32],
         }
     )
 
@@ -267,7 +401,7 @@ def test_train_models_serialises_mlp_params(tmp_path: Path) -> None:
     assert config["use_raw_pca"] is True
     assert config["n_pcs"] == 3
     assert config["mlp_params"]["n_components"] == 3
-    assert config["mlp_params"]["hidden_layer_sizes"] == [96, 32]
+    assert config["mlp_params"]["hidden_layer_sizes"] == [128, 32]
     assert config["mlp_params"]["batch_size"] == 32
 
 

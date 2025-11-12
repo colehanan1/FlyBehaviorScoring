@@ -18,6 +18,9 @@ MODEL_FP_OPTIMIZED_MLP = "fp_optimized_mlp"
 ARCHITECTURE_SINGLE = "single"
 ARCHITECTURE_TWO_LAYER = "two_layer"
 
+ALLOWED_BATCH_SIZES: Tuple[int, ...] = (8, 16, 32)
+ALLOWED_LAYER_WIDTHS: Tuple[int, ...] = (8, 16, 32, 64, 128, 256, 512, 1024)
+
 
 def _parse_int_sequence(raw: Sequence[object] | str) -> Tuple[int, ...]:
     """Coerce a sequence representation into integer layer widths."""
@@ -112,18 +115,69 @@ def normalise_mlp_params(params: Mapping[str, object]) -> dict:
 
     hidden_layers = resolve_hidden_layer_sizes_from_params(params)
 
+    raw_model_type = params.get("model_type")
+    model_variant = str(raw_model_type) if raw_model_type is not None else MODEL_MLP
+    if model_variant == MODEL_FP_OPTIMIZED_MLP and len(hidden_layers) != 2:
+        raise ValueError(
+            "fp_optimized_mlp requires exactly two hidden layers; received "
+            f"{hidden_layers}."
+        )
+
+    batch_size_value = int(params["batch_size"])
+    if batch_size_value not in ALLOWED_BATCH_SIZES:
+        raise ValueError(
+            "Batch size must be one of the supported powers of two: "
+            f"{ALLOWED_BATCH_SIZES}. Received {batch_size_value}."
+        )
+
     consolidated: dict = {
         "n_components": int(params["n_components"]),
         "alpha": float(params["alpha"]),
-        "batch_size": int(params["batch_size"]),
+        "batch_size": batch_size_value,
         "learning_rate_init": float(learning_rate_value),
         "hidden_layer_sizes": hidden_layers,
     }
+
+    for width in hidden_layers:
+        if int(width) not in ALLOWED_LAYER_WIDTHS:
+            raise ValueError(
+                "Hidden layer widths must be selected from the supported set "
+                f"{ALLOWED_LAYER_WIDTHS}. Received {hidden_layers}."
+            )
+
+    if "selected_features" in params and params["selected_features"] is not None:
+        feature_subset = params["selected_features"]
+        if isinstance(feature_subset, str):
+            tokens = [token.strip() for token in feature_subset.split(",") if token.strip()]
+            consolidated["selected_features"] = tuple(tokens)
+        elif isinstance(feature_subset, (list, tuple)):
+            consolidated["selected_features"] = tuple(str(item) for item in feature_subset)
+        else:
+            raise TypeError(
+                "selected_features must be provided as a sequence or comma-separated string."
+            )
+
+    if "class_weight" in params and params["class_weight"] is not None:
+        class_weight = params["class_weight"]
+        if not isinstance(class_weight, Mapping):
+            raise TypeError("class_weight must be a mapping from class label to multiplier.")
+        consolidated["class_weight"] = {
+            int(class_label): float(multiplier)
+            for class_label, multiplier in class_weight.items()
+        }
+
+    if raw_model_type is not None:
+        consolidated["model_type"] = model_variant
 
     architecture = params.get("architecture")
     if architecture is not None:
         arch_token = str(architecture).strip().lower()
         consolidated["architecture"] = arch_token
+        if model_variant == MODEL_FP_OPTIMIZED_MLP and arch_token != ARCHITECTURE_TWO_LAYER:
+            raise ValueError(
+                "fp_optimized_mlp requires a two-layer architecture; received "
+                f"{arch_token}."
+            )
         if arch_token == ARCHITECTURE_SINGLE:
             if hidden_layers:
                 consolidated["h1"] = int(hidden_layers[0])
@@ -134,6 +188,12 @@ def normalise_mlp_params(params: Mapping[str, object]) -> dict:
             consolidated["layer_config"] = str(layer_config)
             for idx, width in enumerate(hidden_layers, start=1):
                 consolidated[f"h{idx}"] = int(width)
+
+    elif model_variant == MODEL_FP_OPTIMIZED_MLP:
+        consolidated["architecture"] = ARCHITECTURE_TWO_LAYER
+        consolidated["layer_config"] = "_".join(str(int(size)) for size in hidden_layers)
+        for idx, width in enumerate(hidden_layers, start=1):
+            consolidated[f"h{idx}"] = int(width)
 
     return consolidated
 
