@@ -608,6 +608,12 @@ def _configure_parser() -> argparse.ArgumentParser:
         type=str,
         help="Legacy alias for --trial-label when datasets expose a testing_trial column",
     )
+    predict_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.5,
+        help="Decision threshold for binary classification (default: 0.5). Use higher values (e.g., 0.65) to reduce false positives.",
+    )
 
     return parser
 
@@ -1051,7 +1057,21 @@ def _handle_predict(args: argparse.Namespace) -> None:
     logger.info(
         "Scoring %d row(s) with model %s", len(filtered_df), args.model_path.name
     )
-    predictions = model.predict(feature_df)
+
+    # Use custom threshold if model supports probabilities
+    if hasattr(model, "predict_proba"):
+        proba = model.predict_proba(feature_df)
+        if proba.ndim == 2 and proba.shape[1] >= 2:
+            proba_positive = proba[:, 1]
+            predictions = (proba_positive >= args.threshold).astype(int)
+            if args.threshold != 0.5:
+                logger.info("Applying custom decision threshold: %.2f", args.threshold)
+        else:
+            predictions = model.predict(feature_df)
+            proba_positive = None
+    else:
+        predictions = model.predict(feature_df)
+        proba_positive = None
 
     output_columns = [
         col
@@ -1061,10 +1081,8 @@ def _handle_predict(args: argparse.Namespace) -> None:
     output = filtered_df[output_columns].copy() if output_columns else pd.DataFrame()
     output["prediction"] = predictions.astype(int)
 
-    if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(feature_df)
-        if proba.ndim == 2 and proba.shape[1] >= 2:
-            output["probability"] = proba[:, 1]
+    if proba_positive is not None:
+        output["probability"] = proba_positive
 
     if args.dry_run:
         logger.info("Dry run enabled; predictions not written")
