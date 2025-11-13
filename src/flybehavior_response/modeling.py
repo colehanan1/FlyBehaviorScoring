@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Iterable, Mapping, Sequence, Tuple
 
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
@@ -12,6 +13,7 @@ from .sample_weighted_mlp import SampleWeightedMLPClassifier
 
 MODEL_LDA = "lda"
 MODEL_LOGREG = "logreg"
+MODEL_RF = "random_forest"
 MODEL_MLP = "mlp"
 MODEL_FP_OPTIMIZED_MLP = "fp_optimized_mlp"
 
@@ -223,6 +225,10 @@ def create_estimator(
     *,
     logreg_solver: str = "liblinear",
     logreg_max_iter: int = 1000,
+    logreg_class_weight: Mapping[int, float] | str | None = None,
+    rf_n_estimators: int = 100,
+    rf_max_depth: int | None = None,
+    rf_class_weight: Mapping[int, float] | str | None = None,
     mlp_params: Mapping[str, object] | None = None,
 ) -> object:
     if model_type == MODEL_LDA:
@@ -233,7 +239,16 @@ def create_estimator(
         return LogisticRegression(
             max_iter=logreg_max_iter,
             solver=logreg_solver,
+            class_weight=logreg_class_weight,
             random_state=seed,
+        )
+    if model_type == MODEL_RF:
+        return RandomForestClassifier(
+            n_estimators=rf_n_estimators,
+            max_depth=rf_max_depth,
+            class_weight=rf_class_weight,
+            random_state=seed,
+            n_jobs=-1,  # Use all available cores
         )
     if model_type == MODEL_MLP:
         if mlp_params is not None:
@@ -265,6 +280,10 @@ def build_model_pipeline(
     seed: int,
     logreg_solver: str = "lbfgs",
     logreg_max_iter: int = 1000,
+    logreg_class_weight: Mapping[int, float] | str | None = None,
+    rf_n_estimators: int = 100,
+    rf_max_depth: int | None = None,
+    rf_class_weight: Mapping[int, float] | str | None = None,
     mlp_params: Mapping[str, object] | None = None,
 ) -> Pipeline:
     """Construct a full pipeline with preprocessing and estimator."""
@@ -273,6 +292,10 @@ def build_model_pipeline(
         seed,
         logreg_solver=logreg_solver,
         logreg_max_iter=logreg_max_iter,
+        logreg_class_weight=logreg_class_weight,
+        rf_n_estimators=rf_n_estimators,
+        rf_max_depth=rf_max_depth,
+        rf_class_weight=rf_class_weight,
         mlp_params=mlp_params,
     )
     return Pipeline([
@@ -282,4 +305,4 @@ def build_model_pipeline(
 
 
 def supported_models() -> Iterable[str]:
-    return [MODEL_LDA, MODEL_LOGREG, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP]
+    return [MODEL_LDA, MODEL_LOGREG, MODEL_RF, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP]
