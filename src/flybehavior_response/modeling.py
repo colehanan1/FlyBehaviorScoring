@@ -239,7 +239,7 @@ def create_estimator(
         if mlp_params is not None:
             return _build_mlp_from_params(mlp_params, seed)
         return SampleWeightedMLPClassifier(
-            hidden_layer_sizes=2500,
+            hidden_layer_sizes=5000,
             max_iter=1000,
             random_state=seed,
         )
@@ -251,8 +251,8 @@ def create_estimator(
             max_iter=1000,
             batch_size=16,
             early_stopping=True,
-            validation_fraction=0.01,
-            n_iter_no_change=10,
+            validation_fraction=0.10,
+            n_iter_no_change=50,
             random_state=seed,
         )
     raise ValueError(f"Unsupported model type: {model_type}")

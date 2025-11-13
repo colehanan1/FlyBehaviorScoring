@@ -462,7 +462,7 @@ def train_models(
                 class_weight_dict,
             )
     elif use_fp_optimised_split:
-        class_weight_dict = {0: 1.0, 1: 2.0}
+        class_weight_dict = {0: 1.0, 1: 1.25}
         logger.info(
             "fp_optimized_mlp will apply default class weights %s on top of proportional sample weights.",
             class_weight_dict,

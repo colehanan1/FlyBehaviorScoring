@@ -58,6 +58,7 @@ FEATURE_COLUMNS = {
     "global_max",
     "local_min",
     "local_max",
+    "trimmed_global_min",
     "local_min_before",
     "local_max_before",
     "local_min_during",
