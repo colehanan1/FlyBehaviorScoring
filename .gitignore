@@ -13,3 +13,4 @@ artifacts/
 *.joblib
 *.png
 *.parquet
+predictions_all_900.csv
