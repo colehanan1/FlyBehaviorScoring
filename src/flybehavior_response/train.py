@@ -29,6 +29,7 @@ from .modeling import (
     MODEL_LDA,
     MODEL_LOGREG,
     MODEL_MLP,
+    MODEL_RF,
     build_model_pipeline,
     supported_models,
 )
@@ -120,6 +121,10 @@ def train_models(
     dry_run: bool = False,
     logreg_solver: str = "lbfgs",
     logreg_max_iter: int = 1000,
+    logreg_class_weight: Mapping[int, float] | str | None = None,
+    rf_n_estimators: int = 100,
+    rf_max_depth: int | None = None,
+    rf_class_weight: Mapping[int, float] | str | None = None,
     trace_prefixes: Sequence[str] | None = None,
     geometry_source: Path | None = None,
     geom_chunk_size: int = 100_000,
@@ -468,6 +473,20 @@ def train_models(
             class_weight_dict,
         )
 
+    # Log logistic regression class weights if provided
+    if logreg_class_weight is not None:
+        logger.info(
+            "Logistic regression will apply class weights %s to reduce false negatives.",
+            logreg_class_weight,
+        )
+
+    # Log random forest class weights if provided
+    if rf_class_weight is not None:
+        logger.info(
+            "Random Forest will apply class weights %s to reduce false negatives.",
+            rf_class_weight,
+        )
+
     metrics: Dict[str, Dict[str, object]] = {}
 
     mlp_params_for_config = None
@@ -572,6 +591,10 @@ def train_models(
             seed=seed,
             logreg_solver=logreg_solver,
             logreg_max_iter=logreg_max_iter,
+            logreg_class_weight=logreg_class_weight if model_name == MODEL_LOGREG else None,
+            rf_n_estimators=rf_n_estimators,
+            rf_max_depth=rf_max_depth,
+            rf_class_weight=rf_class_weight if model_name == MODEL_RF else None,
             mlp_params=mlp_params if model_name == MODEL_MLP else None,
         )
         if model_name == MODEL_LDA:
@@ -580,6 +603,8 @@ def train_models(
         else:
             fit_kwargs = {}
             if model_name == MODEL_LOGREG:
+                fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
+            elif model_name == MODEL_RF:
                 fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
             elif model_name in {MODEL_MLP, MODEL_FP_OPTIMIZED_MLP}:
                 # Apply class weights if provided, otherwise just use sample weights

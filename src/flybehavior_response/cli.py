@@ -564,6 +564,37 @@ def _configure_parser() -> argparse.ArgumentParser:
             "Default for fp_optimized_mlp is '0:1.0,1:2.0'."
         ),
     )
+    train_parser.add_argument(
+        "--logreg-class-weights",
+        type=str,
+        help=(
+            "Custom class weights for logistic regression to reduce false negatives. "
+            "Format: '0:1.0,1:2.0' or use 'balanced' for sklearn auto-balancing. "
+            "Higher weight on class 1 increases sensitivity to positive class (responders). "
+            "Example: '0:1.0,1:3.0' gives responders 3x weight to reduce false negatives."
+        ),
+    )
+    train_parser.add_argument(
+        "--rf-n-estimators",
+        type=int,
+        default=100,
+        help="Number of trees in the Random Forest (default: 100)",
+    )
+    train_parser.add_argument(
+        "--rf-max-depth",
+        type=int,
+        default=None,
+        help="Maximum depth of trees in Random Forest (default: None = unlimited)",
+    )
+    train_parser.add_argument(
+        "--rf-class-weights",
+        type=str,
+        help=(
+            "Custom class weights for Random Forest to reduce false negatives. "
+            "Format: '0:1.0,1:2.0' or use 'balanced' for sklearn auto-balancing. "
+            "Higher weight on class 1 increases sensitivity to positive class (responders)."
+        ),
+    )
     eval_parser = subparsers.add_parser(
         "eval",
         parents=[common_parser],
@@ -786,6 +817,48 @@ def _handle_train(args: argparse.Namespace) -> None:
             mlp_params = {}
         mlp_params["class_weight"] = class_weight_dict
 
+    # Parse logistic regression class weights if provided
+    logreg_class_weight = None
+    if hasattr(args, "logreg_class_weights") and args.logreg_class_weights is not None:
+        if args.logreg_class_weights.strip().lower() == "balanced":
+            logreg_class_weight = "balanced"
+            logger.info("Using balanced class weights for logistic regression")
+        else:
+            logreg_cw_dict = {}
+            for pair in args.logreg_class_weights.split(","):
+                pair = pair.strip()
+                if ":" not in pair:
+                    raise ValueError(
+                        f"Invalid logreg class weight pair '{pair}'. Expected format: '0:1.0,1:3.0' or 'balanced'"
+                    )
+                class_str, weight_str = pair.split(":", 1)
+                class_label = int(class_str.strip())
+                weight_value = float(weight_str.strip())
+                logreg_cw_dict[class_label] = weight_value
+            logreg_class_weight = logreg_cw_dict
+            logger.info("Using custom class weights for logistic regression: %s", logreg_class_weight)
+
+    # Parse Random Forest class weights if provided
+    rf_class_weight = None
+    if hasattr(args, "rf_class_weights") and args.rf_class_weights is not None:
+        if args.rf_class_weights.strip().lower() == "balanced":
+            rf_class_weight = "balanced"
+            logger.info("Using balanced class weights for Random Forest")
+        else:
+            rf_cw_dict = {}
+            for pair in args.rf_class_weights.split(","):
+                pair = pair.strip()
+                if ":" not in pair:
+                    raise ValueError(
+                        f"Invalid RF class weight pair '{pair}'. Expected format: '0:1.0,1:3.0' or 'balanced'"
+                    )
+                class_str, weight_str = pair.split(":", 1)
+                class_label = int(class_str.strip())
+                weight_value = float(weight_str.strip())
+                rf_cw_dict[class_label] = weight_value
+            rf_class_weight = rf_cw_dict
+            logger.info("Using custom class weights for Random Forest: %s", rf_class_weight)
+
     metrics = train_models(
         data_csv=args.data_csv,
         labels_csv=args.labels_csv,
@@ -800,6 +873,10 @@ def _handle_train(args: argparse.Namespace) -> None:
         dry_run=args.dry_run,
         logreg_solver=args.logreg_solver,
         logreg_max_iter=args.logreg_max_iter,
+        logreg_class_weight=logreg_class_weight,
+        rf_n_estimators=getattr(args, "rf_n_estimators", 100),
+        rf_max_depth=getattr(args, "rf_max_depth", None),
+        rf_class_weight=rf_class_weight,
         trace_prefixes=prefixes,
         include_traces=include_traces,
         geometry_source=geometry_source,
