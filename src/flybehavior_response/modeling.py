@@ -266,8 +266,8 @@ def create_estimator(
             max_iter=1000,
             batch_size=16,
             early_stopping=True,
-            validation_fraction=0.01,
-            n_iter_no_change=10,
+            validation_fraction=0.10,
+            n_iter_no_change=50,
             random_state=seed,
         )
     raise ValueError(f"Unsupported model type: {model_type}")
