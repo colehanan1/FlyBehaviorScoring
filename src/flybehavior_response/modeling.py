@@ -254,7 +254,7 @@ def create_estimator(
         if mlp_params is not None:
             return _build_mlp_from_params(mlp_params, seed)
         return SampleWeightedMLPClassifier(
-            hidden_layer_sizes=5000,
+            hidden_layer_sizes=10000,
             max_iter=1000,
             random_state=seed,
         )

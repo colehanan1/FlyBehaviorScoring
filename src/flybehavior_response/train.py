@@ -365,39 +365,93 @@ def train_models(
     effective_test_size = 0.15 if use_fp_optimised_split else test_size
 
     if groups_series is not None:
-        splitter = GroupShuffleSplit(
-            n_splits=1,
-            test_size=effective_test_size,
-            random_state=seed,
-        )
-        train_idx, test_idx = next(splitter.split(X, y, groups_series))
-        train_groups = set(groups_series.iloc[train_idx])
-        test_groups = set(groups_series.iloc[test_idx])
-        overlap = train_groups & test_groups
+        # =====================================================================
+        # HYBRID SPLITTING STRATEGY (Default)
+        # Balance class distribution across train/test while maintaining
+        # group integrity (no fly leakage). Alternates group assignment by
+        # response rate to ensure balanced splits.
+        # =====================================================================
+
+        # Calculate response rate per group
+        group_stats = dataset.frame.groupby(resolved_group_column).agg({
+            LABEL_COLUMN: ['count', 'mean']
+        })
+        group_stats.columns = ['n_trials', 'response_rate']
+
+        # Sort groups by response rate
+        group_stats_sorted = group_stats.sort_values('response_rate')
+        groups_sorted = group_stats_sorted.index.tolist()
+
+        # Alternate assignment to balance response rates
+        # Every Nth group → test, rest → train (where N = 1/test_size)
+        n_groups = len(groups_sorted)
+        test_interval = int(1.0 / effective_test_size)
+
+        test_groups = []
+        train_groups = []
+
+        for i, group in enumerate(groups_sorted):
+            if i % test_interval == 0:
+                test_groups.append(group)
+            else:
+                train_groups.append(group)
+
+        # Create index masks
+        train_mask = dataset.frame[resolved_group_column].isin(train_groups)
+        test_mask = dataset.frame[resolved_group_column].isin(test_groups)
+
+        train_idx = np.where(train_mask)[0]
+        test_idx = np.where(test_mask)[0]
+
+        # Verify no group leakage
+        train_groups_set = set(train_groups)
+        test_groups_set = set(test_groups)
+        overlap = train_groups_set & test_groups_set
         if overlap:
             raise RuntimeError(
                 "Group leakage detected across splits for groups: %s" % sorted(overlap)
             )
+
+        # Log split statistics
+        train_response_rate = y.iloc[train_idx].mean()
+        test_response_rate = y.iloc[test_idx].mean()
+        balance_gap = abs(train_response_rate - test_response_rate)
+
+        logger.info(
+            "Hybrid split: %d train trials (%d groups, %.1f%% responders), "
+            "%d test trials (%d groups, %.1f%% responders), balance gap: %.1f%%",
+            len(train_idx), len(train_groups), train_response_rate * 100,
+            len(test_idx), len(test_groups), test_response_rate * 100,
+            balance_gap * 100
+        )
+
         if use_fp_optimised_split:
             logger.warning(
                 "Group-aware split in use; fp_optimized_mlp validation fold may not remain class stratified."
             )
             train_idx = np.asarray(train_idx)
             test_idx = np.asarray(test_idx)
-            inner_split = GroupShuffleSplit(
-                n_splits=1,
-                test_size=effective_test_size / (1 - effective_test_size),
-                random_state=seed,
-            )
-            rel_train_idx, rel_val_idx = next(
-                inner_split.split(
-                    np.zeros(len(train_idx)),
-                    None,
-                    groups_series.iloc[train_idx],
-                )
-            )
-            val_idx = train_idx[np.asarray(rel_val_idx)]
-            train_idx = train_idx[np.asarray(rel_train_idx)]
+
+            # Apply hybrid split for validation fold too
+            train_groups_series = dataset.frame.iloc[train_idx][resolved_group_column]
+            train_y = y.iloc[train_idx]
+
+            train_group_stats = dataset.frame.iloc[train_idx].groupby(resolved_group_column).agg({
+                LABEL_COLUMN: ['count', 'mean']
+            })
+            train_group_stats.columns = ['n_trials', 'response_rate']
+            train_group_stats_sorted = train_group_stats.sort_values('response_rate')
+            train_groups_sorted = train_group_stats_sorted.index.tolist()
+
+            val_interval = int((1 - effective_test_size) / effective_test_size)
+            val_groups = [g for i, g in enumerate(train_groups_sorted) if i % val_interval == 0]
+            actual_train_groups = [g for g in train_groups_sorted if g not in val_groups]
+
+            val_mask_relative = train_groups_series.isin(val_groups)
+            actual_train_mask_relative = train_groups_series.isin(actual_train_groups)
+
+            val_idx = train_idx[np.where(val_mask_relative)[0]]
+            train_idx = train_idx[np.where(actual_train_mask_relative)[0]]
     else:
         if use_fp_optimised_split:
             train_idx, val_idx, test_idx = _stratified_train_val_test_split(
