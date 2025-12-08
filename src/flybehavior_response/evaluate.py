@@ -21,9 +21,11 @@ from sklearn.model_selection import GroupKFold, StratifiedKFold
 
 from .modeling import (
     MODEL_FP_OPTIMIZED_MLP,
+    MODEL_HGB,
     MODEL_LDA,
     MODEL_LOGREG,
     MODEL_MLP,
+    MODEL_XGB,
     build_model_pipeline,
 )
 from .weights import expand_samples_by_weight
@@ -262,7 +264,8 @@ def perform_cross_validation(
     else:
         splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=seed)
         split_iterator = splitter.split(data, labels)
-    aggregate_raw = np.zeros((2, 2), dtype=float)
+    # Initialize confusion matrix as None - will be set based on first fold
+    aggregate_raw = None
     metrics_accum: Dict[str, List[float]] = {
         "accuracy": [],
         "precision": [],
@@ -288,7 +291,8 @@ def perform_cross_validation(
             "true_negative_rate": [],
             "roc_auc": [],
         }
-        aggregate_weighted_raw = np.zeros((2, 2), dtype=float)
+        # Will be initialized on first fold
+        aggregate_weighted_raw = None
     for train_idx, test_idx in split_iterator:
         model = build_model_pipeline(
             preprocessor,
@@ -321,7 +325,12 @@ def perform_cross_validation(
             model_type,
             sample_weight=fold_sample_weight,
         )
-        aggregate_raw += np.array(fold_metrics["confusion_matrix"]["raw"], dtype=float)
+        # Initialize or accumulate confusion matrix (handles any matrix size)
+        fold_cm = np.array(fold_metrics["confusion_matrix"]["raw"], dtype=float)
+        if aggregate_raw is None:
+            aggregate_raw = fold_cm
+        else:
+            aggregate_raw += fold_cm
         for key in [
             "accuracy",
             "precision",
@@ -332,7 +341,9 @@ def perform_cross_validation(
             "false_negative_rate",
             "true_negative_rate",
         ]:
-            metrics_accum[key].append(float(fold_metrics[key]))
+            # Skip None values (e.g., f1_binary for multiclass)
+            if fold_metrics[key] is not None:
+                metrics_accum[key].append(float(fold_metrics[key]))
         if (
             model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP}
             and fold_metrics.get("roc_auc") is not None
@@ -340,7 +351,11 @@ def perform_cross_validation(
             metrics_accum["roc_auc"].append(float(fold_metrics["roc_auc"]))
         if weighted_accum is not None and "weighted" in fold_metrics:
             weighted = fold_metrics["weighted"]
-            aggregate_weighted_raw += np.array(weighted["confusion_matrix"]["raw"], dtype=float)
+            weighted_cm = np.array(weighted["confusion_matrix"]["raw"], dtype=float)
+            if aggregate_weighted_raw is None:
+                aggregate_weighted_raw = weighted_cm
+            else:
+                aggregate_weighted_raw += weighted_cm
             for key in [
                 "accuracy",
                 "precision",
@@ -351,7 +366,9 @@ def perform_cross_validation(
                 "false_negative_rate",
                 "true_negative_rate",
             ]:
-                weighted_accum[key].append(float(weighted[key]))
+                # Skip None values (e.g., f1_binary for multiclass)
+                if weighted[key] is not None:
+                    weighted_accum[key].append(float(weighted[key]))
             if (
                 model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP}
                 and weighted.get("roc_auc") is not None

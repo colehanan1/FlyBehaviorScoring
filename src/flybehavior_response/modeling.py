@@ -5,17 +5,27 @@ from __future__ import annotations
 from typing import Iterable, Mapping, Sequence, Tuple
 
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
 from .sample_weighted_mlp import SampleWeightedMLPClassifier
+
+# Try to import XGBoost (optional dependency)
+try:
+    from xgboost import XGBClassifier
+    HAVE_XGB = True
+except ImportError:
+    XGBClassifier = None
+    HAVE_XGB = False
 
 MODEL_LDA = "lda"
 MODEL_LOGREG = "logreg"
 MODEL_RF = "random_forest"
 MODEL_MLP = "mlp"
 MODEL_FP_OPTIMIZED_MLP = "fp_optimized_mlp"
+MODEL_HGB = "hist_gb"
+MODEL_XGB = "xgb"
 
 ARCHITECTURE_SINGLE = "single"
 ARCHITECTURE_TWO_LAYER = "two_layer"
@@ -230,6 +240,14 @@ def create_estimator(
     rf_max_depth: int | None = None,
     rf_class_weight: Mapping[int, float] | str | None = None,
     mlp_params: Mapping[str, object] | None = None,
+    hgb_max_iter: int = 200,
+    hgb_max_depth: int | None = None,
+    hgb_learning_rate: float = 0.1,
+    xgb_n_estimators: int = 300,
+    xgb_max_depth: int = 4,
+    xgb_learning_rate: float = 0.05,
+    xgb_subsample: float = 0.8,
+    xgb_colsample_bytree: float = 0.8,
 ) -> object:
     if model_type == MODEL_LDA:
         return LinearDiscriminantAnalysis()
@@ -270,6 +288,28 @@ def create_estimator(
             n_iter_no_change=50,
             random_state=seed,
         )
+    if model_type == MODEL_HGB:
+        return HistGradientBoostingClassifier(
+            max_iter=hgb_max_iter,
+            max_depth=hgb_max_depth,
+            learning_rate=hgb_learning_rate,
+            random_state=seed,
+        )
+    if model_type == MODEL_XGB:
+        if not HAVE_XGB:
+            raise ImportError("XGBoost is not installed. Install it with: pip install xgboost")
+        return XGBClassifier(
+            n_estimators=xgb_n_estimators,
+            max_depth=xgb_max_depth,
+            learning_rate=xgb_learning_rate,
+            subsample=xgb_subsample,
+            colsample_bytree=xgb_colsample_bytree,
+            objective="multi:softmax",  # Will handle both binary and multiclass
+            eval_metric="logloss",
+            use_label_encoder=False,
+            random_state=seed,
+            n_jobs=-1,
+        )
     raise ValueError(f"Unsupported model type: {model_type}")
 
 
@@ -285,6 +325,14 @@ def build_model_pipeline(
     rf_max_depth: int | None = None,
     rf_class_weight: Mapping[int, float] | str | None = None,
     mlp_params: Mapping[str, object] | None = None,
+    hgb_max_iter: int = 200,
+    hgb_max_depth: int | None = None,
+    hgb_learning_rate: float = 0.1,
+    xgb_n_estimators: int = 300,
+    xgb_max_depth: int = 4,
+    xgb_learning_rate: float = 0.05,
+    xgb_subsample: float = 0.8,
+    xgb_colsample_bytree: float = 0.8,
 ) -> Pipeline:
     """Construct a full pipeline with preprocessing and estimator."""
     estimator = create_estimator(
@@ -297,6 +345,14 @@ def build_model_pipeline(
         rf_max_depth=rf_max_depth,
         rf_class_weight=rf_class_weight,
         mlp_params=mlp_params,
+        hgb_max_iter=hgb_max_iter,
+        hgb_max_depth=hgb_max_depth,
+        hgb_learning_rate=hgb_learning_rate,
+        xgb_n_estimators=xgb_n_estimators,
+        xgb_max_depth=xgb_max_depth,
+        xgb_learning_rate=xgb_learning_rate,
+        xgb_subsample=xgb_subsample,
+        xgb_colsample_bytree=xgb_colsample_bytree,
     )
     return Pipeline([
         ("preprocess", preprocessor),
@@ -305,4 +361,7 @@ def build_model_pipeline(
 
 
 def supported_models() -> Iterable[str]:
-    return [MODEL_LDA, MODEL_LOGREG, MODEL_RF, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP]
+    models = [MODEL_LDA, MODEL_LOGREG, MODEL_RF, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP, MODEL_HGB]
+    if HAVE_XGB:
+        models.append(MODEL_XGB)
+    return models

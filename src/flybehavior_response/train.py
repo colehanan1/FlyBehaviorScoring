@@ -26,10 +26,12 @@ from .io import (
 from .logging_utils import get_logger
 from .modeling import (
     MODEL_FP_OPTIMIZED_MLP,
+    MODEL_HGB,
     MODEL_LDA,
     MODEL_LOGREG,
     MODEL_MLP,
     MODEL_RF,
+    MODEL_XGB,
     build_model_pipeline,
     supported_models,
 )
@@ -662,6 +664,10 @@ def train_models(
                 fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
             elif model_name == MODEL_RF:
                 fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
+            elif model_name == MODEL_HGB:
+                fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
+            elif model_name == MODEL_XGB:
+                fit_kwargs["model__sample_weight"] = sw_train.to_numpy()
             elif model_name in {MODEL_MLP, MODEL_FP_OPTIMIZED_MLP}:
                 # Apply class weights if provided, otherwise just use sample weights
                 if class_weight_dict is not None:
@@ -710,12 +716,21 @@ def train_models(
             train_metrics["accuracy"],
             test_metrics["accuracy"],
         )
-        logger.info(
-            "Model %s F1 (binary) -> train: %.3f | test: %.3f",
-            model_name,
-            train_metrics["f1_binary"],
-            test_metrics["f1_binary"],
-        )
+        # Log F1 score (binary if available, otherwise macro)
+        if train_metrics["f1_binary"] is not None:
+            logger.info(
+                "Model %s F1 (binary) -> train: %.3f | test: %.3f",
+                model_name,
+                train_metrics["f1_binary"],
+                test_metrics["f1_binary"],
+            )
+        else:
+            logger.info(
+                "Model %s F1 (macro) -> train: %.3f | test: %.3f",
+                model_name,
+                train_metrics["f1_macro"],
+                test_metrics["f1_macro"],
+            )
         if model_name == MODEL_FP_OPTIMIZED_MLP and X_val is not None and y_val is not None:
             logger.info(
                 "Model %s precision -> train: %.3f | validation: %.3f | test: %.3f",
