@@ -14,3 +14,7 @@ artifacts/
 *.png
 *.parquet
 predictions_all_900.csv
+ensemble_artifacts/
+test_classification_modes/
+disgnostic_analysis/
+stats/

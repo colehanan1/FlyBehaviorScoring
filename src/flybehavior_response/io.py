@@ -1616,6 +1616,35 @@ def _compute_sample_weights(intensity: pd.Series) -> pd.Series:
     return weights
 
 
+def _apply_classification_mode(intensity: pd.Series, mode: str) -> pd.Series:
+    """Apply classification mode to label intensity values.
+
+    Args:
+        intensity: Raw label intensity values (0-5)
+        mode: Classification mode - one of:
+            - 'binary': 0 vs 1-5 (default)
+            - 'multiclass': preserve 0-5 as separate classes
+            - 'threshold-2': 0-2 vs 3-5
+
+    Returns:
+        Series with labels transformed according to the mode
+    """
+    if mode == 'binary':
+        # Current behavior: 0 vs 1-5
+        return (intensity > 0).astype(int)
+    elif mode == 'multiclass':
+        # Keep raw labels 0-5
+        return intensity.astype(int)
+    elif mode == 'threshold-2':
+        # 0-2 as class 0, 3-5 as class 1
+        return (intensity > 2).astype(int)
+    else:
+        raise ValueError(
+            f"Invalid classification_mode: {mode}. "
+            f"Must be one of: 'binary', 'multiclass', 'threshold-2'"
+        )
+
+
 def load_and_merge(
     data_csv: Path,
     labels_csv: Path,
@@ -1623,6 +1652,7 @@ def load_and_merge(
     logger_name: str = __name__,
     trace_prefixes: Sequence[str] | None = None,
     include_trace_columns: bool = True,
+    classification_mode: str = 'binary',
 ) -> MergedDataset:
     """Load and merge data and labels CSVs."""
     logger = get_logger(logger_name)
@@ -1754,7 +1784,7 @@ def load_and_merge(
     intensity = merged[LABEL_COLUMN].astype(int)
     weights = _compute_sample_weights(intensity)
     merged[LABEL_INTENSITY_COLUMN] = intensity
-    merged[LABEL_COLUMN] = (intensity > 0).astype(int)
+    merged[LABEL_COLUMN] = _apply_classification_mode(intensity, classification_mode)
     merged[NON_REACTIVE_FLAG_COLUMN] = (merged[LABEL_COLUMN] == 0).astype(int)
 
     distribution = intensity.value_counts().sort_index().to_dict()
@@ -1805,6 +1835,7 @@ def load_geometry_dataset(
     trial_summary: Path | None = None,
     feature_columns: Sequence[str] | None = None,
     include_traces: bool = True,
+    classification_mode: str = 'binary',
 ) -> MergedDataset:
     """Load geometry frames and optionally aggregate into trial-level rows."""
 
@@ -1835,7 +1866,7 @@ def load_geometry_dataset(
             )
         coerced = _coerce_labels(label_table[LABEL_COLUMN], labels_csv)
         label_table[LABEL_INTENSITY_COLUMN] = coerced.astype(int)
-        label_table[LABEL_COLUMN] = (coerced > 0).astype(int)
+        label_table[LABEL_COLUMN] = _apply_classification_mode(coerced, classification_mode)
 
     stream = load_geom_frames(
         source,
@@ -2029,7 +2060,7 @@ def load_geometry_dataset(
             )
         coerced_frame_labels = _coerce_labels(combined[LABEL_COLUMN], labels_csv)
         combined[LABEL_INTENSITY_COLUMN] = coerced_frame_labels.astype(int)
-        combined[LABEL_COLUMN] = (coerced_frame_labels > 0).astype(int)
+        combined[LABEL_COLUMN] = _apply_classification_mode(coerced_frame_labels, classification_mode)
         combined[NON_REACTIVE_FLAG_COLUMN] = (combined[LABEL_COLUMN] == 0).astype(int)
         intensity = combined[LABEL_INTENSITY_COLUMN]
         weights = _compute_sample_weights(intensity)
@@ -2103,6 +2134,7 @@ def load_dataset(
     geom_downcast: bool = True,
     geom_trial_summary: Path | None = None,
     geom_feature_columns: Sequence[str] | None = None,
+    classification_mode: str = 'binary',
 ) -> MergedDataset:
     """Load a dataset from either merged CSV inputs or geometry frames."""
 
@@ -2124,6 +2156,7 @@ def load_dataset(
             trial_summary=geom_trial_summary,
             feature_columns=geom_feature_columns,
             include_traces=include_traces,
+            classification_mode=classification_mode,
         )
 
     if data_csv is None:
@@ -2137,6 +2170,7 @@ def load_dataset(
         logger_name=logger_name,
         trace_prefixes=trace_prefixes,
         include_trace_columns=include_traces,
+        classification_mode=classification_mode,
     )
 
 

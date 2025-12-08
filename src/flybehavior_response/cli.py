@@ -548,6 +548,17 @@ def _configure_parser() -> argparse.ArgumentParser:
         help="Fraction of samples reserved for the held-out test split",
     )
     train_parser.add_argument(
+        "--classification-mode",
+        type=str,
+        choices=["binary", "multiclass", "threshold-2"],
+        default="binary",
+        help=(
+            "Classification mode: 'binary' (0 vs 1-5, default), "
+            "'multiclass' (preserve all 6 classes: 0-5), "
+            "'threshold-2' (0-2 vs 3-5)"
+        ),
+    )
+    train_parser.add_argument(
         "--best-params-json",
         type=Path,
         help=(
@@ -885,6 +896,7 @@ def _handle_train(args: argparse.Namespace) -> None:
         group_override=args.group_override,
         test_size=args.test_size,
         mlp_params=mlp_params,
+        classification_mode=args.classification_mode,
     )
     logger.info("Training metrics: %s", json.dumps(metrics))
 

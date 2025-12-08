@@ -143,6 +143,7 @@ def train_models(
     group_override: str | None = None,
     test_size: float = 0.2,
     mlp_params: Mapping[str, object] | None = None,
+    classification_mode: str = 'binary',
 ) -> Dict[str, Dict[str, object]]:
     logger = get_logger(__name__, verbose=verbose)
     _set_seeds(seed)
@@ -166,6 +167,7 @@ def train_models(
         geom_downcast=geom_downcast,
         geom_trial_summary=geom_trial_summary,
         geom_feature_columns=geom_feature_columns,
+        classification_mode=classification_mode,
     )
     resolved_prefixes = list(dataset.trace_prefixes)
     logger.debug("Trace prefixes resolved to: %s", resolved_prefixes)
@@ -801,10 +803,18 @@ def train_models(
                 )
 
             cm = np.array(test_metrics["confusion_matrix"]["raw"], dtype=int)
+
+            # Generate display labels based on number of classes
+            n_classes = cm.shape[0]
+            if n_classes == 2:
+                display_labels = ["No Reaction", "Reaction"]
+            else:
+                display_labels = [f"Class {i}" for i in range(n_classes)]
+
             fig, ax = plt.subplots(figsize=(5, 5))
             disp = ConfusionMatrixDisplay(
                 confusion_matrix=cm,
-                display_labels=["No Reaction", "Reaction"],
+                display_labels=display_labels,
             )
             disp.plot(ax=ax, cmap="Blues", values_format="d", colorbar=False)
             ax.set_title(f"{model_name.upper()} Confusion Matrix (Test)")

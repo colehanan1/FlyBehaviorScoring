@@ -43,40 +43,73 @@ def compute_metrics(
 ) -> Dict[str, object]:
     metrics: Dict[str, object] = {}
     metrics["accuracy"] = float(accuracy_score(y_true, y_pred))
-    metrics["precision"] = float(
-        precision_score(y_true, y_pred, zero_division=0)
-    )
-    metrics["recall"] = float(
-        recall_score(y_true, y_pred, zero_division=0)
-    )
+
+    # Detect if multi-class
+    n_classes = len(np.unique(y_true))
+    is_binary = n_classes == 2
+
+    if is_binary:
+        # Binary classification metrics
+        metrics["precision"] = float(
+            precision_score(y_true, y_pred, average="binary", zero_division=0)
+        )
+        metrics["recall"] = float(
+            recall_score(y_true, y_pred, average="binary", zero_division=0)
+        )
+        metrics["f1_binary"] = float(
+            f1_score(y_true, y_pred, average="binary", zero_division=0)
+        )
+        raw_cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+        norm_cm = confusion_matrix(y_true, y_pred, labels=[0, 1], normalize="true")
+        norm_cm = np.nan_to_num(norm_cm)
+        tn, fp, fn, tp = raw_cm.ravel()
+        fp_denom = tn + fp
+        fn_denom = tp + fn
+        metrics["false_positive_rate"] = float(fp / fp_denom) if fp_denom else 0.0
+        metrics["true_negative_rate"] = float(tn / fp_denom) if fp_denom else 0.0
+        metrics["false_negative_rate"] = float(fn / fn_denom) if fn_denom else 0.0
+    else:
+        # Multi-class metrics
+        metrics["precision"] = float(
+            precision_score(y_true, y_pred, average="weighted", zero_division=0)
+        )
+        metrics["recall"] = float(
+            recall_score(y_true, y_pred, average="weighted", zero_division=0)
+        )
+        metrics["f1_binary"] = None  # Not applicable for multi-class
+
+        # Get all unique labels present in data
+        unique_labels = sorted(np.unique(np.concatenate([y_true, y_pred])))
+        raw_cm = confusion_matrix(y_true, y_pred, labels=unique_labels)
+        norm_cm = confusion_matrix(y_true, y_pred, labels=unique_labels, normalize="true")
+        norm_cm = np.nan_to_num(norm_cm)
+
+        # Binary-specific rates not applicable for multi-class
+        metrics["false_positive_rate"] = None
+        metrics["true_negative_rate"] = None
+        metrics["false_negative_rate"] = None
+
+    # Macro F1 works for both binary and multi-class
     metrics["f1_macro"] = float(
         f1_score(y_true, y_pred, average="macro", zero_division=0)
     )
-    metrics["f1_binary"] = float(
-        f1_score(y_true, y_pred, average="binary", zero_division=0)
-    )
-    raw_cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    norm_cm = confusion_matrix(y_true, y_pred, labels=[0, 1], normalize="true")
-    norm_cm = np.nan_to_num(norm_cm)
-    tn, fp, fn, tp = raw_cm.ravel()
-    fp_denom = tn + fp
-    fn_denom = tp + fn
-    metrics["false_positive_rate"] = float(fp / fp_denom) if fp_denom else 0.0
-    metrics["true_negative_rate"] = float(tn / fp_denom) if fp_denom else 0.0
-    metrics["false_negative_rate"] = float(fn / fn_denom) if fn_denom else 0.0
+
     metrics["confusion_matrix"] = {
         "raw": _serialize_confusion(raw_cm),
         "normalized": _serialize_confusion(norm_cm),
     }
-    if proba is not None:
+
+    # ROC-AUC only for binary classification
+    positive_scores = None
+    if is_binary and proba is not None:
         if proba.ndim == 2 and proba.shape[1] >= 2:
             positive_scores = proba[:, 1]
         else:
             positive_scores = proba.ravel()
-    else:
-        positive_scores = None
-    if model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP} and positive_scores is not None:
-        metrics["roc_auc"] = float(roc_auc_score(y_true, positive_scores))
+        if model_type in {MODEL_LOGREG, MODEL_MLP, MODEL_FP_OPTIMIZED_MLP}:
+            metrics["roc_auc"] = float(roc_auc_score(y_true, positive_scores))
+        else:
+            metrics["roc_auc"] = None
     else:
         metrics["roc_auc"] = None
 
@@ -85,14 +118,17 @@ def compute_metrics(
         weighted_metrics["accuracy"] = float(
             accuracy_score(y_true, y_pred, sample_weight=sample_weight)
         )
+
+        # Use appropriate averaging for precision and recall
+        avg_mode = 'binary' if is_binary else 'weighted'
         weighted_metrics["precision"] = float(
             precision_score(
-                y_true, y_pred, sample_weight=sample_weight, zero_division=0
+                y_true, y_pred, average=avg_mode, sample_weight=sample_weight, zero_division=0
             )
         )
         weighted_metrics["recall"] = float(
             recall_score(
-                y_true, y_pred, sample_weight=sample_weight, zero_division=0
+                y_true, y_pred, average=avg_mode, sample_weight=sample_weight, zero_division=0
             )
         )
         weighted_metrics["f1_macro"] = float(
@@ -104,38 +140,60 @@ def compute_metrics(
                 zero_division=0,
             )
         )
-        weighted_metrics["f1_binary"] = float(
-            f1_score(
+
+        if is_binary:
+            weighted_metrics["f1_binary"] = float(
+                f1_score(
+                    y_true,
+                    y_pred,
+                    average="binary",
+                    sample_weight=sample_weight,
+                    zero_division=0,
+                )
+            )
+            weighted_raw = confusion_matrix(
+                y_true, y_pred, labels=[0, 1], sample_weight=sample_weight
+            )
+            weighted_norm = confusion_matrix(
                 y_true,
                 y_pred,
-                average="binary",
+                labels=[0, 1],
+                normalize="true",
                 sample_weight=sample_weight,
-                zero_division=0,
             )
-        )
-        weighted_raw = confusion_matrix(
-            y_true, y_pred, labels=[0, 1], sample_weight=sample_weight
-        )
-        weighted_norm = confusion_matrix(
-            y_true,
-            y_pred,
-            labels=[0, 1],
-            normalize="true",
-            sample_weight=sample_weight,
-        )
+        else:
+            weighted_metrics["f1_binary"] = None
+            unique_labels = sorted(np.unique(np.concatenate([y_true, y_pred])))
+            weighted_raw = confusion_matrix(
+                y_true, y_pred, labels=unique_labels, sample_weight=sample_weight
+            )
+            weighted_norm = confusion_matrix(
+                y_true,
+                y_pred,
+                labels=unique_labels,
+                normalize="true",
+                sample_weight=sample_weight,
+            )
         weighted_norm = np.nan_to_num(weighted_norm)
-        wtn, wfp, wfn, wtp = weighted_raw.ravel()
-        w_fp_denom = wtn + wfp
-        w_fn_denom = wtp + wfn
-        weighted_metrics["false_positive_rate"] = (
-            float(wfp / w_fp_denom) if w_fp_denom else 0.0
-        )
-        weighted_metrics["true_negative_rate"] = (
-            float(wtn / w_fp_denom) if w_fp_denom else 0.0
-        )
-        weighted_metrics["false_negative_rate"] = (
-            float(wfn / w_fn_denom) if w_fn_denom else 0.0
-        )
+
+        if is_binary:
+            wtn, wfp, wfn, wtp = weighted_raw.ravel()
+            w_fp_denom = wtn + wfp
+            w_fn_denom = wtp + wfn
+            weighted_metrics["false_positive_rate"] = (
+                float(wfp / w_fp_denom) if w_fp_denom else 0.0
+            )
+            weighted_metrics["true_negative_rate"] = (
+                float(wtn / w_fp_denom) if w_fp_denom else 0.0
+            )
+            weighted_metrics["false_negative_rate"] = (
+                float(wfn / w_fn_denom) if w_fn_denom else 0.0
+            )
+        else:
+            # Binary-specific rates not applicable for multi-class
+            weighted_metrics["false_positive_rate"] = None
+            weighted_metrics["true_negative_rate"] = None
+            weighted_metrics["false_negative_rate"] = None
         weighted_metrics["confusion_matrix"] = {
             "raw": _serialize_confusion(weighted_raw),
             "normalized": _serialize_confusion(weighted_norm),
