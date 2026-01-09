@@ -16,7 +16,7 @@ test:
 $(PYTHON_BIN) -m pytest -q
 
 demo: install
-mkdir -p artifacts/demo
+mkdir -p outputs/demo
 $(PYTHON_BIN) - <<'PY'
 from pathlib import Path
 import pandas as pd
@@ -36,14 +36,14 @@ for trial in trials:
     })
     rows.append(df)
 data = pd.concat(rows, ignore_index=True)
-data.to_csv("artifacts/demo/data.csv", index=False)
-meta.to_csv("artifacts/demo/meta.csv", index=False)
+data.to_csv("outputs/demo/data.csv", index=False)
+meta.to_csv("outputs/demo/meta.csv", index=False)
 PY
-$(PYTHON_BIN) -m flypca.cli fit-lag-pca --data artifacts/demo/data.csv --config configs/default.yaml --out artifacts/demo/lagpca.joblib
-$(PYTHON_BIN) -m flypca.cli project --model artifacts/demo/lagpca.joblib --data artifacts/demo/data.csv --out artifacts/demo/projections
-$(PYTHON_BIN) -m flypca.cli features --data artifacts/demo/data.csv --config configs/default.yaml --model artifacts/demo/lagpca.joblib --projections artifacts/demo/projections --out artifacts/demo/features.parquet
-$(PYTHON_BIN) -m flypca.cli cluster --features artifacts/demo/features.parquet --out artifacts/demo/clusters.csv
-$(PYTHON_BIN) -m flypca.cli report --features artifacts/demo/features.parquet --clusters artifacts/demo/clusters.csv --model artifacts/demo/lagpca.joblib --projections artifacts/demo/projections --out-dir artifacts/demo
+$(PYTHON_BIN) -m flypca.cli fit-lag-pca --data outputs/demo/data.csv --config config/example.yaml --out outputs/demo/lagpca.joblib
+$(PYTHON_BIN) -m flypca.cli project --model outputs/demo/lagpca.joblib --data outputs/demo/data.csv --out outputs/demo/projections
+$(PYTHON_BIN) -m flypca.cli features --data outputs/demo/data.csv --config config/example.yaml --model outputs/demo/lagpca.joblib --projections outputs/demo/projections --out outputs/demo/features.parquet
+$(PYTHON_BIN) -m flypca.cli cluster --features outputs/demo/features.parquet --out outputs/demo/clusters.csv
+$(PYTHON_BIN) -m flypca.cli report --features outputs/demo/features.parquet --clusters outputs/demo/clusters.csv --model outputs/demo/lagpca.joblib --projections outputs/demo/projections --out-dir outputs/demo
 
 clean:
-rm -rf $(VENV) artifacts/demo
+rm -rf $(VENV) outputs/demo

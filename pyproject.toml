@@ -47,15 +47,15 @@ packages = [
 include = [
   "src/flybehavior_response",
   "src/flypca",
-  "configs",
-  "examples",
-  "stats",
-  "unsup",
+  "src/fly_behavior",
+  "src/unsup",
+  "src/stats",
+  "config",
+  "notebooks",
+  "scripts",
+  "docs",
   "README.md",
-  "README_response.md",
   "pyproject.toml",
   "requirements.txt",
-  "train_model.py",
-  "label_videos.py",
+  "Makefile",
 ]
-
