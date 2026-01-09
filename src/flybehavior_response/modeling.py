@@ -298,17 +298,24 @@ def create_estimator(
     if model_type == MODEL_XGB:
         if not HAVE_XGB:
             raise ImportError("XGBoost is not installed. Install it with: pip install xgboost")
+        # XGBClassifier auto-detects binary vs multiclass from training data
+        # Try to use GPU if available
+        try:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            device = "cpu"
+
         return XGBClassifier(
             n_estimators=xgb_n_estimators,
             max_depth=xgb_max_depth,
             learning_rate=xgb_learning_rate,
             subsample=xgb_subsample,
             colsample_bytree=xgb_colsample_bytree,
-            objective="multi:softmax",  # Will handle both binary and multiclass
-            eval_metric="logloss",
             use_label_encoder=False,
             random_state=seed,
-            n_jobs=-1,
+            device=device,
+            n_jobs=-1 if device == "cpu" else 1,  # Use single job for GPU
         )
     raise ValueError(f"Unsupported model type: {model_type}")
 

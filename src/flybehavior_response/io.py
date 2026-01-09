@@ -1624,6 +1624,7 @@ def _apply_classification_mode(intensity: pd.Series, mode: str) -> pd.Series:
         mode: Classification mode - one of:
             - 'binary': 0 vs 1-5 (default)
             - 'multiclass': preserve 0-5 as separate classes
+            - 'threshold-1': 0-1 vs 2-5
             - 'threshold-2': 0-2 vs 3-5
 
     Returns:
@@ -1635,13 +1636,16 @@ def _apply_classification_mode(intensity: pd.Series, mode: str) -> pd.Series:
     elif mode == 'multiclass':
         # Keep raw labels 0-5
         return intensity.astype(int)
+    elif mode == 'threshold-1':
+        # 0-1 as class 0, 2-5 as class 1
+        return (intensity > 1).astype(int)
     elif mode == 'threshold-2':
         # 0-2 as class 0, 3-5 as class 1
         return (intensity > 2).astype(int)
     else:
         raise ValueError(
             f"Invalid classification_mode: {mode}. "
-            f"Must be one of: 'binary', 'multiclass', 'threshold-2'"
+            f"Must be one of: 'binary', 'multiclass', 'threshold-1', 'threshold-2'"
         )
 
 

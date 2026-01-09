@@ -6,6 +6,8 @@ import random
 from pathlib import Path
 from typing import Dict, Mapping, Sequence, Tuple
 
+import matplotlib
+matplotlib.use('Agg')  # Set non-interactive backend before importing pyplot
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd

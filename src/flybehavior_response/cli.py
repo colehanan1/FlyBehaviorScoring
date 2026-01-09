@@ -550,11 +550,12 @@ def _configure_parser() -> argparse.ArgumentParser:
     train_parser.add_argument(
         "--classification-mode",
         type=str,
-        choices=["binary", "multiclass", "threshold-2"],
+        choices=["binary", "multiclass", "threshold-1", "threshold-2"],
         default="binary",
         help=(
             "Classification mode: 'binary' (0 vs 1-5, default), "
             "'multiclass' (preserve all 6 classes: 0-5), "
+            "'threshold-1' (0-1 vs 2-5), "
             "'threshold-2' (0-2 vs 3-5)"
         ),
     )
