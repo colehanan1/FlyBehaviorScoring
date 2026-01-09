@@ -316,14 +316,14 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python find_optimal_threshold.py <predictions_test.csv> [strategy]")
+        print("Usage: python scripts/eval/find_optimal_threshold.py <predictions_test.csv> [strategy]")
         print("\nStrategy options:")
         print("  f1       - Maximize F1 score (default, balanced)")
         print("  recall   - Maximize recall (catch more reactions)")
         print("  precision - Maximize precision (fewer false alarms)")
         print("  youden   - Maximize Youden's J statistic")
         print("\nExample:")
-        print("  python find_optimal_threshold.py \\")
+        print("  python scripts/eval/find_optimal_threshold.py \\")
         print(
             f"    {artifacts_dir() / 'rf_corrected_labels_v1/2025-11-14T18-58-28Z/predictions_random_forest_test.csv'} \\"
         )

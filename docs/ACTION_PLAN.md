@@ -232,7 +232,7 @@ In this repository, you now have:
 1. ✅ `scripts/analysis/analyze_errors.py` - Analyze misclassified test samples
 2. ✅ `scripts/analysis/compare_label_versions.py` - Compare model performance before/after label changes
 3. ✅ `label_correction_log.md` - Template to document your changes
-4. ✅ `tune_random_forest.py` - Hyperparameter tuning experiments
+4. ✅ `scripts/tune/tune_random_forest.py` - Hyperparameter tuning experiments
 5. ✅ `ITERATIVE_LABELING_GUIDE.md` - Full guide on label quality
 6. ✅ `OVERFITTING_ANALYSIS.md` - Guide to RF overfitting and max_features
 7. ✅ `RECOMMENDATIONS.md` - Original recommendations for improving from 93.6%

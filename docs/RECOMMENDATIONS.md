@@ -89,7 +89,7 @@ Your current config:
 
 **Run systematic tuning:**
 ```bash
-python tune_random_forest.py
+python scripts/tune/tune_random_forest.py
 ```
 
 This will test:

@@ -43,7 +43,7 @@ Run this on your LOCAL machine:
 cd /path/to/FlyBehaviorScoring
 conda activate flybehavior
 
-python find_optimal_threshold.py \
+python scripts/eval/find_optimal_threshold.py \
   outputs/artifacts/rf_corrected_labels_v1/2025-11-14T18-58-28Z/predictions_random_forest_test.csv \
   recall
 ```
@@ -101,11 +101,11 @@ flybehavior-response predict \
 
 ## Choosing Your Threshold Strategy
 
-Run `find_optimal_threshold.py` with different strategies:
+Run `scripts/eval/find_optimal_threshold.py` with different strategies:
 
 ### 1. Maximize Recall (Catch More Reactions)
 ```bash
-python find_optimal_threshold.py predictions_test.csv recall
+python scripts/eval/find_optimal_threshold.py predictions_test.csv recall
 ```
 
 **Best for:**
@@ -118,7 +118,7 @@ python find_optimal_threshold.py predictions_test.csv recall
 
 ### 2. Maximize F1 (Balanced)
 ```bash
-python find_optimal_threshold.py predictions_test.csv f1
+python scripts/eval/find_optimal_threshold.py predictions_test.csv f1
 ```
 
 **Best for:**
@@ -128,7 +128,7 @@ python find_optimal_threshold.py predictions_test.csv f1
 
 ### 3. Maximize Precision (Fewer False Alarms)
 ```bash
-python find_optimal_threshold.py predictions_test.csv precision
+python scripts/eval/find_optimal_threshold.py predictions_test.csv precision
 ```
 
 **Best for:**
@@ -173,7 +173,7 @@ For your use case (catching subtle reactions):
 
 ## Visual Analysis
 
-After running `find_optimal_threshold.py`, check the plots:
+After running `scripts/eval/find_optimal_threshold.py`, check the plots:
 
 ### 1. Precision/Recall vs Threshold
 Shows how metrics change as you adjust threshold.
@@ -260,7 +260,7 @@ calibrated_model.fit(X_train, y_train)
 
 ```bash
 # 1. Find optimal threshold for catching subtle reactions
-python find_optimal_threshold.py \
+python scripts/eval/find_optimal_threshold.py \
   outputs/artifacts/rf_corrected_labels_v1/2025-11-14T18-58-28Z/predictions_random_forest_test.csv \
   recall
 
@@ -331,7 +331,7 @@ flybehavior-response predict \
 **Solution:** Lower prediction threshold from 0.5 to ~0.38.
 
 **How:**
-1. Run `find_optimal_threshold.py` to find optimal value
+1. Run `scripts/eval/find_optimal_threshold.py` to find optimal value
 2. Use `--threshold` flag when running `predict` command
 3. Accept trade-off: catch more reactions but get more false alarms
 

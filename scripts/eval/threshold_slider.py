@@ -10,7 +10,7 @@ Example usage:
         --classification-mode multiclass --model mlp --artifacts-dir outputs/multiclass_artifacts
 
     # Then analyze thresholds
-    python threshold_slider.py --predictions-csv outputs/multiclass_artifacts/latest/predictions_mlp_test.csv \\
+    python scripts/eval/threshold_slider.py --predictions-csv outputs/multiclass_artifacts/latest/predictions_mlp_test.csv \\
         --min-threshold 1 --max-threshold 5
 """
 

@@ -171,7 +171,7 @@ print("  flybehavior-response train --classification-mode binary ...")
 print("  flybehavior-response train --classification-mode multiclass ...")
 print("  flybehavior-response train --classification-mode threshold-2 ...")
 print("\nFor post-hoc threshold analysis on multi-class predictions:")
-print("  python threshold_slider.py --predictions-csv path/to/predictions.csv")
+print("  python scripts/eval/threshold_slider.py --predictions-csv path/to/predictions.csv")
 
 print("\n" + "="*100)
 print("DONE")

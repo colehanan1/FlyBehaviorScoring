@@ -194,7 +194,7 @@ flybehavior-response train --classification-mode multiclass --model mlp \\
     --data-csv data.csv --labels-csv labels.csv --artifacts-dir multiclass_run
 
 # 2. Analyze different thresholds
-python threshold_slider.py \\
+python scripts/eval/threshold_slider.py \\
     --predictions-csv multiclass_run/latest/predictions_mlp_test.csv \\
     --min-threshold 1 --max-threshold 5
 ```

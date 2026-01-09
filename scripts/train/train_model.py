@@ -25,7 +25,7 @@ def main():
         "-d",
         "--data",
         default=str(default_data),
-        help="Labeled CSV from label_videos.py",
+        help="Labeled CSV from scripts/label/label_videos.py",
     )
     ap.add_argument("-e","--epochs", type=int, default=100, help="Training epochs")
     ap.add_argument(

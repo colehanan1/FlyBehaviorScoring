@@ -191,7 +191,7 @@ flybehavior-response predict \
 
 **Command**:
 ```bash
-./train_optimized_model.sh
+./scripts/train/train_optimized_model.sh
 ```
 
 **Or manually**:
@@ -399,7 +399,7 @@ python scripts/active_learning.py all_predictions.csv
 python scripts/merge_corrected_labels.py
 
 # 5. Retrain model with refined labels
-./train_optimized_model.sh
+./scripts/train/train_optimized_model.sh
 ```
 
 **Expected Results**:
@@ -623,8 +623,8 @@ else:
 | Action | Command | Time | Expected Gain |
 |--------|---------|------|---------------|
 | **1. Lower Threshold** | `--threshold 0.35` in predict command | 0 min | FNR: 21% → 10-12% |
-| **2. Retrain with Weights** | `./train_optimized_model.sh` | 10 min | Test acc: 91% → 92-93% |
-| **3. Generate Diagnostics** | `python quick_diagnostics.py` | 1 min | Verify improvements |
+| **2. Retrain with Weights** | `./scripts/train/train_optimized_model.sh` | 10 min | Test acc: 91% → 92-93% |
+| **3. Generate Diagnostics** | `python scripts/analysis/quick_diagnostics.py` | 1 min | Verify improvements |
 
 **Total Time**: 11 minutes
 **Expected Result**: Test accuracy ~92-93%, FNR ~8-12%, maintained precision
@@ -634,9 +634,9 @@ else:
 ## Files Generated
 
 ### Analysis Scripts
-1. `quick_diagnostics.py` - Fast performance summary
+1. `scripts/analysis/quick_diagnostics.py` - Fast performance summary
 2. `scripts/analysis/comprehensive_diagnostic_analysis.py` - Full analysis suite (data distribution, splitting strategies, learning curves, feature importance)
-3. `train_optimized_model.sh` - Automated training with recommended fixes
+3. `scripts/train/train_optimized_model.sh` - Automated training with recommended fixes
 
 ### Documentation
 4. `DIAGNOSTIC_REPORT.md` - This comprehensive report

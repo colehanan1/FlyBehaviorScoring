@@ -144,7 +144,7 @@ flybehavior-response train \
 
 ### Approach 2: Use Cross-Validation Script (Without Modifying Code)
 
-I created `tune_rf_with_cv.py` which shows how to use `GridSearchCV` to tune `max_features` (and other params) using proper 5-fold cross-validation.
+I created `scripts/tune/tune_rf_with_cv.py` which shows how to use `GridSearchCV` to tune `max_features` (and other params) using proper 5-fold cross-validation.
 
 **Key features:**
 - Tests multiple `max_features` values

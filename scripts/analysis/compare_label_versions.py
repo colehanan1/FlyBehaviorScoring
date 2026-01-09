@@ -174,9 +174,9 @@ def compare_versions(
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python compare_label_versions.py <old_metrics.json> <new_metrics.json>")
+        print("Usage: python scripts/analysis/compare_label_versions.py <old_metrics.json> <new_metrics.json>")
         print("\nExample:")
-        print("  python compare_label_versions.py \\")
+        print("  python scripts/analysis/compare_label_versions.py \\")
         print(f"    {artifacts_dir() / 'rf_tuned/2025-11-14T01-47-01Z/metrics.json'} \\")
         print(f"    {artifacts_dir() / 'rf_corrected_labels/2025-11-14T03-20-00Z/metrics.json'}")
         sys.exit(1)

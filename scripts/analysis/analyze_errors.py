@@ -142,10 +142,10 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python analyze_errors.py <path_to_predictions_test.csv>")
+        print("Usage: python scripts/analysis/analyze_errors.py <path_to_predictions_test.csv>")
         print("\nExample:")
         print(
-            "  python analyze_errors.py "
+            "  python scripts/analysis/analyze_errors.py "
             f"{artifacts_dir() / 'rf_tuned/2025-11-14T01-47-01Z/predictions_random_forest_test.csv'}"
         )
         sys.exit(1)

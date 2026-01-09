@@ -67,7 +67,7 @@ grep "False" outputs/artifacts/my_experiment/*/predictions_random_forest_train.c
 This is the **most important** metric. Run:
 
 ```bash
-python analyze_model_errors.py \
+python scripts/analysis/analyze_model_errors.py \
   --run-dir outputs/artifacts/my_experiment/2025-11-13T22-18-43Z \
   --model random_forest \
   --output-dir outputs/artifacts/my_experiment/2025-11-13T22-18-43Z/error_analysis
@@ -297,7 +297,7 @@ flybehavior-response train --model random_forest --n-pcs 6 \
   --rf-class-weights balanced --artifacts-dir exp1
 
 # 2. Analyze
-python analyze_model_errors.py --run-dir exp1/*/ --model random_forest
+python scripts/analysis/analyze_model_errors.py --run-dir exp1/*/ --model random_forest
 
 # 3. Review errors
 cat exp1/*/error_analysis/errors_random_forest_test_false_negatives.csv
@@ -310,7 +310,7 @@ flybehavior-response train --model random_forest --n-pcs 6 \
   --rf-class-weights "0:1.0,1:3.0" --artifacts-dir exp2
 
 # 5. Compare
-python analyze_model_errors.py --run-dir exp2/*/ --model random_forest
+python scripts/analysis/analyze_model_errors.py --run-dir exp2/*/ --model random_forest
 # Check if FN decreased!
 ```
 
@@ -337,7 +337,7 @@ sort -t',' -k last -n predictions_900.csv > predictions_sorted.csv
 ## Summary
 
 **To evaluate your model:**
-1. Run `python analyze_model_errors.py --run-dir <run-dir> --model random_forest`
+1. Run `python scripts/analysis/analyze_model_errors.py --run-dir <run-dir> --model random_forest`
 2. Check test set metrics (accuracy, recall, precision)
 3. Review error CSVs to see what went wrong
 4. Look at visualizations for patterns

@@ -172,7 +172,7 @@ print("""
    - Most challenging: predicting exact reaction strength (6 classes)
    - Lower accuracy expected due to fine-grained classification
    - More prone to overfitting with limited data per class
-   - Use threshold_slider.py to find optimal post-hoc thresholds
+   - Use scripts/eval/threshold_slider.py to find optimal post-hoc thresholds
 
 3. THRESHOLD-2 MODE (0-2 vs 3-5):
    - Treats weak reactions (1-2) as non-reactive

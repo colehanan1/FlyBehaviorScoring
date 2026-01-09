@@ -3,7 +3,7 @@
 
 NOTE: Run this with your conda environment activated:
     conda activate flybehavior
-    python analyze_model_errors.py --run-dir <dir> --model <model>
+    python scripts/analysis/analyze_model_errors.py --run-dir <dir> --model <model>
 """
 
 import argparse

@@ -221,9 +221,9 @@ def compare_label_files(old_csv: str, new_csv: str):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python compare_labels.py <old_labels.csv> <new_labels.csv>")
+        print("Usage: python scripts/analysis/compare_labels.py <old_labels.csv> <new_labels.csv>")
         print("\nExample:")
-        print("  python compare_labels.py \\")
+        print("  python scripts/analysis/compare_labels.py \\")
         print("    /path/to/old/scoring_results.csv \\")
         print(f"    {data_dir() / 'scoring_results_opto_new_MINIMAL.csv'}")
         sys.exit(1)

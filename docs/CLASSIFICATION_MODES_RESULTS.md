@@ -53,7 +53,7 @@ Successfully implemented and tested 3 classification modes across 5 models using
    - Class 0: 313 samples (58%)
    - Classes 1-5: 227 samples (42%) split across 5 classes
 
-**Recommendation:** Use [threshold_slider.py](threshold_slider.py) to post-hoc adjust thresholds and find optimal cutoffs without retraining!
+**Recommendation:** Use [scripts/eval/threshold_slider.py](scripts/eval/threshold_slider.py) to post-hoc adjust thresholds and find optimal cutoffs without retraining!
 
 ---
 
@@ -127,7 +127,7 @@ Successfully implemented and tested 3 classification modes across 5 models using
 
 2. **Need exact reaction strength:** → **Multiclass Mode + Threshold Slider**
    - Train with LDA (77.8%)
-   - Use `threshold_slider.py` to find optimal threshold post-hoc
+   - Use `scripts/eval/threshold_slider.py` to find optimal threshold post-hoc
    - Best for dose-response studies
 
 3. **Only care about strong reactions:** → **Threshold-2 Mode**
@@ -149,7 +149,7 @@ flybehavior-response train \\
   --artifacts-dir multiclass_lda
 
 # Analyze different thresholds
-python threshold_slider.py \\
+python scripts/eval/threshold_slider.py \\
   --predictions-csv multiclass_lda/latest/predictions_lda_test.csv \\
   --min-threshold 1 \\
   --max-threshold 5
@@ -237,8 +237,8 @@ test_all_modes/
 
 Additional files:
 - `classification_modes_comparison.json` - Structured results
-- `threshold_slider.py` - Post-hoc threshold analysis tool
-- `test_all_classification_modes.py` - Reproducible test script
+- `scripts/eval/threshold_slider.py` - Post-hoc threshold analysis tool
+- `scripts/eval/test_all_classification_modes.py` - Reproducible test script
 
 ---
 

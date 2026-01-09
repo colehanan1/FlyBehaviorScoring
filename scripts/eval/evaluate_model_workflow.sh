@@ -21,10 +21,10 @@ echo ""
 # Check if run directory is provided
 if [ -z "$1" ]; then
     echo -e "${RED}Error: Please provide run directory${NC}"
-    echo "Usage: ./evaluate_model_workflow.sh <run-dir> [model-name]"
+    echo "Usage: ./scripts/eval/evaluate_model_workflow.sh <run-dir> [model-name]"
     echo ""
     echo "Example:"
-    echo "  ./evaluate_model_workflow.sh outputs/artifacts/all_weighted/2025-11-13T22-18-43Z random_forest"
+    echo "  ./scripts/eval/evaluate_model_workflow.sh outputs/artifacts/all_weighted/2025-11-13T22-18-43Z random_forest"
     exit 1
 fi
 
