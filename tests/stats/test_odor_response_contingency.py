@@ -1,8 +1,13 @@
+import pathlib
+import sys
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
 
-from ..odor_response_contingency import (
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "src"))
+
+from stats.odor_response_contingency import (
     ContingencyTableStyle,
     OdorResponseSummary,
     build_contingency_table,

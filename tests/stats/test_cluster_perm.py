@@ -6,8 +6,11 @@ import pathlib
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "src"))
+
+pytest.importorskip("lifelines")
 
 from stats import cluster_perm, utils
 
