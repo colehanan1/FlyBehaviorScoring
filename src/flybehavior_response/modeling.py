@@ -30,7 +30,7 @@ MODEL_XGB = "xgb"
 ARCHITECTURE_SINGLE = "single"
 ARCHITECTURE_TWO_LAYER = "two_layer"
 
-ALLOWED_BATCH_SIZES: Tuple[int, ...] = (8, 16, 32)
+ALLOWED_BATCH_SIZES: Tuple[int, ...] = (8, 16, 32, 64)
 ALLOWED_LAYER_WIDTHS: Tuple[int, ...] = (8, 16, 32, 64, 128, 256, 512, 1024)
 
 

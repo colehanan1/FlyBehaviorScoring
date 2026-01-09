@@ -221,6 +221,13 @@ def train_models(
         logger.info("Disabling raw PCA because no trace columns are available in the dataset.")
         use_raw_pca = False
 
+    if not selected_features and not dataset.trace_columns and dataset.feature_columns:
+        selected_features = list(dataset.feature_columns)
+        logger.info(
+            "No trace columns available; using %d geometry feature columns for preprocessing.",
+            len(selected_features),
+        )
+
     if dataset.sample_weights is None or dataset.label_intensity is None:
         raise ValueError("Training requires labelled data with computed sample weights.")
 

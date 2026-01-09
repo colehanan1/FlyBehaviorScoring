@@ -15,6 +15,7 @@ from .lagpca import LagPCAResult, project_trial
 from .preprocess import PreprocessConfig, SmoothingConfig, compute_hilbert_envelope, compute_velocity, preprocess_trial
 
 LOGGER = logging.getLogger(__name__)
+_TRAPEZOID = getattr(np, "trapezoid", np.trapz)
 
 
 @dataclass
@@ -31,7 +32,7 @@ class FeatureConfig:
 def _auc(time: np.ndarray, values: np.ndarray) -> float:
     if time.size < 2:
         return float(np.nan)
-    return float(np.trapezoid(values, time))
+    return float(_TRAPEZOID(values, time))
 
 
 def _first_crossing(time: np.ndarray, values: np.ndarray, threshold: float) -> float:
@@ -99,10 +100,10 @@ def _frequency_features(time: np.ndarray, values: np.ndarray, fps: float, bands:
         return {}
     freq, psd = signal.welch(values, fs=fps, nperseg=min(256, values.size))
     features: Dict[str, float] = {}
-    total_power = np.trapezoid(psd, freq)
+    total_power = _TRAPEZOID(psd, freq)
     for idx, (low, high) in enumerate(bands):
         mask = (freq >= low) & (freq <= high)
-        band_power = np.trapezoid(psd[mask], freq[mask]) if np.any(mask) else 0.0
+        band_power = _TRAPEZOID(psd[mask], freq[mask]) if np.any(mask) else 0.0
         features[f"bandpower_{idx}"] = float(band_power)
         features[f"bandpower_ratio_{idx}"] = float(band_power / total_power) if total_power > 0 else float("nan")
     return features
@@ -198,7 +199,7 @@ def compute_trial_features(
         velocity_features = {
             "velocity_max_abs": float(np.max(np.abs(velocity))),
             "velocity_tmax_abs": float(time[max_idx]),
-            "velocity_total_abs": float(np.trapezoid(np.abs(velocity), time)),
+            "velocity_total_abs": float(_TRAPEZOID(np.abs(velocity), time)),
         }
     else:
         velocity_features = {
