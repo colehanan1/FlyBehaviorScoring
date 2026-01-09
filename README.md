@@ -10,7 +10,7 @@ pip install -e .
 
 ## Optuna MLP Hyperparameter Tuning
 
-The repository now ships with `optuna_mlp_tuning.py`, a production-grade search
+The repository now ships with `scripts/tune/optuna_mlp_tuning.py`, a production-grade search
 script that co-optimises PCA dimensionality and the
 `SampleWeightedMLPClassifier`. The workflow enforces fly-level leakage guards
 via `GroupKFold`, up-weights high-intensity class-5 responders, and evaluates
@@ -19,12 +19,12 @@ macro-F1 as the primary score.
 ### Running the tuner
 
 ```bash
-python optuna_mlp_tuning.py \
-  --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
+python scripts/tune/optuna_mlp_tuning.py \
+  --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv \
   --n-trials 100 \
   --timeout 7200 \
-  --output-dir optuna_results
+  --output-dir outputs/optuna_results
 ```
 
 * Provide `--labels-csv` when using the canonical wide export split across data
@@ -77,7 +77,7 @@ python optuna_mlp_tuning.py \
 ### Generated artefacts
 
 The command writes all deliverables into `--output-dir` (defaults to
-`optuna_results/`):
+`outputs/optuna_results/`):
 
 | File | Description |
 | --- | --- |
@@ -103,11 +103,11 @@ After a successful Optuna run, you can rebuild and retrain the best pipeline
 without repeating the search:
 
 ```bash
-python optuna_mlp_tuning.py \
-  --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
-  --best-params-json optuna_results/best_params.json \
-  --output-dir optuna_results
+python scripts/tune/optuna_mlp_tuning.py \
+  --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv \
+  --best-params-json outputs/optuna_results/best_params.json \
+  --output-dir outputs/optuna_results
 ```
 
 The script normalises the JSON payload, resolves the hidden-layer topology, and
@@ -126,10 +126,10 @@ you can train every supported model—MLP included—without rerunning Optuna:
 
 ```bash
 flybehavior-response train \
-  --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
+  --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv \
   --model all \
-  --best-params-json optuna_results/best_params.json \
+  --best-params-json outputs/optuna_results/best_params.json \
   --artifacts-dir artifacts
 ```
 
@@ -183,7 +183,7 @@ typos before any models are saved.
           "--model-path",
           "/path/to/model_mlp.joblib",
           "--output-csv",
-          "artifacts/predictions.csv",
+          "outputs/artifacts/predictions.csv",
       ],
       check=True,
   )
@@ -197,11 +197,11 @@ typos before any models are saved.
   ```bash
   flybehavior-response \
       prepare \
-      --data-csv stats/geometry_frames.csv \
-      --labels-csv stats/labels.csv \
+      --data-csv data/geometry_frames.csv \
+      --labels-csv data/labels.csv \
       --geom-columns "dataset,fly,fly_number,trial_type,trial_label,frame_idx,x,y" \
       --geom-chunk-size 20000 \
-      --cache-parquet artifacts/geom_cache.parquet \
+      --cache-parquet outputs/artifacts/geom_cache.parquet \
       --aggregate-geometry \
       --aggregate-stats mean,max \
       --aggregate-format parquet \
@@ -549,7 +549,7 @@ After installation, the `flybehavior-response` command becomes available. Common
 - `--logreg-max-iter`: Iteration cap for logistic regression (default `1000`; increase if convergence warnings appear).
 - `--cv`: Stratified folds for cross-validation (default 0 for none).
 - `--artifacts-dir`: Root directory for outputs (default `./artifacts`).
-- `--plots-dir`: Plot directory (default `./artifacts/plots`).
+- `--plots-dir`: Plot directory (default `./outputs/artifacts/plots`).
 - `--seed`: Random seed (default 42).
 - `--dry-run`: Validate pipeline without saving artifacts.
 - `--verbose`: Enable DEBUG logging.
@@ -568,29 +568,29 @@ After installation, the `flybehavior-response` command becomes available. Common
 ### Examples
 
 ```bash
-flybehavior-response prepare --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv
+flybehavior-response prepare --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv
 
-flybehavior-response train --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv --model all --n-pcs 2
+flybehavior-response train --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv --model all --n-pcs 2
 
-flybehavior-response eval --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv
+flybehavior-response eval --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv
 
 # explicitly evaluate a past run directory
-flybehavior-response eval --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv --run-dir artifacts/2025-10-14T22-56-37Z
+flybehavior-response eval --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv --run-dir outputs/artifacts/2025-10-14T22-56-37Z
 
-flybehavior-response viz --data-csv /home/ramanlab/Documents/cole/Data/Opto/Combined/all_envelope_rows_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv --plots-dir artifacts/plots
+flybehavior-response viz --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv --plots-dir outputs/artifacts/plots
 
-flybehavior-response predict --data-csv merged.csv --model-path artifacts/<run>/model_logreg.joblib \
-  --output-csv artifacts/predictions.csv
+flybehavior-response predict --data-csv merged.csv --model-path outputs/artifacts/<run>/model_logreg.joblib \
+  --output-csv outputs/artifacts/predictions.csv
 
 # score a specific fly/trial tuple in the original envelope export
-flybehavior-response predict --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_envelope_rows_wide.csv \
-  --model-path artifacts/<run>/model_logreg.joblib --fly september_09_fly_3 --fly-number 3 --trial-label t2 \
-  --output-csv artifacts/predictions_envelope_t2.csv
+flybehavior-response predict --data-csv data/all_envelope_rows_wide.csv \
+  --model-path outputs/artifacts/<run>/model_logreg.joblib --fly september_09_fly_3 --fly-number 3 --trial-label t2 \
+  --output-csv outputs/artifacts/predictions_envelope_t2.csv
 ```
 
 ## Training with the neural network classifiers
@@ -607,14 +607,14 @@ Example run focused on minimising false positives:
 
 ```bash
 flybehavior-response train \
-  --data-csv stats/wide_features.csv \
-  --labels-csv stats/labels.csv \
+  --data-csv data/wide_features.csv \
+  --labels-csv data/labels.csv \
   --features "AUC-During,Peak-Value,global_max,local_min,local_max" \
   --series-prefixes "dir_val" \
   --model fp_optimized_mlp \
   --n-pcs 5 \
   --cv 5 \
-  --artifacts-dir artifacts/fp_optimized
+  --artifacts-dir outputs/artifacts/fp_optimized
 ```
 
 The run directory records the combined sample/class weights, validation metrics, and a confusion matrix that highlights the reduced false-positive rate.
@@ -625,9 +625,9 @@ The run directory records the combined sample/class weights, validation metrics,
 
   ```bash
   flybehavior-response prepare-raw \
-    --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_per_trial.csv \
-    --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
-    --out /home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv \
+    --data-csv data/all_eye_prob_coords_per_trial.csv \
+    --labels-csv data/scoring_results_opto_new_MINIMAL.csv \
+    --out data/all_eye_prob_coords_prepared.csv \
     --fps 40 --odor-on-idx 1230 --odor-off-idx 2430 \
     --truncate-before 0 --truncate-after 0 \
     --series-prefixes "eye_x_f,eye_y_f,prob_x_f,prob_y_f" \
@@ -637,10 +637,10 @@ The run directory records the combined sample/class weights, validation metrics,
 
   ```bash
   flybehavior-response prepare-raw \
-    --data-npy /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_matrix.npy \
-    --matrix-meta /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_matrix.json \
-    --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
-    --out /home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv
+    --data-npy data/all_eye_prob_coords_matrix.npy \
+    --matrix-meta data/all_eye_prob_coords_matrix.json \
+    --labels-csv data/scoring_results_opto_new_MINIMAL.csv \
+    --out data/all_eye_prob_coords_prepared.csv
   ```
   The metadata JSON must contain a `metadata` (or `trials`) array with per-row descriptors (`dataset`, `fly`, `fly_number`, `trial_type`, `trial_label` – legacy exports may name this `testing_trial` and will be auto-renamed), an optional `layout` field (`trial_time_channel` or `trial_channel_time`), and optional `channel_prefixes` that match the prefixes passed via `--series-prefixes`.
 - The output keeps raw values with consistent 0-based frame indices per prefix, adds timing metadata, and can be fed directly to `flybehavior-response train --raw-series` (or an explicit `--series-prefixes eye_x_f,eye_y_f,prob_x_f,prob_y_f` if you customise the channel order).
@@ -653,27 +653,27 @@ Once you have a wide table of raw coordinates, enable the raw channel handling o
 ```bash
 # train all models on raw coordinates (engineered feature list is ignored automatically)
 flybehavior-response train --raw-series \
-  --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
+  --data-csv data/all_eye_prob_coords_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv \
   --model all --n-pcs 5
 
 # evaluate an existing run against the same raw inputs
 flybehavior-response eval --raw-series \
-  --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
-  --run-dir artifacts/<timestamp>
+  --data-csv data/all_eye_prob_coords_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv \
+  --run-dir outputs/artifacts/<timestamp>
 
 # regenerate confusion matrices and PCA/ROC plots for the raw-trained models
 flybehavior-response viz --raw-series \
-  --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.csv \
-  --labels-csv /home/ramanlab/Documents/cole/model/FlyBehaviorPER/scoring_results_opto_new_MINIMAL.csv \
-  --run-dir artifacts/<timestamp>
+  --data-csv data/all_eye_prob_coords_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv \
+  --run-dir outputs/artifacts/<timestamp>
 
 # score new raw trials with a saved pipeline
 flybehavior-response predict --raw-series \
-  --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_eye_prob_coords_wide.csv \
-  --model-path artifacts/<timestamp>/model_logreg.joblib \
-  --output-csv artifacts/<timestamp>/raw_predictions.csv
+  --data-csv data/all_eye_prob_coords_wide.csv \
+  --model-path outputs/artifacts/<timestamp>/model_logreg.joblib \
+  --output-csv outputs/artifacts/<timestamp>/raw_predictions.csv
 
 The raw workflow is always two-step: generate a per-trial table with `prepare-raw`, then invoke `train`, `eval`, `viz`, and `predict` with `--raw-series` (or explicit `--series-prefixes`) so every command consumes the four eye/proboscis streams exactly as prepared.
 ```
@@ -701,10 +701,10 @@ The loader detects that engineered features are missing, logs a trace-only messa
 
   ```bash
   flybehavior-response predict \
-    --data-csv /home/ramanlab/Documents/cole/Data/Opto/all_envelope_rows_wide.csv \
-    --model-path artifacts/<run>/model_logreg.joblib \
+    --data-csv data/all_envelope_rows_wide.csv \
+    --model-path outputs/artifacts/<run>/model_logreg.joblib \
     --fly september_09_fly_3 --fly-number 3 --testing-trial t2 \
-    --output-csv artifacts/<run>/prediction_september_09_fly_3_t2.csv
+    --output-csv outputs/artifacts/<run>/prediction_september_09_fly_3_t2.csv
   ```
 
 - The loader automatically treats a `testing_trial` column as the canonical `trial_label`, so legacy exports continue to work. Supply any subset of the filters (`--fly`, `--fly-number`, `--trial-label`/`--testing-trial`) to narrow the prediction set; when all three are present, exactly one trial is returned and written with its reaction probability.
@@ -719,4 +719,4 @@ The loader detects that engineered features are missing, logs a trace-only messa
 - The CLI recognises the following engineered scalar columns out of the box: `AUC-Before`, `AUC-During`, `AUC-After`, `AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`, `TimeToPeak-During`, `Peak-Value`, `global_min`, `global_max`, `local_min`, `local_max`, `local_min_during`, `local_max_during`, `local_max_over_global_min`, `local_max_during_over_global_min`, `local_max_during_odor`, `local_max_during_odor_over_global_min`, and the newly added `non_reactive_flag` (1 for non-responders, 0 otherwise). Any subset passed via `--features` (or baked into `best_params.json`) is validated against this list so feature-only runs fail fast when a requested column is absent. Because `non_reactive_flag` is derived directly from the binary label, only use it for auditing or rule-based workflows—feeding it into model training will trivially leak the target signal.
 - Use `--dry-run` to confirm configuration before writing artifacts.
 - The CLI automatically selects the newest run directory containing model artifacts. Override with `--run-dir` if you maintain
-  multiple artifact trees (e.g., `artifacts/projections`).
+  multiple artifact trees (e.g., `outputs/artifacts/projections`).
