@@ -15,7 +15,7 @@ from flybehavior_response.io import LABEL_COLUMN
 
 def _run_cli(args: list[str]) -> None:
     env = os.environ.copy()
-    src_path = str(Path(__file__).resolve().parents[2])
+    src_path = str(Path(__file__).resolve().parents[2] / "src")
     env["PYTHONPATH"] = src_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     subprocess.run([sys.executable, "-m", "flybehavior_response.cli", *args], check=True, env=env)
 

@@ -35,10 +35,11 @@ from .prepare_raw import (
     DEFAULT_PREFIXES as RAW_DEFAULT_PREFIXES,
     prepare_raw,
 )
+from .paths import artifacts_dir
 from .train import train_models
 from .visualize import generate_visuals
 
-DEFAULT_ARTIFACTS_DIR = Path("./artifacts")
+DEFAULT_ARTIFACTS_DIR = artifacts_dir()
 DEFAULT_PLOTS_DIR = DEFAULT_ARTIFACTS_DIR / "plots"
 
 
@@ -438,7 +439,7 @@ def _configure_parser() -> argparse.ArgumentParser:
         "--artifacts-dir",
         type=Path,
         default=DEFAULT_ARTIFACTS_DIR,
-        help="Directory to store artifacts",
+        help="Directory to store artifacts (defaults to outputs/artifacts)",
     )
     common_parser.add_argument("--run-dir", type=Path, help="Specific run directory to use for evaluation/visualization")
     common_parser.add_argument("--seed", type=int, default=42, help="Random seed")

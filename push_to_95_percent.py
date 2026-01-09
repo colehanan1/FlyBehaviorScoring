@@ -1,11 +1,8 @@
-#!/usr/bin/env python
-"""
-AGGRESSIVE optimization to reach >95% accuracy for proboscis extension scoring.
+#!/usr/bin/env python3
+from __future__ import annotations
 
-Techniques:
-1. XGBoost (state-of-the-art gradient boosting)
-2. More PCA components (capture more signal)
-3. Probability calibration
-4. Threshold optimization
-5. Stacked ensemble
-6. Feature engineering from raw traces
+from pathlib import Path
+import runpy
+
+if __name__ == "__main__":
+    runpy.run_path(Path(__file__).resolve().parent / "scripts/tune/push_to_95_percent.py", run_name="__main__")

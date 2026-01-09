@@ -16,9 +16,12 @@ from .cluster import cluster_features, evaluate_with_labels
 from .features import compute_feature_table
 from .io import load_trials
 from .lagpca import LagPCAResult, fit_lag_pca_for_trials, project_trial
+from .paths import default_config_path, outputs_dir
 from .viz import feature_violin, pc_scatter, pc_trajectories_plot, pc_loadings_plot, scree_plot
 
 app = typer.Typer(add_completion=False)
+
+DEFAULT_REPORT_DIR = outputs_dir() / "artifacts"
 
 
 def _configure_logging(level: str) -> None:
@@ -35,16 +38,17 @@ def _load_config(config_path: Path) -> Dict:
 
 def _load_config_or_default(
     config_path: Optional[Path],
-    default_path: Path = Path("configs/default.yaml"),
+    default_path: Optional[Path] = None,
 ) -> Dict:
     """Load a YAML config, falling back to the repo default when available."""
 
     if config_path is not None:
         return _load_config(config_path)
-    if default_path.exists():
-        logging.info("No config supplied; defaulting to %s", default_path)
-        return _load_config(default_path)
-    logging.debug("No configuration provided and default %s missing.", default_path)
+    resolved = default_path or default_config_path()
+    if resolved and resolved.exists():
+        logging.info("No config supplied; defaulting to %s", resolved)
+        return _load_config(resolved)
+    logging.debug("No configuration provided and no default config found.")
     return {}
 
 
@@ -370,7 +374,7 @@ def report(
     clusters_path: Path = typer.Option(..., "--clusters-path", "--clusters", exists=True),
     model: Optional[Path] = typer.Option(None, exists=True),
     projections_dir: Optional[Path] = typer.Option(None, exists=True),
-    out_dir: Path = typer.Option(Path("artifacts"), help="Output directory for report."),
+    out_dir: Path = typer.Option(DEFAULT_REPORT_DIR, help="Output directory for report."),
 ) -> None:
     features_df = pd.read_parquet(features_path) if features_path.suffix == ".parquet" else pd.read_csv(features_path)
     clusters_df = pd.read_csv(clusters_path)
