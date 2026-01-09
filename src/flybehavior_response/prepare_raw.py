@@ -14,6 +14,7 @@ import pandas as pd
 from .io import RAW_TRACE_PREFIXES
 from .io_wide import find_series_columns
 from .logging_utils import get_logger
+from .paths import data_dir
 
 TRIAL_ID_COLUMN = "trial_label"
 
@@ -24,9 +25,7 @@ REQUIRED_METADATA_COLUMNS = [
     "trial_type",
     TRIAL_ID_COLUMN,
 ]
-DEFAULT_OUTPUT_PATH = Path(
-    "/home/ramanlab/Documents/cole/Data/Opto/Combined/all_eye_prob_coords_prepared.csv"
-)
+DEFAULT_OUTPUT_PATH = data_dir() / "all_eye_prob_coords_prepared.csv"
 DEFAULT_PREFIXES = list(RAW_TRACE_PREFIXES)
 LABEL_COLUMN_CANDIDATES = [
     "user_score_odor",

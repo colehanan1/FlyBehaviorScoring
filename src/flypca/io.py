@@ -79,7 +79,7 @@ def _resolve_fps(row: pd.Series, default_fps: Optional[float]) -> float:
         return float(row["fps"])
     if default_fps is None:
         raise ValueError(
-            "FPS not provided in manifest or config; specify fps in configs/default.yaml."
+            "FPS not provided in manifest or config; specify fps in config/example.yaml."
         )
     return float(default_fps)
 
@@ -191,7 +191,7 @@ def _load_stacked_csv(
     if missing:
         raise ValueError(
             "Stacked CSV missing required columns: "
-            f"{missing}. Configure io.stacked.* in configs/default.yaml to map columns."
+            f"{missing}. Configure io.stacked.* in config/example.yaml to map columns."
         )
     grouped = df.groupby("trial_id", sort=False)
     trials: List[TrialTimeseries] = []

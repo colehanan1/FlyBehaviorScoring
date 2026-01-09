@@ -1,25 +1,60 @@
+# Python artifacts
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.pyd
-.vscode/
+*.so
+*.egg-info/
+
+# Build outputs
+build/
+dist/
+
+# Virtual environments
 .venv/
-outputs/
-# Runtime data inputs
+venv/
+.env
+.env.*
+
+# Editor/IDE settings
+.vscode/
+.idea/
+.claude/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.cache/
+.ipynb_checkpoints/
+
+# Config (keep safe templates)
+config/*
+!config/example.env
+!config/example.yaml
+
+# Data, outputs, logs
+/data/
+/outputs/
+/runs/
+/logs/
+/artifacts/
+
+# Large data & model artifacts
 *.npy
 *.npz
-code_maps.json
-artifacts/
-*.joblib
-*.png
 *.parquet
-predictions_all_900.csv
-ensemble_artifacts/
-test_classification_modes/
-disgnostic_analysis/
-stats/
-comprehensive_test/
-test_all_modes/
-test_multiclass_cv/
-docs/
-comprehensive_test_all/
+*.joblib
+*.pkl
+*.pth
+*.h5
+*.onnx
+
+# Local reports & plots
+*.png
+*.pdf
+*.html
+*.log
