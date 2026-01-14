@@ -593,6 +593,294 @@ flybehavior-response predict --data-csv data/all_envelope_rows_wide.csv \
   --output-csv outputs/artifacts/predictions_envelope_t2.csv
 ```
 
+### Complete Command-Line Arguments Reference
+
+#### Common Arguments (all subcommands)
+
+These arguments are available for `prepare`, `train`, `eval`, `viz`, and `predict`:
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--data-csv` | Path | - | Path to wide data CSV with engineered features and/or trace columns |
+| `--labels-csv` | Path | - | Path to labels CSV (required for train/eval, optional for prepare) |
+| `--features` | String | `AUC-During,TimeToPeak-During,Peak-Value` | Comma-separated list of engineered features to use in training. See supported features list below. |
+| `--series-prefixes` | String | `dir_val_` | Comma-separated list of column prefixes for time-series traces (e.g., `dir_val_,my_custom_`). Overrides defaults. |
+| `--raw-series` | Flag | False | Use default raw coordinate prefixes (`eye_x_f`, `eye_y_f`, `prob_x_f`, `prob_y_f`). Useful when starting from `prepare-raw` outputs. |
+| `--no-raw` | Flag | False | Drop all trace columns; use only engineered features for training. |
+| `--include-auc-before` | Flag | False | Automatically add `AUC-Before` to the feature list in addition to `--features`. |
+| `--use-raw-pca` | Flag | True | Enable PCA dimensionality reduction on trace columns (default: enabled). |
+| `--no-use-raw-pca` | Flag | False | Explicitly disable PCA on trace columns. |
+| `--n-pcs` | Int | 5 | Number of principal components to extract from trace data. Automatically clamped to available feature count. |
+| `--model` | String | `all` | Model selection: `lda`, `logreg`, `mlp`, `fp_optimized_mlp`, `both`, or `all`. |
+| `--cv` | Int | 0 | Number of stratified cross-validation folds (0 = no CV, only train/test split). |
+| `--artifacts-dir` | Path | `./outputs/artifacts` | Directory where models, metrics, and config are saved. |
+| `--plots-dir` | Path | `./outputs/artifacts/plots` | Directory where visualizations are saved. |
+| `--run-dir` | Path | - | Specific run directory to use for `eval`, `viz`, and `predict`. If not provided, the newest directory is auto-selected. |
+| `--seed` | Int | 42 | Random seed for reproducibility. |
+| `--verbose` | Flag | False | Enable DEBUG-level logging. |
+| `--dry-run` | Flag | False | Validate pipeline configuration without writing artifacts. |
+
+#### PREPARE-Specific Arguments
+
+Used with: `flybehavior-response prepare`
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--cache-parquet` | Path | - | Optional destination for parquet cache when streaming geometry data. |
+| `--use-cache` | Flag | False | Load geometry frames from existing parquet cache (must be used with `--cache-parquet`). |
+| `--geom-columns` | String | - | Comma-separated geometry columns to retain while streaming (e.g., `dataset,fly,fly_number,trial_type,trial_label,frame_idx,x,y`). Reduces memory usage. |
+| `--geom-chunk-size` | Int | 50000 | Number of rows to load per chunk when streaming large geometry CSVs. Larger chunks are faster but use more RAM. |
+| `--frame-column` | String | `frame_idx` | Name of the frame index column used to validate chunk contiguity when streaming. |
+| `--aggregate-geometry` | Flag | False | Aggregate streamed geometry into per-trial summaries using specified statistics. |
+| `--aggregate-stats` | String | `mean,min,max` | Comma-separated list of aggregation functions for numeric geometry columns. Options: `mean`, `min`, `max`, `std`, `median`, etc. |
+| `--aggregate-format` | String | `parquet` | Output format for aggregated geometry: `parquet` or `csv`. |
+| `--drop-missing-labels` | Flag | True | Drop rows without matching labels (default). |
+| `--keep-missing-labels` | Flag | False | Retain rows without labels (for inspection; may cause merge errors). |
+
+#### TRAIN-Specific Arguments
+
+Used with: `flybehavior-response train`
+
+**Classification & Class Weighting:**
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--classification-mode` | String | `binary` | Classification strategy: `binary` (0 vs 1-5), `multiclass` (preserve all classes 0-5), `threshold-1` (0-1 vs 2-5), or `threshold-2` (0-2 vs 3-5). See classification modes section below. |
+| `--class-weights` | String | - | Custom class weights for MLP (e.g., `0:2.0,1:1.0`). Higher weight on class 0 reduces false positives. Default for `fp_optimized_mlp` is `0:1.0,1:2.0`. |
+| `--logreg-class-weights` | String | - | Custom class weights for logistic regression. Format: `0:1.0,1:2.0` or `balanced` for auto-balancing. Higher weight on class 1 increases sensitivity to responders. Example: `0:1.0,1:3.0` gives responders 3× weight. |
+| `--rf-class-weights` | String | - | Custom class weights for Random Forest. Format: `0:1.0,1:2.0` or `balanced` for auto-balancing. |
+
+**Logistic Regression Options:**
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--logreg-solver` | String | `lbfgs` | Solver for logistic regression optimization: `lbfgs`, `liblinear`, or `saga`. Use `saga` for very large datasets. |
+| `--logreg-max-iter` | Int | 1000 | Maximum iterations for convergence. Increase if warnings about non-convergence appear. |
+
+**Random Forest Options:**
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--rf-n-estimators` | Int | 100 | Number of trees in the Random Forest. Larger values (e.g., 500) improve stability but increase training time. |
+| `--rf-max-depth` | Int | None | Maximum depth of individual trees. `None` = no limit. Lower values reduce overfitting. |
+
+**Hyperparameter Tuning:**
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--best-params-json` | Path | - | Path to Optuna-generated `best_params.json` from `scripts/tune/optuna_mlp_tuning.py`. Auto-enables PCA and applies tuned hyperparameters to MLP. |
+
+**Group-Aware Splitting (prevents data leakage):**
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--group-column` | String | `fly` | Column name for group-aware splits (e.g., fly ID). Ensures samples from the same group stay in train/test, preventing leakage. |
+| `--group-override` | String | - | Override group splitting: supply `none` to disable group-aware splits (treats each trial as independent). |
+| `--test-size` | Float | 0.2 | Fraction of samples reserved for test set (0.0–1.0). |
+
+**Geometry Input (for frame-level analysis):**
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--geometry-frames` | Path | - | Path to per-frame geometry CSV/parquet for on-the-fly trial aggregation. |
+| `--geometry-trials` | Path | - | Path to pre-computed per-trial geometry summary CSV to merge with data. |
+| `--geom-cache-parquet` | Path | - | Optional parquet cache for streamed geometry frames. |
+| `--geom-use-cache` | Flag | False | Load geometry from existing parquet cache. |
+| `--geom-chunk-size` | Int | 50000 | Rows per chunk when streaming geometry. |
+| `--geom-columns` | String | - | Comma-separated geometry columns to retain while streaming. |
+| `--geom-feature-columns` | String | - | Comma-separated geometry columns to use as features. Prefix with `@` to load from file (e.g., `@geometry_features.txt`). |
+| `--geom-granularity` | String | `trial` | `trial` (aggregated per-trial stats) or `frame` (frame-level rows). |
+| `--geom-stats` | String | `mean,min,max` | Aggregation functions for `trial` granularity: `mean`, `min`, `max`, `std`, etc. |
+| `--geom-normalize` | String | `none` | Normalization for geometry columns: `none`, `zscore`, or `minmax`. |
+| `--no-geom-downcast` | Flag | False | Disable float32 downcasting for geometry columns (keep float64). |
+| `--geom-drop-missing-labels` | Flag | True | Drop rows without labels (default). |
+| `--geom-keep-missing-labels` | Flag | False | Retain rows without labels. |
+
+#### EVAL-Specific Arguments
+
+Used with: `flybehavior-response eval`
+
+Inherits all common arguments plus all geometry options from TRAIN. Additionally:
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--run-dir` | Path | - | Path to run directory containing saved models. If omitted, auto-selects the newest directory. |
+
+#### VIZ-Specific Arguments
+
+Used with: `flybehavior-response viz`
+
+Uses common arguments to regenerate visualizations (PCA scatter, LDA histograms, ROC curves) for an existing run.
+
+#### PREDICT-Specific Arguments
+
+Used with: `flybehavior-response predict`
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--model-path` | Path | - | **Required.** Path to a trained model (e.g., `model_logreg.joblib`, `model_mlp.joblib`). |
+| `--output-csv` | Path | `./outputs/artifacts/predictions.csv` | Destination CSV for scored predictions. |
+| `--threshold` | Float | 0.5 | Decision threshold for binary classification (0.0–1.0). Higher values reduce false positives (e.g., 0.65). |
+| `--fly` | String | - | Filter predictions to a specific fly identifier. |
+| `--fly-number` | Int | - | Filter predictions to a specific numeric fly identifier. |
+| `--trial-label` | String | - | Filter predictions to a specific trial label. |
+| `--testing-trial` | String | - | Legacy alias for `--trial-label`. |
+
+#### PREPARE-RAW Subcommand
+
+Used with: `flybehavior-response prepare-raw`
+
+Converts per-trial raw coordinate exports into modeling-ready CSVs.
+
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--data-csv` / positional | Path | - | Path to per-trial raw coordinate CSV. Can be supplied as positional argument or `--data-csv`. |
+| `--data-npy` | Path | - | Path to per-trial coordinate matrix as `.npy` (trials × frames × channels). Requires `--matrix-meta`. |
+| `--matrix-meta` | Path | - | JSON file describing matrix layout and per-trial metadata (required with `--data-npy`). |
+| `--labels-csv` | Path | - | **Required.** Path to labels CSV. |
+| `--out` | Path | `data/all_eye_prob_coords_prepared.csv` | Destination CSV for prepared coordinates. |
+| `--fps` | Int | 40 | Frame rate (frames per second) for temporal calculations. |
+| `--odor-on-idx` | Int | 1230 | Frame index where odor stimulus begins. |
+| `--odor-off-idx` | Int | 2430 | Frame index where odor stimulus ends. |
+| `--truncate-before` | Int | 0 | Frames to keep before odor onset (0 = keep all). |
+| `--truncate-after` | Int | 0 | Frames to keep after odor offset (0 = keep all). |
+| `--series-prefixes` | String | `eye_x_f,eye_y_f,prob_x_f,prob_y_f` | Comma-separated time-series column prefixes to extract. |
+| `--compute-dir-val` | Flag | False | Also compute `dir_val` distances between proboscis and eye coordinates. |
+
+### Supported Engineered Features
+
+All features must exist as columns in your input CSV. The following are recognized by the CLI:
+
+**Temporal & Amplitude Features:**
+- `AUC-Before`: Area under curve before odor stimulus
+- `AUC-During`: Area under curve during odor stimulus
+- `AUC-After`: Area under curve after odor stimulus
+- `AUC-During-Before-Ratio`: Ratio of AUC-During to AUC-Before ⚠️ *unstable, produces warnings*
+- `AUC-After-Before-Ratio`: Ratio of AUC-After to AUC-Before ⚠️ *unstable, produces warnings*
+- `TimeToPeak-During`: Frames to reach maximum response during stimulus
+- `Peak-Value`: Maximum response value observed
+
+**Extrema Features:**
+- `global_min`: Minimum value across entire trial
+- `global_max`: Maximum value across entire trial
+- `trimmed_global_min`: Minimum after trimming outliers
+- `trimmed_global_max`: Maximum after trimming outliers
+- `local_min`: Local minimum value
+- `local_max`: Local maximum value
+- `local_min_before`: Local minimum in pre-stimulus epoch
+- `local_max_before`: Local maximum in pre-stimulus epoch
+- `local_min_during`: Local minimum during stimulus
+- `local_max_during`: Local maximum during stimulus
+- `local_max_over_global_min`: Ratio of local max to global min
+- `local_max_during_over_global_min`: Ratio of during-local-max to global min
+- `local_max_during_odor`: Local max during odor period
+- `local_max_during_odor_over_global_min`: Ratio of odor-local-max to global min
+
+**Special Flags:**
+- `non_reactive_flag`: 1 for non-responders, 0 otherwise. ⚠️ *Leaks target signal; do not use for training.*
+
+### Classification Modes
+
+The `--classification-mode` argument controls how multi-class labels (0–5) are interpreted during training:
+
+| Mode | Mapping | Use Case |
+| --- | --- | --- |
+| `binary` (default) | Class 0 → Non-responder vs. Classes 1–5 → Responder | Standard binary response classification |
+| `multiclass` | Classes 0–5 → Preserve all 6 classes | Distinguish between response intensities (fine-grained analysis) |
+| `threshold-1` | Classes 0–1 → Non-responder vs. Classes 2–5 → Strong responder | Separate strong from weak/non-responders |
+| `threshold-2` | Classes 0–2 → Non-responder vs. Classes 3–5 → Strong responder | Intermediate intensity threshold |
+
+**Example: Emphasizing strong responders**
+
+```bash
+flybehavior-response train \
+  --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv \
+  --classification-mode threshold-1 \
+  --model all \
+  --features "AUC-During,Peak-Value,global_max" \
+  --n-pcs 5
+```
+
+This trains classifiers to distinguish strong responders (score ≥ 2) from weak/non-responders (score ≤ 1), which can improve early-stage behavioral phenotyping.
+
+### Using RMS Time-Series Data
+
+The package supports any time-series traces as features through the `--series-prefixes` mechanism. RMS (root mean square) values at each time point can be used as follows:
+
+**If you have pre-computed RMS columns** (e.g., `rms_0`, `rms_1`, ..., `rms_3600`):
+
+```bash
+flybehavior-response train \
+  --data-csv data/wide_with_rms.csv \
+  --labels-csv data/labels.csv \
+  --features "AUC-During,Peak-Value" \
+  --series-prefixes "rms_" \
+  --n-pcs 5 \
+  --model all
+```
+
+**If using both engineered features AND RMS traces together:**
+
+```bash
+flybehavior-response train \
+  --data-csv data/wide_with_rms_and_features.csv \
+  --labels-csv data/labels.csv \
+  --features "AUC-During,Peak-Value,global_max,local_min,local_max" \
+  --series-prefixes "rms_" \
+  --n-pcs 5 \
+  --use-raw-pca \
+  --model all
+```
+
+The pipeline will:
+1. Extract all `rms_*` columns (time-series)
+2. Apply median imputation and standardization
+3. Reduce dimensionality to 5 principal components via PCA
+4. Scale the engineered features independently
+5. Train models on the combined feature set
+
+**Computing RMS from raw coordinates** (if not pre-computed):
+
+Use `prepare-raw` with `--compute-dir-val` to generate distance metrics (which approximate RMS):
+
+```bash
+flybehavior-response prepare-raw \
+  --data-csv data/raw_coordinates.csv \
+  --labels-csv data/labels.csv \
+  --out data/prepared_with_distances.csv \
+  --compute-dir-val
+```
+
+This creates `dir_val_0`, `dir_val_1`, ..., `dir_val_3600` columns representing frame-by-frame distances, which can then be used with `--series-prefixes "dir_val_"`.
+
+### Example: Training with all available features
+
+Here's a comprehensive example using engineered features, RMS/distance traces, and multiple models:
+
+```bash
+flybehavior-response train \
+  --data-csv data/all_envelope_rows_wide.csv \
+  --labels-csv data/scoring_results_opto_new_MINIMAL.csv \
+  --features "AUC-Before,AUC-During,AUC-After,TimeToPeak-During,Peak-Value,global_min,global_max,trimmed_global_min,trimmed_global_max,local_min,local_max,local_min_before,local_max_before,local_min_during,local_max_during,local_max_over_global_min,local_max_during_over_global_min" \
+  --series-prefixes "dir_val_" \
+  --n-pcs 10 \
+  --use-raw-pca \
+  --classification-mode binary \
+  --model all \
+  --logreg-class-weights "balanced" \
+  --rf-n-estimators 200 \
+  --cv 5 \
+  --artifacts-dir outputs/comprehensive_run
+```
+
+This trains all supported models (LDA, Logistic Regression, Random Forest, MLP, fp_optimized_mlp) on:
+- All 17 engineered features
+- 10 principal components from the time-series `dir_val_` traces (RMS-like distances)
+- 5-fold cross-validation with stratified splits at the fly level
+- Balanced class weighting for logistic regression
+- 200 trees for Random Forest
+
 ## Training with the neural network classifiers
 
 - `--model all` trains LDA, logistic regression, and both neural network configurations using a shared stratified split and writes per-model confusion matrices into the run directory.
@@ -716,7 +1004,7 @@ The loader detects that engineered features are missing, logs a trace-only messa
 - Training uses proportional sample weights derived from label intensity so stronger reactions (e.g., `5`) contribute more than weaker ones (e.g., `1`). Review the logged weight summaries if model behaviour seems unexpected.
 - Duplicate keys across CSVs (`dataset`, `fly`, `fly_number`, `trial_type`, `trial_label`) raise errors to prevent ambiguous merges.
 - Ratio features (`AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`) are supported but produce warnings because they are unstable.
-- The CLI recognises the following engineered scalar columns out of the box: `AUC-Before`, `AUC-During`, `AUC-After`, `AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`, `TimeToPeak-During`, `Peak-Value`, `global_min`, `global_max`, `local_min`, `local_max`, `local_min_during`, `local_max_during`, `local_max_over_global_min`, `local_max_during_over_global_min`, `local_max_during_odor`, `local_max_during_odor_over_global_min`, and the newly added `non_reactive_flag` (1 for non-responders, 0 otherwise). Any subset passed via `--features` (or baked into `best_params.json`) is validated against this list so feature-only runs fail fast when a requested column is absent. Because `non_reactive_flag` is derived directly from the binary label, only use it for auditing or rule-based workflows—feeding it into model training will trivially leak the target signal.
+- The CLI recognises the following engineered scalar columns out of the box: `AUC-Before`, `AUC-During`, `AUC-After`, `AUC-During-Before-Ratio`, `AUC-After-Before-Ratio`, `TimeToPeak-During`, `Peak-Value`, `global_min`, `global_max`, `trimmed_global_min`, `trimmed_global_max`, `local_min`, `local_max`, `local_min_before`, `local_max_before`, `local_min_during`, `local_max_during`, `local_max_over_global_min`, `local_max_during_over_global_min`, `local_max_during_odor`, `local_max_during_odor_over_global_min`, and the newly added `non_reactive_flag` (1 for non-responders, 0 otherwise). Any subset passed via `--features` (or baked into `best_params.json`) is validated against this list so feature-only runs fail fast when a requested column is absent. Because `non_reactive_flag` is derived directly from the binary label, only use it for auditing or rule-based workflows—feeding it into model training will trivially leak the target signal.
 - Use `--dry-run` to confirm configuration before writing artifacts.
 - The CLI automatically selects the newest run directory containing model artifacts. Override with `--run-dir` if you maintain
   multiple artifact trees (e.g., `outputs/artifacts/projections`).
