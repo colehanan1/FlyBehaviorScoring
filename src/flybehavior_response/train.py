@@ -313,7 +313,7 @@ def train_models(
     }
 
     logger.info("Trace series prefixes: %s", resolved_prefixes)
-    if mlp_params is not None:
+    if mlp_params is not None and "n_components" in mlp_params:
         if not use_raw_pca:
             logger.info(
                 "Enabling PCA preprocessing to honour Optuna n_components=%d.",
@@ -650,6 +650,13 @@ def train_models(
         manifest.to_csv(manifest_path, index=False)
         logger.info("Saved split manifest to %s", manifest_path)
 
+    # Only pass mlp_params to build_model_pipeline when it contains actual
+    # Optuna hyperparameters (not just class_weight from --class-weights).
+    _has_mlp_hyperparams = (
+        mlp_params is not None
+        and any(k in mlp_params for k in ("n_components", "alpha", "batch_size", "hidden_layer_sizes"))
+    )
+
     for model_name in requested_models:
         logger.info("Training model: %s", model_name)
         pipeline = build_model_pipeline(
@@ -662,7 +669,7 @@ def train_models(
             rf_n_estimators=rf_n_estimators,
             rf_max_depth=rf_max_depth,
             rf_class_weight=rf_class_weight if model_name == MODEL_RF else None,
-            mlp_params=mlp_params if model_name == MODEL_MLP else None,
+            mlp_params=mlp_params if (model_name == MODEL_MLP and _has_mlp_hyperparams) else None,
         )
         if model_name == MODEL_LDA:
             X_fit, y_fit = expand_samples_by_weight(X_train, y_train, sw_train)
