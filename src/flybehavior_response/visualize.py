@@ -93,6 +93,92 @@ def plot_roc_curve(pipeline, data: pd.DataFrame, labels: pd.Series, path: Path) 
     return path
 
 
+def plot_validation_curve(
+    *,
+    train_scores: np.ndarray,
+    test_scores: np.ndarray,
+    param_range: Sequence,
+    param_name: str,
+    model_name: str,
+    scoring_label: str = "Accuracy",
+    path: Path,
+    log_scale: bool = False,
+) -> Path:
+    """Plot training vs CV score as a function of a model complexity parameter."""
+    train_mean = np.mean(train_scores, axis=1)
+    train_std = np.std(train_scores, axis=1)
+    test_mean = np.mean(test_scores, axis=1)
+    test_std = np.std(test_scores, axis=1)
+
+    # Build x-axis values and labels
+    x_labels = [str(v) if v is not None else "None" for v in param_range]
+    x_vals = np.arange(len(param_range))
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(x_vals, train_mean, "o-", color="#1f77b4", label="Training Score")
+    ax.fill_between(x_vals, train_mean - train_std, train_mean + train_std, alpha=0.15, color="#1f77b4")
+    ax.plot(x_vals, test_mean, "o-", color="#ff7f0e", label="Cross-Validation Score")
+    ax.fill_between(x_vals, test_mean - test_std, test_mean + test_std, alpha=0.15, color="#ff7f0e")
+
+    ax.set_xticks(x_vals)
+    ax.set_xticklabels(x_labels, rotation=45, ha="right")
+    ax.set_xlabel(param_name)
+    ax.set_ylabel(scoring_label)
+    ax.set_ylim(0.0, 1.05)
+    ax.set_title(f"{model_name.upper()} \u2014 Validation Curve ({param_name})")
+    ax.legend(loc="lower right")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+    return path
+
+
+def plot_regularization_path(
+    *,
+    train_scores: np.ndarray,
+    test_scores: np.ndarray,
+    param_range: np.ndarray,
+    param_name: str,
+    model_name: str,
+    scoring_label: str = "Accuracy",
+    path: Path,
+    invert_log: bool = False,
+) -> Path:
+    """Plot training vs CV score as a function of regularization on ln(lambda) scale."""
+    train_mean = np.mean(train_scores, axis=1)
+    train_std = np.std(train_scores, axis=1)
+    test_mean = np.mean(test_scores, axis=1)
+    test_std = np.std(test_scores, axis=1)
+
+    # For parameters like C (inverse regularization), invert so increasing x = stronger reg
+    if invert_log:
+        x_vals = -np.log(param_range)
+        x_label = f"ln(1/{param_name})"
+    else:
+        x_vals = np.log(param_range)
+        x_label = f"ln({param_name})"
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(x_vals, train_mean, "o-", color="#1f77b4", markersize=3, label="Training Score")
+    ax.fill_between(x_vals, train_mean - train_std, train_mean + train_std, alpha=0.15, color="#1f77b4")
+    ax.plot(x_vals, test_mean, "o-", color="#ff7f0e", markersize=3, label="Cross-Validation Score")
+    ax.fill_between(x_vals, test_mean - test_std, test_mean + test_std, alpha=0.15, color="#ff7f0e")
+
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(scoring_label)
+    ax.set_ylim(0.0, 1.05)
+    ax.set_title(f"{model_name.upper()} \u2014 Regularization Path ({param_name})")
+    ax.legend(loc="lower right")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+    return path
+
+
 def generate_visuals(
     *,
     data_csv: Path,

@@ -608,6 +608,21 @@ def _configure_parser() -> argparse.ArgumentParser:
             "Higher weight on class 1 increases sensitivity to positive class (responders)."
         ),
     )
+    train_parser.add_argument(
+        "--diagnostic-curves",
+        action="store_true",
+        default=False,
+        help=(
+            "Generate validation curves and regularization path plots for each model. "
+            "WARNING: computationally expensive (many model fits per parameter value)."
+        ),
+    )
+    train_parser.add_argument(
+        "--diagnostic-cv",
+        type=int,
+        default=0,
+        help="Number of CV folds for diagnostic curves (default: uses --cv value, minimum 3)",
+    )
     eval_parser = subparsers.add_parser(
         "eval",
         parents=[common_parser],
@@ -899,6 +914,8 @@ def _handle_train(args: argparse.Namespace) -> None:
         test_size=args.test_size,
         mlp_params=mlp_params,
         classification_mode=args.classification_mode,
+        diagnostic_curves=getattr(args, "diagnostic_curves", False),
+        diagnostic_cv=getattr(args, "diagnostic_cv", 0),
     )
     logger.info("Training metrics: %s", json.dumps(metrics))
 

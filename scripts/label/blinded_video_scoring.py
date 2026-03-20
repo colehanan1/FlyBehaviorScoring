@@ -11,6 +11,7 @@ Usage:
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import math
@@ -36,7 +37,7 @@ INPUT_CSV = Path(
     "all_envelope_rows_wide_combined_base.csv"
 )
 FLAGGED_CSV = Path(
-    "/home/ramanlab/Documents/cole/Data/Opto/Combined/flagged-flys-truth.csv"
+    "/home/ramanlab/Documents/cole/Data/CSVs-ALL-Opto-Flys/flagged-flys-truth.csv"
 )
 VIDEOS_ROOT = Path("/securedstorage/DATAsec/cole/Data-secured/")
 OUTPUT_CSV = Path(
@@ -46,6 +47,10 @@ OUTPUT_CSV = Path(
 SEED_FILE = Path(
     "/home/ramanlab/Documents/cole/Data/CSVs-ALL-Opto-Flys/"
     "blinded_video_scoring_seed.json"
+)
+SKIPPED_FILE = Path(
+    "/home/ramanlab/Documents/cole/Data/CSVs-ALL-Opto-Flys/"
+    "blinded_video_scoring_skipped.json"
 )
 
 # Black-box overlay (x, y, width, height) in raw video pixel coords
@@ -57,8 +62,8 @@ DEFAULT_FPS = 40.0
 RANDOM_SEED = 42
 
 # Trace-plot styling
-ODOR_ON_S = 30.0
-ODOR_OFF_S = 60.0
+ODOR_ON_S = 32.0
+ODOR_OFF_S = 62.0
 THRESHOLD_STD_MULT = 3.0
 FIXED_Y_MAX = 100.0
 ODOR_SHADE_COLOR = "#9e9e9e"
@@ -83,6 +88,23 @@ def load_data() -> pd.DataFrame:
     df = pd.read_csv(INPUT_CSV)
     df = df[df["trial_type"].str.strip().str.lower() == "testing"].copy()
     print(f"  Testing rows: {len(df)}")
+
+    # Keep only rows with "distances" in trial_label
+    mask_distances = df["trial_label"].str.contains("distances", case=False, na=False)
+    before = len(df)
+    df = df[mask_distances].copy()
+    print(f"  Keeping only 'distances' rows: {before} → {len(df)} rows ({before - len(df)} removed)")
+
+    # Exclude testing_11 trials
+    import re
+    mask = pd.Series([
+        not re.match(r'testing_11(?:\D|$)', str(tl).strip())
+        for tl in df["trial_label"]
+    ], index=df.index)
+    before = len(df)
+    df = df[mask].copy()
+    print(f"  Excluding testing_11: {before} → {len(df)} rows ({before - len(df)} removed)")
+
     return df
 
 
@@ -133,15 +155,17 @@ def _try_video_patterns(dataset_path: Path, fly: str, base_fly: str, trial_label
     stem = f"{base_fly}_{trial_label}"
     filename = f"{stem}_distance_annotated.mp4"
 
-    # Pattern A: {fly_dir}/{base_fly}_{trial}/{base_fly}_{trial}_distance_annotated.mp4
-    path_a = dataset_path / fly / stem / filename
-    if path_a.exists():
-        return path_a
+    # Try with original fly name AND base_fly name (in case fly dir was stripped of leading zeros too)
+    for fly_dir_name in [fly, base_fly]:
+        # Pattern A: {fly_dir}/{base_fly}_{trial}/{base_fly}_{trial}_distance_annotated.mp4
+        path_a = dataset_path / fly_dir_name / stem / filename
+        if path_a.exists():
+            return path_a
 
-    # Pattern B: {fly_dir}/videos_with_rms/testing/{filename}
-    path_b = dataset_path / fly / "videos_with_rms" / "testing" / filename
-    if path_b.exists():
-        return path_b
+        # Pattern B: {fly_dir}/videos_with_rms/testing/{filename}
+        path_b = dataset_path / fly_dir_name / "videos_with_rms" / "testing" / filename
+        if path_b.exists():
+            return path_b
 
     return None
 
@@ -149,9 +173,15 @@ def _try_video_patterns(dataset_path: Path, fly: str, base_fly: str, trial_label
 def resolve_video_path(dataset: str, fly: str, trial_label: str) -> Path | None:
     """Find the _distance_annotated.mp4 for a given trial.
 
-    Handles: _rig_N suffixes, flagged/ subfolder, leading-zero date mismatches.
+    Handles: _rig_N suffixes, flagged/ subfolder, leading-zero date mismatches,
+    and trial_labels with suffixes like _fly1_angle_distance_rms_envelope.
     """
     import re
+
+    # Extract the core trial ID from trial_label
+    # E.g., "testing_1_fly1_angle_distance_rms_envelope" -> "testing_1"
+    match = re.match(r'(testing_\d+)', trial_label)
+    core_trial_label = match.group(1) if match else trial_label
 
     # Dataset roots to search: normal + flagged/
     dataset_roots = [VIDEOS_ROOT / dataset]
@@ -171,12 +201,13 @@ def resolve_video_path(dataset: str, fly: str, trial_label: str) -> Path | None:
 
     for ds_root in dataset_roots:
         for base_fly in base_flies:
-            result = _try_video_patterns(ds_root, fly, base_fly, trial_label)
+            # Try with core trial label first
+            result = _try_video_patterns(ds_root, fly, base_fly, core_trial_label)
             if result:
                 return result
-            # Also try trial_label with stripped zeros
-            tl_no_zeros = _strip_leading_zeros_in_dates(trial_label)
-            if tl_no_zeros != trial_label:
+            # Also try with stripped zeros in trial label
+            tl_no_zeros = _strip_leading_zeros_in_dates(core_trial_label)
+            if tl_no_zeros != core_trial_label:
                 result = _try_video_patterns(ds_root, fly, base_fly, tl_no_zeros)
                 if result:
                     return result
@@ -280,11 +311,16 @@ def plot_trace(fig: plt.Figure, env: np.ndarray, fps: float) -> plt.Line2D | Non
 # ---------------------------------------------------------------------------
 
 def trial_key(row: pd.Series) -> tuple[str, str, int, str]:
+    """Create a unique key for resume matching.
+    Uses core trial label (testing_1) for matching, even if full label has suffixes.
+    """
+    full_trial_label = str(row["trial_label"]).strip()
+    core_trial_label = _extract_core_trial_label(full_trial_label)
     return (
         str(row["dataset"]).strip(),
         str(row["fly"]).strip(),
         int(row["fly_number"]),
-        str(row["trial_label"]).strip(),
+        core_trial_label,
     )
 
 
@@ -306,14 +342,43 @@ def load_existing_scores() -> set[tuple[str, str, int, str]]:
     return scored
 
 
+def load_skipped_trials() -> set[tuple[str, str, int, str]]:
+    """Load set of skipped trial keys from persistent storage."""
+    if not SKIPPED_FILE.exists():
+        return set()
+    try:
+        with SKIPPED_FILE.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            return set(tuple(k) for k in data.get("skipped", []))
+    except Exception:
+        return set()
+
+
+def save_skipped_trials(skipped: set[tuple[str, str, int, str]]) -> None:
+    """Save set of skipped trial keys to persistent storage."""
+    data = {"skipped": [list(k) for k in skipped]}
+    with SKIPPED_FILE.open("w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+
+
+def _extract_core_trial_label(full_label: str) -> str:
+    """Extract core trial ID: testing_1_fly1_distances_... -> testing_1"""
+    import re
+    match = re.match(r'(testing_\d+)', full_label)
+    return match.group(1) if match else full_label
+
+
 def save_score(row: pd.Series, score: int, comment: str) -> None:
     file_exists = OUTPUT_CSV.exists() and OUTPUT_CSV.stat().st_size > 0
+    full_trial_label = str(row["trial_label"]).strip()
+    core_trial_label = _extract_core_trial_label(full_trial_label)
+
     row_data = {
         "dataset": str(row["dataset"]).strip(),
         "fly": str(row["fly"]).strip(),
         "fly_number": int(row["fly_number"]),
         "trial_type": str(row["trial_type"]).strip(),
-        "trial_label": str(row["trial_label"]).strip(),
+        "trial_label": core_trial_label,
         "user_score": score,
         "comment": comment,
     }
@@ -336,18 +401,32 @@ class BlindedVideoScoringApp:
         dir_val_cols: list[str],
         video_paths: list[Path],
         scored_keys: set[tuple[str, str, int, str]],
+        show_skipped: bool = False,
     ) -> None:
         self.master = master
         self.df = df
         self.dir_val_cols = dir_val_cols
         self.video_paths = video_paths
         self.total = len(df)
+        self.show_skipped = show_skipped
 
-        # Pending (un-scored) trials
-        self.pending_indices: list[int] = [
-            idx for idx in range(self.total)
-            if trial_key(self.df.iloc[idx]) not in scored_keys
-        ]
+        # Load persistent skipped trials
+        self.skipped_keys: set[tuple[str, str, int, str]] = load_skipped_trials()
+
+        if self.show_skipped:
+            # Show ONLY previously skipped trials (that haven't been scored yet)
+            self.pending_indices: list[int] = [
+                idx for idx in range(self.total)
+                if trial_key(self.df.iloc[idx]) in self.skipped_keys
+                and trial_key(self.df.iloc[idx]) not in scored_keys
+            ]
+        else:
+            # Normal mode: skip scored and skipped trials
+            self.pending_indices: list[int] = [
+                idx for idx in range(self.total)
+                if trial_key(self.df.iloc[idx]) not in scored_keys
+                and trial_key(self.df.iloc[idx]) not in self.skipped_keys
+            ]
         self.current_pending_pos = 0
         self.already_scored = self.total - len(self.pending_indices)
 
@@ -375,7 +454,8 @@ class BlindedVideoScoringApp:
         })
 
         # --- Window ---
-        self.master.title("Blinded Fly Scoring — Video + Trace")
+        title = "Blinded Fly Scoring — SKIPPED TRIALS" if self.show_skipped else "Blinded Fly Scoring — Video + Trace"
+        self.master.title(title)
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         self.master.configure(bg="#f8f8fb")
 
@@ -488,12 +568,18 @@ class BlindedVideoScoringApp:
             command=self._on_replay,
         )
         self.replay_btn.grid(row=0, column=1, padx=12)
+        self.skip_btn = tk.Button(
+            btn_frame, text="Skip", font=("Helvetica", 22, "bold"),
+            width=10, height=1, bg="#FF9800", fg="white", relief="raised", bd=3,
+            command=self._on_skip,
+        )
+        self.skip_btn.grid(row=0, column=2, padx=12)
         self.exit_btn = tk.Button(
             btn_frame, text="Save & Exit", font=("Helvetica", 22, "bold"),
             width=12, height=1, bg="#f44336", fg="white", relief="raised", bd=3,
             command=self._on_exit,
         )
-        self.exit_btn.grid(row=0, column=2, padx=12)
+        self.exit_btn.grid(row=0, column=3, padx=12)
 
         # Bind Enter to submit
         self.master.bind("<Return>", lambda _: self._on_submit())
@@ -502,7 +588,13 @@ class BlindedVideoScoringApp:
         self.score_entry.focus_set()
 
         # Resume message
-        if self.already_scored > 0:
+        if self.show_skipped:
+            messagebox.showinfo(
+                "Skipped Trials Mode",
+                f"Showing {len(self.pending_indices)} previously skipped trials.\n"
+                f"Score them now — they'll be removed from the skipped list once scored.",
+            )
+        elif self.already_scored > 0:
             messagebox.showinfo(
                 "Resuming",
                 f"Resuming: {self.already_scored} of {self.total} already scored.\n"
@@ -708,6 +800,12 @@ class BlindedVideoScoringApp:
         row = self.df.iloc[idx]
         save_score(row, score, self.comment_var.get().strip())
 
+        # Remove from skipped set once scored
+        key = trial_key(row)
+        if key in self.skipped_keys:
+            self.skipped_keys.discard(key)
+            save_skipped_trials(self.skipped_keys)
+
         self.current_pending_pos += 1
         if self.current_pending_pos >= len(self.pending_indices):
             self._show_completion()
@@ -723,6 +821,21 @@ class BlindedVideoScoringApp:
         if not self.playing:
             self.playing = True
             self.master.after(0, self._advance)
+
+    def _on_skip(self) -> None:
+        """Skip this trial, persist it, and move to the next one."""
+        self.playing = False
+        idx = self.pending_indices[self.current_pending_pos]
+        row = self.df.iloc[idx]
+        key = trial_key(row)
+        self.skipped_keys.add(key)
+        save_skipped_trials(self.skipped_keys)
+
+        self.current_pending_pos += 1
+        if self.current_pending_pos >= len(self.pending_indices):
+            self._show_completion()
+        else:
+            self._show_current_trial()
 
     def _show_completion(self) -> None:
         self.playing = False
@@ -758,6 +871,13 @@ class BlindedVideoScoringApp:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Blinded video + trace scoring GUI")
+    parser.add_argument(
+        "--show-skipped", action="store_true",
+        help="Show only previously skipped trials so you can score them",
+    )
+    args = parser.parse_args()
+
     # 1. Load & filter
     df = load_data()
     df = apply_exclusions(df)
@@ -805,7 +925,7 @@ def main() -> None:
 
     # 5. Launch
     root = tk.Tk()
-    BlindedVideoScoringApp(root, df_shuffled, dir_val_cols, video_paths_shuffled, scored_keys)
+    BlindedVideoScoringApp(root, df_shuffled, dir_val_cols, video_paths_shuffled, scored_keys, show_skipped=args.show_skipped)
     root.mainloop()
 
 

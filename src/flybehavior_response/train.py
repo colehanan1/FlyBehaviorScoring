@@ -27,6 +27,7 @@ from .io import (
 )
 from .logging_utils import get_logger
 from .modeling import (
+    HAVE_XGB,
     MODEL_FP_OPTIMIZED_MLP,
     MODEL_HGB,
     MODEL_LDA,
@@ -43,6 +44,206 @@ from .weights import expand_samples_by_weight
 def _set_seeds(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic curve registry: defines which parameters to sweep per model
+# ---------------------------------------------------------------------------
+
+_DIAGNOSTIC_CURVE_REGISTRY: Dict[str, Dict[str, list]] = {
+    MODEL_LOGREG: {
+        "complexity": [
+            {"param": "model__max_iter", "range": [50, 100, 200, 500, 1000, 2000, 5000], "label": "max_iter"},
+        ],
+        "regularization": [
+            {"param": "model__C", "range_fn": lambda: np.logspace(-4, 4, 20), "label": "C", "invert_log": True},
+        ],
+    },
+    MODEL_RF: {
+        "complexity": [
+            {"param": "model__n_estimators", "range": [10, 25, 50, 100, 200, 500], "label": "n_estimators"},
+            {"param": "model__max_depth", "range": [2, 3, 5, 7, 10, 15, 20, None], "label": "max_depth"},
+        ],
+        "regularization": [],
+    },
+    MODEL_MLP: {
+        "complexity": [
+            {"param": "model__hidden_layer_sizes", "range": [(16,), (32,), (64,), (128,), (256,), (512,), (1024,)], "label": "hidden_layer_sizes"},
+        ],
+        "regularization": [
+            {"param": "model__alpha", "range_fn": lambda: np.logspace(-6, 2, 20), "label": "alpha"},
+        ],
+    },
+    MODEL_FP_OPTIMIZED_MLP: {
+        "complexity": [],
+        "regularization": [
+            {"param": "model__alpha", "range_fn": lambda: np.logspace(-6, 2, 20), "label": "alpha"},
+        ],
+    },
+    MODEL_HGB: {
+        "complexity": [
+            {"param": "model__max_iter", "range": [25, 50, 100, 200, 400, 800], "label": "max_iter"},
+            {"param": "model__max_depth", "range": [2, 3, 5, 7, 10, 15, 20, None], "label": "max_depth"},
+        ],
+        "regularization": [
+            {"param": "model__learning_rate", "range_fn": lambda: np.logspace(-4, 0, 15), "label": "learning_rate"},
+        ],
+    },
+}
+
+# XGBoost entries are conditional on the optional dependency being installed.
+if HAVE_XGB:
+    _DIAGNOSTIC_CURVE_REGISTRY[MODEL_XGB] = {
+        "complexity": [
+            {"param": "model__n_estimators", "range": [25, 50, 100, 200, 300, 500], "label": "n_estimators"},
+            {"param": "model__max_depth", "range": [2, 3, 4, 6, 8, 10], "label": "max_depth"},
+        ],
+        "regularization": [
+            {"param": "model__reg_lambda", "range_fn": lambda: np.logspace(-4, 4, 20), "label": "reg_lambda"},
+        ],
+    }
+
+
+def _generate_diagnostic_curves(
+    *,
+    model_name: str,
+    preprocessor,
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    sample_weights: pd.Series,
+    class_weight_dict: Dict[int, float] | None,
+    groups: pd.Series | None,
+    cv: int,
+    seed: int,
+    run_dir: Path,
+    logger,
+    logreg_solver: str,
+    logreg_max_iter: int,
+    logreg_class_weight,
+    rf_n_estimators: int,
+    rf_max_depth: int | None,
+    rf_class_weight,
+    mlp_params: Mapping[str, object] | None,
+) -> list[Path]:
+    """Generate validation curve and regularization path plots for *model_name*."""
+    from sklearn.model_selection import GroupKFold, StratifiedKFold, validation_curve
+
+    from .visualize import plot_regularization_path, plot_validation_curve
+
+    registry = _DIAGNOSTIC_CURVE_REGISTRY.get(model_name)
+    if not registry:
+        logger.info("No diagnostic curves defined for %s; skipping.", model_name)
+        return []
+
+    # Build CV splitter
+    if groups is not None:
+        n_groups = groups.nunique()
+        if n_groups < cv:
+            logger.warning(
+                "Only %d groups available but %d CV folds requested for diagnostic curves; skipping %s.",
+                n_groups, cv, model_name,
+            )
+            return []
+        cv_splitter = GroupKFold(n_splits=cv)
+        cv_groups = groups.to_numpy()
+    else:
+        cv_splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=seed)
+        cv_groups = None
+
+    # Prepare sample-weight fit_params
+    if model_name in {MODEL_MLP, MODEL_FP_OPTIMIZED_MLP} and class_weight_dict is not None:
+        combined = _combine_sample_and_class_weights(y_train, sample_weights, class_weight_dict)
+        weight_array = combined if isinstance(combined, np.ndarray) else combined.to_numpy()
+    elif model_name != MODEL_LDA:
+        weight_array = sample_weights.to_numpy()
+    else:
+        weight_array = None
+
+    fit_params = {}
+    if weight_array is not None:
+        fit_params["model__sample_weight"] = weight_array
+
+    saved_paths: list[Path] = []
+
+    def _build_pipeline():
+        return build_model_pipeline(
+            preprocessor,
+            model_type=model_name,
+            seed=seed,
+            logreg_solver=logreg_solver,
+            logreg_max_iter=logreg_max_iter,
+            logreg_class_weight=logreg_class_weight if model_name == MODEL_LOGREG else None,
+            rf_n_estimators=rf_n_estimators,
+            rf_max_depth=rf_max_depth,
+            rf_class_weight=rf_class_weight if model_name == MODEL_RF else None,
+            mlp_params=mlp_params if model_name == MODEL_MLP else None,
+        )
+
+    # --- Complexity curves ---
+    for sweep in registry.get("complexity", []):
+        param_name = sweep["param"]
+        param_range = sweep["range"]
+        label = sweep["label"]
+        logger.info("Generating validation curve for %s param=%s (%d values)", model_name, label, len(param_range))
+        try:
+            pipeline = _build_pipeline()
+            train_scores, test_scores = validation_curve(
+                pipeline, X_train, y_train,
+                param_name=param_name,
+                param_range=param_range,
+                cv=cv_splitter,
+                scoring="accuracy",
+                groups=cv_groups,
+                fit_params=fit_params,
+                n_jobs=-1,
+            )
+            out_path = run_dir / f"validation_curve_{model_name}_{label}.png"
+            plot_validation_curve(
+                train_scores=train_scores,
+                test_scores=test_scores,
+                param_range=param_range,
+                param_name=label,
+                model_name=model_name,
+                path=out_path,
+            )
+            saved_paths.append(out_path)
+        except Exception:
+            logger.exception("Failed to generate validation curve for %s param=%s", model_name, label)
+
+    # --- Regularization path curves ---
+    for sweep in registry.get("regularization", []):
+        param_name = sweep["param"]
+        param_range = sweep["range_fn"]()
+        label = sweep["label"]
+        invert_log = sweep.get("invert_log", False)
+        logger.info("Generating regularization path for %s param=%s (%d values)", model_name, label, len(param_range))
+        try:
+            pipeline = _build_pipeline()
+            train_scores, test_scores = validation_curve(
+                pipeline, X_train, y_train,
+                param_name=param_name,
+                param_range=param_range,
+                cv=cv_splitter,
+                scoring="accuracy",
+                groups=cv_groups,
+                fit_params=fit_params,
+                n_jobs=-1,
+            )
+            out_path = run_dir / f"regularization_path_{model_name}_{label}.png"
+            plot_regularization_path(
+                train_scores=train_scores,
+                test_scores=test_scores,
+                param_range=param_range,
+                param_name=label,
+                model_name=model_name,
+                path=out_path,
+                invert_log=invert_log,
+            )
+            saved_paths.append(out_path)
+        except Exception:
+            logger.exception("Failed to generate regularization path for %s param=%s", model_name, label)
+
+    return saved_paths
 
 
 def _stratified_train_val_test_split(
@@ -148,6 +349,8 @@ def train_models(
     test_size: float = 0.2,
     mlp_params: Mapping[str, object] | None = None,
     classification_mode: str = 'binary',
+    diagnostic_curves: bool = False,
+    diagnostic_cv: int = 0,
 ) -> Dict[str, Dict[str, object]]:
     logger = get_logger(__name__, verbose=verbose)
     _set_seeds(seed)
@@ -854,6 +1057,34 @@ def train_models(
             fig.savefig(cm_path, dpi=300)
             plt.close(fig)
             logger.info("Saved confusion matrix plot to %s", cm_path)
+
+            if diagnostic_curves:
+                diag_cv_folds = diagnostic_cv if diagnostic_cv >= 2 else max(cv, 3)
+                diag_groups = None
+                if groups_series is not None:
+                    diag_groups = groups_series.iloc[train_idx]
+                curve_paths = _generate_diagnostic_curves(
+                    model_name=model_name,
+                    preprocessor=preprocessor,
+                    X_train=X_train,
+                    y_train=y_train,
+                    sample_weights=sw_train,
+                    class_weight_dict=class_weight_dict if model_name in (MODEL_MLP, MODEL_FP_OPTIMIZED_MLP) else None,
+                    groups=diag_groups,
+                    cv=diag_cv_folds,
+                    seed=seed,
+                    run_dir=artifacts.run_dir,
+                    logger=logger,
+                    logreg_solver=logreg_solver,
+                    logreg_max_iter=logreg_max_iter,
+                    logreg_class_weight=logreg_class_weight,
+                    rf_n_estimators=rf_n_estimators,
+                    rf_max_depth=rf_max_depth,
+                    rf_class_weight=rf_class_weight,
+                    mlp_params=mlp_params if (model_name == MODEL_MLP and _has_mlp_hyperparams) else None,
+                )
+                for p in curve_paths:
+                    logger.info("Saved diagnostic curve: %s", p)
 
     metrics_payload = {"models": metrics}
     if not dry_run:
