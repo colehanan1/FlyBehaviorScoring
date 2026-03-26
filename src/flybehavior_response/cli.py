@@ -674,6 +674,27 @@ def _configure_parser() -> argparse.ArgumentParser:
         help="Decision threshold for binary classification (default: 0.5). Use higher values (e.g., 0.65) to reduce false positives.",
     )
 
+    # --- predict-ordinal: XGBoost multiclass ordinal scoring ---
+    predict_ordinal_parser = subparsers.add_parser(
+        "predict-ordinal",
+        parents=[common_parser],
+        help="Score new data with a trained XGBoost ordinal model (-1 to 5)",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    predict_ordinal_parser.add_argument(
+        "--model-path", type=Path, required=True,
+        help="Path to XGBoost model file (.json)",
+    )
+    predict_ordinal_parser.add_argument(
+        "--output-csv", type=Path,
+        default=DEFAULT_ARTIFACTS_DIR / "ordinal_predictions.csv",
+        help="Path to write predictions CSV",
+    )
+    predict_ordinal_parser.add_argument(
+        "--binary-threshold", type=int, default=2,
+        help="Ordinal score >= this value maps to reaction (1); below maps to no-reaction (0).",
+    )
+
     return parser
 
 
@@ -1201,6 +1222,53 @@ def _handle_predict(args: argparse.Namespace) -> None:
     logger.info("Predictions written to %s", args.output_csv)
 
 
+def _handle_predict_ordinal(args: argparse.Namespace) -> None:
+    """Score rows with a trained XGBoost ordinal model."""
+    from .xgb_ordinal import (
+        load_xgb_model,
+        predict_ordinal_scores,
+        preprocess_features,
+        score_to_binary,
+    )
+
+    logger = get_logger("predict-ordinal", verbose=args.verbose)
+
+    if not args.data_csv.exists():
+        raise FileNotFoundError(f"Data CSV not found: {args.data_csv}")
+    if not args.model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {args.model_path}")
+
+    logger.info("Loading XGBoost ordinal model: %s", args.model_path)
+    booster = load_xgb_model(args.model_path)
+
+    logger.info("Loading prediction data: %s", args.data_csv)
+    data_df = pd.read_csv(args.data_csv)
+    logger.info("Input rows: %d", len(data_df))
+
+    logger.info("Computing features (11 engineered + 13 signal)…")
+    feature_df = preprocess_features(data_df)
+    logger.info("Feature matrix shape: %s", feature_df.shape)
+
+    scores = predict_ordinal_scores(booster, feature_df)
+    binary = score_to_binary(scores, threshold=args.binary_threshold)
+
+    output_columns = [
+        col
+        for col in ["dataset", "fly", "fly_number", "trial_label", "testing_trial"]
+        if col in data_df.columns
+    ]
+    output = data_df[output_columns].copy() if output_columns else pd.DataFrame()
+    output["prediction"] = binary
+    output["score"] = scores
+
+    args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+    output.to_csv(args.output_csv, index=False)
+    logger.info(
+        "Wrote %d predictions to %s (scores %d..%d, binary_threshold=%d)",
+        len(output), args.output_csv, scores.min(), scores.max(), args.binary_threshold,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     raw_args = list(argv) if argv is not None else sys.argv[1:]
     if raw_args and raw_args[0] == "prepare-raw":
@@ -1230,6 +1298,8 @@ def main(argv: list[str] | None = None) -> None:
         _handle_viz(args)
     elif args.command == "predict":
         _handle_predict(args)
+    elif args.command == "predict-ordinal":
+        _handle_predict_ordinal(args)
     else:
         parser.error(f"Unknown command {args.command}")
 
