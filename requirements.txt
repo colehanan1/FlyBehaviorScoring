@@ -11,3 +11,4 @@ pyyaml>=6.0,<7.0
 pyarrow>=14.0,<15.0
 optuna>=3.5,<4.0
 plotly>=5.15,<6.0
+xgboost>=2.0,<3.0

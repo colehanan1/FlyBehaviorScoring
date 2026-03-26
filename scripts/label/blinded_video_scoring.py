@@ -3,8 +3,12 @@
 
 Displays randomised, blinded testing trials with the video (black-box
 overlay hiding the odor label) on the left and the envelope trace on the
-right.  The user scores each trial 0-5 and optionally adds a comment.
+right.  The user scores each trial -1 to 5 and optionally adds a comment.
 Results are saved to CSV with resume capability.
+
+Review mode:
+    python scripts/label/blinded_video_scoring.py --review-score 0
+    # review and re-score all previously scored 0s (works for -1..5)
 
 Usage:
     python scripts/label/blinded_video_scoring.py
@@ -75,6 +79,7 @@ TRACE_COLOR = "black"
 TRACE_LW = 1.2
 ODOR_LINE_LW = 1.0
 MAX_FRAMES = 3600  # dir_val columns to use (~90 s at 40 fps)
+NO_SCORE = -999
 
 # Display sizes
 VIDEO_W, VIDEO_H = 1080, 1080
@@ -324,6 +329,36 @@ def trial_key(row: pd.Series) -> tuple[str, str, int, str]:
     )
 
 
+def load_existing_scores_map() -> dict[tuple[str, str, int, str], dict[str, object]]:
+    """Load existing scores keyed by trial key.
+
+    If duplicates exist, later rows in the CSV win.
+    """
+    if not OUTPUT_CSV.exists():
+        return {}
+    try:
+        df = pd.read_csv(OUTPUT_CSV)
+    except Exception:
+        return {}
+
+    out: dict[tuple[str, str, int, str], dict[str, object]] = {}
+    for _, row in df.iterrows():
+        try:
+            key = (
+                str(row["dataset"]).strip(),
+                str(row["fly"]).strip(),
+                int(row["fly_number"]),
+                _extract_core_trial_label(str(row["trial_label"]).strip()),
+            )
+        except Exception:
+            continue
+        out[key] = {
+            "user_score": row.get("user_score", np.nan),
+            "comment": "" if pd.isna(row.get("comment", "")) else str(row.get("comment", "")),
+        }
+    return out
+
+
 def load_existing_scores() -> set[tuple[str, str, int, str]]:
     if not OUTPUT_CSV.exists():
         return set()
@@ -361,6 +396,79 @@ def save_skipped_trials(skipped: set[tuple[str, str, int, str]]) -> None:
         json.dump(data, fh, indent=2)
 
 
+def cleanup_score_and_skipped_files() -> None:
+    """Normalize artifacts:
+
+    - scoring CSV: one row per trial key, keeping the highest user_score
+      (tie-breaker: latest row)
+    - skipped JSON: unique keys only and remove keys already scored
+    """
+    scored_keys: set[tuple[str, str, int, str]] = set()
+
+    if OUTPUT_CSV.exists() and OUTPUT_CSV.stat().st_size > 0:
+        try:
+            df = pd.read_csv(OUTPUT_CSV)
+            key_cols = ["dataset", "fly", "fly_number", "trial_label"]
+            required = key_cols + ["user_score"]
+            if all(c in df.columns for c in required):
+                for c in ["dataset", "fly", "trial_label"]:
+                    df[c] = df[c].astype(str).str.strip()
+                df["fly_number"] = pd.to_numeric(df["fly_number"], errors="coerce")
+                df["user_score"] = pd.to_numeric(df["user_score"], errors="coerce")
+
+                before = len(df)
+                df = (
+                    df.reset_index(names="__rowid__")
+                    .sort_values(key_cols + ["user_score", "__rowid__"])
+                    .drop_duplicates(subset=key_cols, keep="last")
+                    .sort_values("__rowid__")
+                    .drop(columns="__rowid__")
+                    .reset_index(drop=True)
+                )
+                if len(df) != before:
+                    print(f"  Cleaned scoring duplicates: {before} -> {len(df)}")
+                df.to_csv(OUTPUT_CSV, index=False)
+
+                for _, r in df.iterrows():
+                    if pd.notna(r["fly_number"]):
+                        scored_keys.add(
+                            (
+                                str(r["dataset"]).strip(),
+                                str(r["fly"]).strip(),
+                                int(r["fly_number"]),
+                                str(r["trial_label"]).strip(),
+                            )
+                        )
+        except Exception as exc:
+            print(f"  Warning: could not normalize scoring CSV: {exc}")
+
+    if SKIPPED_FILE.exists():
+        try:
+            payload = json.loads(SKIPPED_FILE.read_text(encoding="utf-8"))
+            raw = payload.get("skipped", [])
+            cleaned: list[list[object]] = []
+            seen: set[tuple[str, str, int, str]] = set()
+            for item in raw:
+                if not (isinstance(item, list) and len(item) == 4):
+                    continue
+                key = (
+                    str(item[0]).strip(),
+                    str(item[1]).strip(),
+                    int(item[2]),
+                    str(item[3]).strip(),
+                )
+                if key in seen or key in scored_keys:
+                    continue
+                seen.add(key)
+                cleaned.append([key[0], key[1], key[2], key[3]])
+
+            if len(cleaned) != len(raw):
+                print(f"  Cleaned skipped entries: {len(raw)} -> {len(cleaned)}")
+            SKIPPED_FILE.write_text(json.dumps({"skipped": cleaned}, indent=2), encoding="utf-8")
+        except Exception as exc:
+            print(f"  Warning: could not normalize skipped JSON: {exc}")
+
+
 def _extract_core_trial_label(full_label: str) -> str:
     """Extract core trial ID: testing_1_fly1_distances_... -> testing_1"""
     import re
@@ -369,7 +477,6 @@ def _extract_core_trial_label(full_label: str) -> str:
 
 
 def save_score(row: pd.Series, score: int, comment: str) -> None:
-    file_exists = OUTPUT_CSV.exists() and OUTPUT_CSV.stat().st_size > 0
     full_trial_label = str(row["trial_label"]).strip()
     core_trial_label = _extract_core_trial_label(full_trial_label)
 
@@ -382,11 +489,72 @@ def save_score(row: pd.Series, score: int, comment: str) -> None:
         "user_score": score,
         "comment": comment,
     }
+    # Upsert behavior: keep one row per (dataset, fly, fly_number, core trial_label).
+    # This allows review mode to re-score without creating duplicate entries.
+    if OUTPUT_CSV.exists() and OUTPUT_CSV.stat().st_size > 0:
+        try:
+            existing = pd.read_csv(OUTPUT_CSV)
+            required = {"dataset", "fly", "fly_number", "trial_label"}
+            if required.issubset(existing.columns):
+                existing["dataset"] = existing["dataset"].astype(str).str.strip()
+                existing["fly"] = existing["fly"].astype(str).str.strip()
+                existing["fly_number"] = pd.to_numeric(existing["fly_number"], errors="coerce").astype("Int64")
+                existing["trial_label"] = existing["trial_label"].astype(str).str.strip().map(_extract_core_trial_label)
+
+                keep_mask = ~(
+                    (existing["dataset"] == row_data["dataset"]) &
+                    (existing["fly"] == row_data["fly"]) &
+                    (existing["fly_number"] == row_data["fly_number"]) &
+                    (existing["trial_label"] == row_data["trial_label"])
+                )
+                existing = existing[keep_mask].copy()
+                updated = pd.concat([existing, pd.DataFrame([row_data])], ignore_index=True)
+                updated.to_csv(OUTPUT_CSV, index=False)
+                return
+        except Exception:
+            # Fall back to append if parsing/upsert fails for any reason.
+            pass
+
+    file_exists = OUTPUT_CSV.exists() and OUTPUT_CSV.stat().st_size > 0
     with OUTPUT_CSV.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(row_data.keys()))
         if not file_exists:
             writer.writeheader()
         writer.writerow(row_data)
+
+
+def delete_score(row: pd.Series) -> None:
+    """Delete any saved score rows for a specific trial key."""
+    if not (OUTPUT_CSV.exists() and OUTPUT_CSV.stat().st_size > 0):
+        return
+
+    try:
+        df = pd.read_csv(OUTPUT_CSV)
+    except Exception:
+        return
+
+    required = {"dataset", "fly", "fly_number", "trial_label"}
+    if not required.issubset(df.columns):
+        return
+
+    dataset = str(row["dataset"]).strip()
+    fly = str(row["fly"]).strip()
+    fly_number = int(row["fly_number"])
+    core_trial_label = _extract_core_trial_label(str(row["trial_label"]).strip())
+
+    df["dataset"] = df["dataset"].astype(str).str.strip()
+    df["fly"] = df["fly"].astype(str).str.strip()
+    df["fly_number"] = pd.to_numeric(df["fly_number"], errors="coerce").astype("Int64")
+    df["trial_label"] = df["trial_label"].astype(str).str.strip().map(_extract_core_trial_label)
+
+    keep_mask = ~(
+        (df["dataset"] == dataset)
+        & (df["fly"] == fly)
+        & (df["fly_number"] == fly_number)
+        & (df["trial_label"] == core_trial_label)
+    )
+    df = df[keep_mask].copy()
+    df.to_csv(OUTPUT_CSV, index=False)
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +569,9 @@ class BlindedVideoScoringApp:
         dir_val_cols: list[str],
         video_paths: list[Path],
         scored_keys: set[tuple[str, str, int, str]],
+        existing_scores_map: dict[tuple[str, str, int, str], dict[str, object]],
         show_skipped: bool = False,
+        review_score: int | None = None,
     ) -> None:
         self.master = master
         self.df = df
@@ -409,11 +579,19 @@ class BlindedVideoScoringApp:
         self.video_paths = video_paths
         self.total = len(df)
         self.show_skipped = show_skipped
+        self.review_score = review_score
+        self.existing_scores_map = existing_scores_map
 
         # Load persistent skipped trials
         self.skipped_keys: set[tuple[str, str, int, str]] = load_skipped_trials()
 
-        if self.show_skipped:
+        if self.review_score is not None:
+            # Review only trials currently scored with this label.
+            self.pending_indices = [
+                idx for idx in range(self.total)
+                if self._existing_score_for_idx(idx) == self.review_score
+            ]
+        elif self.show_skipped:
             # Show ONLY previously skipped trials (that haven't been scored yet)
             self.pending_indices: list[int] = [
                 idx for idx in range(self.total)
@@ -514,19 +692,19 @@ class BlindedVideoScoringApp:
         score_frame = tk.Frame(self.master, bg="#f8f8fb")
         score_frame.pack(fill=tk.X, padx=16, pady=(8, 4))
 
-        tk.Label(score_frame, text="Score (0–5):", font=("Helvetica", 22, "bold"),
+        tk.Label(score_frame, text="Score (-1 to 5):", font=("Helvetica", 22, "bold"),
                  bg="#f8f8fb").pack(side=tk.LEFT, padx=(0, 16))
 
-        self.score_var = tk.IntVar(value=-1)
-        self._score_buttons: list[tk.Button] = []
-        for val in range(6):
+        self.score_var = tk.IntVar(value=NO_SCORE)
+        self._score_buttons: dict[int, tk.Button] = {}
+        for val in [-1, 0, 1, 2, 3, 4, 5]:
             btn = tk.Button(
                 score_frame, text=str(val), font=("Helvetica", 28, "bold"),
                 width=3, height=1, relief="raised", bd=3,
                 command=lambda v=val: self._select_score(v),
             )
             btn.pack(side=tk.LEFT, padx=6)
-            self._score_buttons.append(btn)
+            self._score_buttons[val] = btn
 
         # Or type a score directly
         tk.Label(score_frame, text="  or type:", font=("Helvetica", 20),
@@ -568,21 +746,48 @@ class BlindedVideoScoringApp:
             command=self._on_replay,
         )
         self.replay_btn.grid(row=0, column=1, padx=12)
+        self.back_btn = tk.Button(
+            btn_frame, text="Back", font=("Helvetica", 22, "bold"),
+            width=10, height=1, bg="#7E57C2", fg="white", relief="raised", bd=3,
+            command=self._on_back,
+        )
+        self.back_btn.grid(row=0, column=2, padx=12)
         self.skip_btn = tk.Button(
             btn_frame, text="Skip", font=("Helvetica", 22, "bold"),
             width=10, height=1, bg="#FF9800", fg="white", relief="raised", bd=3,
             command=self._on_skip,
         )
-        self.skip_btn.grid(row=0, column=2, padx=12)
+        self.skip_btn.grid(row=0, column=3, padx=12)
+        self.clear_btn = tk.Button(
+            btn_frame, text="Clear Score", font=("Helvetica", 22, "bold"),
+            width=12, height=1, bg="#795548", fg="white", relief="raised", bd=3,
+            command=self._on_clear_score,
+        )
+        self.clear_btn.grid(row=0, column=4, padx=12)
         self.exit_btn = tk.Button(
             btn_frame, text="Save & Exit", font=("Helvetica", 22, "bold"),
             width=12, height=1, bg="#f44336", fg="white", relief="raised", bd=3,
             command=self._on_exit,
         )
-        self.exit_btn.grid(row=0, column=3, padx=12)
+        self.exit_btn.grid(row=0, column=5, padx=12)
 
-        # Bind Enter to submit
-        self.master.bind("<Return>", lambda _: self._on_submit())
+        # Clear is only meaningful in review mode.
+        if self.review_score is None:
+            self.clear_btn.config(state=tk.DISABLED)
+
+        # Safer keyboard shortcut: Ctrl+Enter submits; plain Enter does not.
+        self.master.bind("<Control-Return>", lambda _: self._on_submit())
+
+        self.submit_hint = tk.Label(
+            self.master,
+            text="Tip: Click Submit, or press Ctrl+Enter (Enter alone will not submit).",
+            bg="#f8f8fb",
+            font=("Helvetica", 12),
+        )
+        self.submit_hint.pack(anchor="w", padx=16, pady=(0, 6))
+
+        # Guard against rapid double-submit / re-entrancy when users click quickly.
+        self.busy = False
 
         # Focus the score entry so user can just type a number right away
         self.score_entry.focus_set()
@@ -593,6 +798,12 @@ class BlindedVideoScoringApp:
                 "Skipped Trials Mode",
                 f"Showing {len(self.pending_indices)} previously skipped trials.\n"
                 f"Score them now — they'll be removed from the skipped list once scored.",
+            )
+        elif self.review_score is not None:
+            messagebox.showinfo(
+                "Review Mode",
+                f"Showing {len(self.pending_indices)} previously scored trial(s) with score {self.review_score}.\n"
+                "You can confirm labels or re-score; updates overwrite existing entries.",
             )
         elif self.already_scored > 0:
             messagebox.showinfo(
@@ -609,21 +820,30 @@ class BlindedVideoScoringApp:
 
     # ---- Score helpers ----
 
+    def _existing_score_for_idx(self, idx: int) -> int | None:
+        info = self.existing_scores_map.get(trial_key(self.df.iloc[idx]))
+        if info is None:
+            return None
+        try:
+            return int(info.get("user_score"))
+        except Exception:
+            return None
+
     def _select_score(self, val: int) -> None:
         self.score_var.set(val)
         self.score_entry_var.set(str(val))
         self._highlight_score_button(val)
 
     def _highlight_score_button(self, val: int) -> None:
-        for i, btn in enumerate(self._score_buttons):
-            if i == val:
+        for score_value, btn in self._score_buttons.items():
+            if score_value == val:
                 btn.configure(bg="#2196F3", fg="white", relief="sunken")
             else:
                 btn.configure(bg="#d9d9d9", fg="black", relief="raised")
 
     def _on_score_entry_changed(self, *_args: object) -> None:
         raw = self.score_entry_var.get().strip()
-        if raw in ("0", "1", "2", "3", "4", "5"):
+        if raw in ("-1", "0", "1", "2", "3", "4", "5"):
             val = int(raw)
             self.score_var.set(val)
             self._highlight_score_button(val)
@@ -771,10 +991,24 @@ class BlindedVideoScoringApp:
         self.frame_counter = 0
 
         # Reset controls
-        self.score_var.set(-1)
+        self.score_var.set(NO_SCORE)
         self.score_entry_var.set("")
-        self._highlight_score_button(-1)  # unhighlight all
+        self._highlight_score_button(NO_SCORE)  # unhighlight all
         self.comment_var.set("")
+
+        # In review mode, prefill existing score/comment for quick confirmation.
+        if self.review_score is not None:
+            info = self.existing_scores_map.get(trial_key(row))
+            if info is not None:
+                try:
+                    prev_score = int(info.get("user_score"))
+                except Exception:
+                    prev_score = NO_SCORE
+                if prev_score in {-1, 0, 1, 2, 3, 4, 5}:
+                    self.score_var.set(prev_score)
+                    self.score_entry_var.set(str(prev_score))
+                    self._highlight_score_button(prev_score)
+                self.comment_var.set(str(info.get("comment", "")))
         self.submit_btn.config(state=tk.NORMAL)
         self.score_entry.focus_set()
 
@@ -783,6 +1017,13 @@ class BlindedVideoScoringApp:
         self.progress_text.config(
             text=f"Trial {scored_so_far + 1} of {self.total}  —  Fly #{fly_number}"
         )
+        if self.review_score is not None:
+            self.progress_text.config(
+                text=(
+                    f"Review score {self.review_score}: {self.current_pending_pos + 1}"
+                    f" of {len(self.pending_indices)}  —  Fly #{fly_number}"
+                )
+            )
 
         # Start playback
         if self.cap is not None:
@@ -790,27 +1031,68 @@ class BlindedVideoScoringApp:
             self.master.after(0, self._advance)
 
     def _on_submit(self) -> None:
-        score = self.score_var.get()
-        if score < 0:
-            messagebox.showwarning("Select a score", "Please select a score (0–5).")
+        if self.busy:
             return
+
+        score = self.score_var.get()
+        if score == NO_SCORE:
+            messagebox.showwarning("Select a score", "Please select a score (-1 to 5).")
+            return
+
+        self.busy = True
         self.playing = False
+        self.submit_btn.config(state=tk.DISABLED)
+        self.replay_btn.config(state=tk.DISABLED)
+        self.back_btn.config(state=tk.DISABLED)
+        self.skip_btn.config(state=tk.DISABLED)
+        self.clear_btn.config(state=tk.DISABLED)
+        self.progress_text.config(text="Saving score and loading next trial …")
 
-        idx = self.pending_indices[self.current_pending_pos]
-        row = self.df.iloc[idx]
-        save_score(row, score, self.comment_var.get().strip())
+        # Queue save/advance so Tk can repaint and remain responsive.
+        self.master.after(1, lambda: self._save_and_advance(score))
 
-        # Remove from skipped set once scored
-        key = trial_key(row)
-        if key in self.skipped_keys:
-            self.skipped_keys.discard(key)
-            save_skipped_trials(self.skipped_keys)
+    def _save_and_advance(self, score: int) -> None:
+        try:
+            idx = self.pending_indices[self.current_pending_pos]
+            row = self.df.iloc[idx]
+            save_score(row, score, self.comment_var.get().strip())
+            self.existing_scores_map[trial_key(row)] = {
+                "user_score": score,
+                "comment": self.comment_var.get().strip(),
+            }
 
-        self.current_pending_pos += 1
-        if self.current_pending_pos >= len(self.pending_indices):
-            self._show_completion()
-        else:
-            self._show_current_trial()
+            # Remove from skipped set once scored
+            key = trial_key(row)
+            if key in self.skipped_keys:
+                self.skipped_keys.discard(key)
+                save_skipped_trials(self.skipped_keys)
+
+            self.current_pending_pos += 1
+            if self.current_pending_pos >= len(self.pending_indices):
+                self._show_completion()
+            else:
+                self._show_current_trial()
+        finally:
+            self.busy = False
+            if self.current_pending_pos < len(self.pending_indices):
+                self.submit_btn.config(state=tk.NORMAL)
+                self.replay_btn.config(state=tk.NORMAL)
+                self.back_btn.config(state=tk.NORMAL)
+                self.skip_btn.config(state=tk.NORMAL)
+                if self.review_score is not None:
+                    self.clear_btn.config(state=tk.NORMAL)
+
+    def _on_back(self) -> None:
+        """Go to the previous trial in the current session order."""
+        if self.busy:
+            return
+        if self.current_pending_pos <= 0:
+            messagebox.showinfo("At first trial", "You are already at the first trial in this session.")
+            return
+
+        self.playing = False
+        self.current_pending_pos -= 1
+        self._show_current_trial()
 
     def _on_replay(self) -> None:
         if self.cap is None:
@@ -836,6 +1118,50 @@ class BlindedVideoScoringApp:
             self._show_completion()
         else:
             self._show_current_trial()
+
+    def _on_clear_score(self) -> None:
+        """In review mode, clear current trial score from CSV and move forward."""
+        if self.busy:
+            return
+        if self.review_score is None:
+            return
+
+        idx = self.pending_indices[self.current_pending_pos]
+        row = self.df.iloc[idx]
+        if not messagebox.askyesno(
+            "Clear score",
+            "Clear saved score for this trial and move to next?",
+        ):
+            return
+
+        self.busy = True
+        self.playing = False
+        self.submit_btn.config(state=tk.DISABLED)
+        self.replay_btn.config(state=tk.DISABLED)
+        self.back_btn.config(state=tk.DISABLED)
+        self.skip_btn.config(state=tk.DISABLED)
+        self.clear_btn.config(state=tk.DISABLED)
+        self.progress_text.config(text="Clearing score and loading next trial …")
+
+        try:
+            delete_score(row)
+            key = trial_key(row)
+            if key in self.existing_scores_map:
+                del self.existing_scores_map[key]
+
+            self.current_pending_pos += 1
+            if self.current_pending_pos >= len(self.pending_indices):
+                self._show_completion()
+            else:
+                self._show_current_trial()
+        finally:
+            self.busy = False
+            if self.current_pending_pos < len(self.pending_indices):
+                self.submit_btn.config(state=tk.NORMAL)
+                self.replay_btn.config(state=tk.NORMAL)
+                self.back_btn.config(state=tk.NORMAL)
+                self.skip_btn.config(state=tk.NORMAL)
+                self.clear_btn.config(state=tk.NORMAL)
 
     def _show_completion(self) -> None:
         self.playing = False
@@ -876,7 +1202,17 @@ def main() -> None:
         "--show-skipped", action="store_true",
         help="Show only previously skipped trials so you can score them",
     )
+    parser.add_argument(
+        "--review-score",
+        type=int,
+        choices=[-1, 0, 1, 2, 3, 4, 5],
+        default=None,
+        help="Show only trials previously scored with this value, so you can confirm/re-score them",
+    )
     args = parser.parse_args()
+
+    # Keep persisted artifacts consistent before loading state.
+    cleanup_score_and_skipped_files()
 
     # 1. Load & filter
     df = load_data()
@@ -920,12 +1256,22 @@ def main() -> None:
     save_seed_info(seed, order)
 
     # 4. Resume
-    scored_keys = load_existing_scores()
+    existing_scores_map = load_existing_scores_map()
+    scored_keys = set(existing_scores_map.keys())
     print(f"  Already scored: {len(scored_keys)}")
 
     # 5. Launch
     root = tk.Tk()
-    BlindedVideoScoringApp(root, df_shuffled, dir_val_cols, video_paths_shuffled, scored_keys, show_skipped=args.show_skipped)
+    BlindedVideoScoringApp(
+        root,
+        df_shuffled,
+        dir_val_cols,
+        video_paths_shuffled,
+        scored_keys,
+        existing_scores_map,
+        show_skipped=args.show_skipped,
+        review_score=args.review_score,
+    )
     root.mainloop()
 
 
