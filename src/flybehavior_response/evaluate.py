@@ -404,6 +404,20 @@ def perform_cross_validation(
 
 
 def load_pipeline(path: Path):
+    path = Path(path)
+    # XGBoost JSON model — load as XGBClassifier (sklearn-compatible API)
+    if path.suffix.lower() == ".json":
+        try:
+            import xgboost as xgb
+        except ImportError as exc:
+            raise RuntimeError(
+                f"Model file {path.name} is JSON (XGBoost format) but xgboost is not installed."
+            ) from exc
+        clf = xgb.XGBClassifier()
+        clf.load_model(str(path))
+        return clf
+
+    # Default: joblib model (trusted local artifacts only)
     try:
         return load(path)
     except ValueError as exc:

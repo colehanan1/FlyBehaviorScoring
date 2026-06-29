@@ -1183,6 +1183,50 @@ def _handle_predict(args: argparse.Namespace) -> None:
 
     feature_df = filtered_df.drop(columns=[LABEL_COLUMN, LABEL_INTENSITY_COLUMN], errors="ignore")
 
+    # If model declares its feature names, check if signal feature engineering is needed
+    model_features = getattr(model, "feature_names_in_", None)
+    if model_features is None and hasattr(model, "get_booster"):
+        try:
+            model_features = model.get_booster().feature_names
+        except Exception:
+            pass
+    if model_features is not None:
+        missing = [f for f in model_features if f not in feature_df.columns]
+        if missing:
+            # Check if we can compute missing features from dir_val_* trace columns
+            dir_val_cols = [c for c in feature_df.columns if c.startswith("dir_val_")]
+            if dir_val_cols:
+                try:
+                    from flybehavior_response.xgb_ordinal import preprocess_features, SIGNAL_FEATURES
+                    signal_missing = [f for f in missing if f in SIGNAL_FEATURES]
+                    if signal_missing:
+                        logger.info(
+                            "Computing %d signal features from %d dir_val_* trace columns",
+                            len(signal_missing), len(dir_val_cols),
+                        )
+                        feature_df = preprocess_features(feature_df)
+                        # Re-check missing after feature engineering
+                        still_missing = [f for f in model_features if f not in feature_df.columns]
+                        if still_missing:
+                            logger.warning("Still missing after feature engineering: %s", still_missing)
+                except ImportError:
+                    logger.warning("xgb_ordinal module not available; cannot compute signal features")
+                except Exception as exc:
+                    logger.warning("Signal feature computation failed: %s", exc)
+            else:
+                logger.warning("Model expects features not in data and no dir_val_* traces available: %s", missing[:10])
+
+        # Select only model features
+        available = [f for f in model_features if f in feature_df.columns]
+        feature_df = feature_df[available]
+        logger.info("Selected %d/%d model features", len(available), len(model_features))
+    else:
+        # Fallback: drop non-numeric columns
+        non_numeric = feature_df.select_dtypes(exclude=["number", "bool"]).columns.tolist()
+        if non_numeric:
+            logger.info("Dropping %d non-numeric columns: %s", len(non_numeric), non_numeric[:10])
+            feature_df = feature_df.drop(columns=non_numeric)
+
     logger.info(
         "Scoring %d row(s) with model %s", len(filtered_df), args.model_path.name
     )

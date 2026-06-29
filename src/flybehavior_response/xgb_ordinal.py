@@ -89,6 +89,24 @@ def interpolate_nans(trace: np.ndarray) -> np.ndarray:
     return x
 
 
+def _welch_psd(x: np.ndarray, fps: float) -> tuple[np.ndarray, np.ndarray]:
+    """Welch PSD that degrades gracefully for very short segments.
+
+    Per-trial odor timing and ``n_frames`` truncation can collapse a slice down
+    to zero or one sample (e.g. a trial whose real duration is shorter than its
+    configured odor-off time). ``scipy.signal.welch`` requires
+    ``noverlap < nperseg`` and ``nperseg >= 1``, so for segments shorter than 2
+    samples a flat zero spectrum is returned instead of raising. The overlap is
+    always clamped strictly below ``nperseg`` to preserve that invariant.
+    """
+    n = len(x)
+    if n < 2:
+        return np.zeros(1), np.zeros(1)
+    nperseg = min(256, n)
+    noverlap = min(nperseg - 1, max(nperseg // 2, 1))
+    return scipy_signal.welch(x, fs=fps, nperseg=nperseg, noverlap=noverlap)
+
+
 def band_power(psd: np.ndarray, freqs: np.ndarray, fmin: float, fmax: float) -> float:
     """Sum PSD values within [fmin, fmax)."""
     m = (freqs >= fmin) & (freqs < fmax)
@@ -97,24 +115,50 @@ def band_power(psd: np.ndarray, freqs: np.ndarray, fmin: float, fmax: float) -> 
     return float(np.sum(psd[m]))
 
 
-def compute_signal_features(trace: np.ndarray, fps: int = FPS) -> Dict[str, float]:
+def compute_signal_features(
+    trace: np.ndarray,
+    fps: float = FPS,
+    *,
+    odor_on_idx: int | None = None,
+    odor_off_idx: int | None = None,
+    n_frames: int | None = None,
+) -> Dict[str, float]:
     """Compute 13 signal-derived features from a behavioural trace.
 
     Parameters
     ----------
     trace : 1-D array
-        Raw distance/angle trace (e.g. 3600 frames at 40 fps).
-    fps : int
-        Frames per second.
-
-    Returns
-    -------
-    dict with keys matching ``SIGNAL_FEATURES``.
+        Raw distance/angle trace.
+    fps : float
+        Frames per second (per-trial when known, else ``FPS``).
+    odor_on_idx, odor_off_idx : int, optional
+        Per-trial odor-on / odor-off frame indices. When omitted the legacy
+        constants (``ODOR_ON_IDX=1280``, ``ODOR_OFF_IDX=2480``) are used —
+        appropriate for the 90 s / 30 s-odor schedule the model was trained
+        on. For datasets recorded under a different schedule (e.g. RandomPanel
+        with ~40 s trials and a ~10 s odor) the caller must pass the actual
+        per-trial indices so before / during / after slices are correct.
+    n_frames : int, optional
+        Real recording length. If given, the trace is truncated here so that
+        the trailing NaN / zero padding ``dir_val_*`` columns acquire when the
+        wide-matrix time axis is longer than the trial does not pollute
+        baseline / post-odor statistics.
     """
+
     tr = interpolate_nans(trace)
-    before = tr[:ODOR_ON_IDX]
-    during = tr[ODOR_ON_IDX:ODOR_OFF_IDX]
-    after = tr[ODOR_OFF_IDX:]
+    if n_frames is not None and n_frames > 0:
+        tr = tr[: int(n_frames)]
+    total = len(tr)
+
+    on_idx = int(odor_on_idx) if odor_on_idx is not None else ODOR_ON_IDX
+    off_idx = int(odor_off_idx) if odor_off_idx is not None else ODOR_OFF_IDX
+    # Clamp into the real trace bounds; preserve before < during < after
+    on_idx = max(0, min(on_idx, max(total - 1, 0)))
+    off_idx = max(on_idx + 1, min(off_idx, total))
+
+    before = tr[:on_idx]
+    during = tr[on_idx:off_idx]
+    after = tr[off_idx:]
 
     eps = 1e-10
     b_mean, b_std = float(np.mean(before)), float(np.std(before))
@@ -124,18 +168,8 @@ def compute_signal_features(trace: np.ndarray, fps: int = FPS) -> Dict[str, floa
     auc_before = float(np.trapz(before)) / max(len(before), 1)
     auc_during = float(np.trapz(during)) / max(len(during), 1)
 
-    f_b, pxx_b = scipy_signal.welch(
-        before - b_mean,
-        fs=fps,
-        nperseg=min(256, len(before)),
-        noverlap=min(128, max(len(before) // 2, 1)),
-    )
-    f_d, pxx_d = scipy_signal.welch(
-        during - d_mean,
-        fs=fps,
-        nperseg=min(256, len(during)),
-        noverlap=min(128, max(len(during) // 2, 1)),
-    )
+    f_b, pxx_b = _welch_psd(before - b_mean, fps)
+    f_d, pxx_d = _welch_psd(during - d_mean, fps)
 
     out: Dict[str, float] = {}
     out["mean_shift_z"] = (d_mean - b_mean) / (b_std + eps)
@@ -165,12 +199,19 @@ def compute_signal_features(trace: np.ndarray, fps: int = FPS) -> Dict[str, floa
 # ---------------------------------------------------------------------------
 
 
-def preprocess_features(df: pd.DataFrame, fps: int = FPS) -> pd.DataFrame:
+def preprocess_features(df: pd.DataFrame, fps: float = FPS) -> pd.DataFrame:
     """Build the (N, 24) feature matrix from a wide-format DataFrame.
 
     The input *df* must contain:
     - The 11 engineered feature columns (``ENGINEERED_FEATURES``)
     - ``dir_val_*`` trace columns for signal feature computation
+
+    Optional per-row columns honoured when present (added by the upstream
+    pipeline ``build_wide_csv`` so each trial's actual rig timing is used
+    instead of the legacy 32 / 62 s constants):
+    - ``trial_odor_on_s`` / ``trial_odor_off_s`` — odor on / off in seconds
+    - ``trial_duration_s`` — real recording length in seconds
+    - ``fps`` — per-trial fps (defaults to ``FPS`` when missing)
 
     Returns a DataFrame with columns ordered as ``ALL_FEATURES``.
     """
@@ -188,10 +229,33 @@ def preprocess_features(df: pd.DataFrame, fps: int = FPS) -> pd.DataFrame:
     if not dir_cols:
         raise ValueError("No dir_val_* trace columns found in input DataFrame.")
 
+    has_on = "trial_odor_on_s" in df.columns
+    has_off = "trial_odor_off_s" in df.columns
+    has_dur = "trial_duration_s" in df.columns
+    has_fps = "fps" in df.columns
+
     signal_rows = []
     for _, row in df.iterrows():
         trace = row[dir_cols].values.astype(float)
-        signal_rows.append(compute_signal_features(trace, fps=fps))
+        row_fps = float(row["fps"]) if has_fps and pd.notna(row["fps"]) and float(row["fps"]) > 0 else float(fps)
+        on_idx: int | None = None
+        off_idx: int | None = None
+        n_frames: int | None = None
+        if has_on and pd.notna(row["trial_odor_on_s"]):
+            on_idx = max(0, int(round(float(row["trial_odor_on_s"]) * row_fps)))
+        if has_off and pd.notna(row["trial_odor_off_s"]):
+            off_idx = int(round(float(row["trial_odor_off_s"]) * row_fps))
+        if has_dur and pd.notna(row["trial_duration_s"]):
+            n_frames = int(round(float(row["trial_duration_s"]) * row_fps))
+        signal_rows.append(
+            compute_signal_features(
+                trace,
+                fps=row_fps,
+                odor_on_idx=on_idx,
+                odor_off_idx=off_idx,
+                n_frames=n_frames,
+            )
+        )
     X_sig = pd.DataFrame(signal_rows)[SIGNAL_FEATURES].reset_index(drop=True)
 
     X = pd.concat([X_eng, X_sig], axis=1)
