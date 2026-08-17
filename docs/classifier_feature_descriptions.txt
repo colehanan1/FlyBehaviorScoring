@@ -1,0 +1,331 @@
+================================================================================
+FEATURE SET SUPPLIED TO THE TRIAL-LEVEL PER CLASSIFIER
+Verified descriptions for thesis Table `tab:classifier-features`
+================================================================================
+Written: 2026-07-29
+Verified against:
+  - outputs/combined_signal_engineered/model_combined_xgb.json  (deployed model)
+  - notebooks/04_combined_signal_engineered_multiclass.ipynb    (training)
+  - src/flybehavior_response/xgb_ordinal.py                     (inference)
+  - data/all_envelope_rows_wide_combined_base.csv               (feature table)
+  - ../Ramanlab-Auto-Data-Analysis/scripts/analysis/envelope_combined.py
+        (upstream pipeline that computes the envelope + engineered columns)
+
+--------------------------------------------------------------------------------
+0. WHAT THE MODEL ACTUALLY RECEIVES  (verified)
+--------------------------------------------------------------------------------
+The saved booster's `learner.feature_names` is exactly 24 columns, in this order:
+
+  engineered / "envelope" family (11):
+    AUC-During-Before-Ratio, AUC-After-Before-Ratio, global_max,
+    trimmed_global_min, local_min, local_max, local_min_before,
+    local_max_before, local_min_during, local_max_over_global_min,
+    local_max_during_over_global_min
+
+  signal family (13):
+    mean_shift_z, std_ratio, peak_z, auc_ratio, total_power_ratio,
+    power_ratio_vlow, power_ratio_low, power_ratio_mid, power_ratio_high,
+    power_ratio_vhigh, frac_above_baseline, persistence, time_to_peak_frac
+
+Objective: multi:softmax, num_class = 7 (scores -1,0,1,2,3,4,5; 6 remapped to 5).
+Ablation arms in outputs/combined_signal_engineered/model_comparison_metrics.csv
+are exactly `engineered_only_xgb` (the 11) and `signal_only_xgb` (the 13), so the
+two families in the table match the ablation.
+
+=> THE FEATURE LIST IN YOUR DRAFT TABLE IS CORRECT. Several of the *definitions*
+   are not. Corrections are in section 4.
+
+Columns present in the wide CSV but NOT fed to the model (do not list them):
+    global_min, trimmed_global_max, local_max_during, before_std_from_median,
+    AUC-Before, AUC-During, AUC-After, TimeToPeak-During, Peak-Value,
+    non_reactive_flag, low_max_flag, tracking_*, trace_len
+  Note in particular that `local_max_during` itself is NOT a model input, even
+  though the derived ratio `local_max_during_over_global_min` is.
+
+--------------------------------------------------------------------------------
+1. THE UNDERLYING TRACE  (this is what "envelope" means)
+--------------------------------------------------------------------------------
+Every trial contributes one 1-D trace, stored in the wide CSV as `dir_val_0 ...
+dir_val_6226` and produced by the upstream pipeline as the column
+`envelope_of_rms`. It is built as:
+
+  1. d_px       : per-frame Euclidean eye->proboscis distance in pixels, from the
+                  class-2 DeepLabCut/tracking output, valid range 10-250 px.
+  2. multiplier : a continuous 1.0-2.0 weight derived from the centred proboscis
+                  *angle* percentage, m = 1 + ln(1 + (angle%/100)(e-1)) for
+                  positive angles, 1.0 otherwise. Extensions directed toward the
+                  odour port are therefore up-weighted up to 2x.
+  3. d_px_weighted = d_px * multiplier.
+  4. combined_pct = 100 * (d_px_weighted - gmin_fly) / (max(gmax_fly, 150 px)
+                    - gmin_fly), i.e. min-max normalisation to 0-100 using
+                    per-fly (per fly-number) weighted bounds, with a 150 px floor
+                    on the upper bound.
+  5. rolling RMS over a 0.25 s centred window (10 frames at 40 fps).
+  6. Hilbert analytic-signal magnitude of that RMS, smoothed by the same 0.25 s
+     centred rolling mean  ->  `envelope_of_rms`.
+
+CONSEQUENCE FOR THE TABLE: the envelope is in *normalised units, 0-100 % of the
+fly's angle-weighted extension range* -- NOT pixels. Empirically the dir_val_*
+matrix spans exactly [0, 100] (median 9.96). Any caption or definition that says
+"extension in px" for local_*/global-style envelope features is wrong.
+
+The ONLY features carrying true pixel units are `global_max` and
+`trimmed_global_min` (see section 4), which are per-fly raw-distance statistics.
+
+Recording length: traces are 40 fps and ~6000 frames (~150 s); the wide matrix is
+padded to 6227 columns with trailing NaN, and `interpolate_nans` holds the last
+finite value across that padding.
+
+--------------------------------------------------------------------------------
+2. EPOCH DEFINITIONS  (two families use slightly different bounds -- verified)
+--------------------------------------------------------------------------------
+SIGNAL family (notebook 04 and xgb_ordinal.py):
+    ODOR_ON_SEC = 32, ODOR_OFF_SEC = 62, FPS = 40
+    before : frames 0-1280      =  0-32 s
+    during : frames 1280-2480   = 32-62 s   (30 s odorant presentation)
+    after  : frames 2480-end    = 62 s to the end of the recording (~150 s)
+  The "after" window is therefore the whole post-odour remainder (~88 s), not a
+  30 s block. Only `persistence` uses it.
+
+ENGINEERED family (upstream envelope_combined.py, legacy frame constants):
+    BEFORE_FRAMES = 1260, DURING_FRAMES = 1200, AFTER_FRAMES = 1200
+    before : frames 0-1260      =  0.0-31.5 s
+    during : frames 1260-2460   = 31.5-61.5 s
+    after  : frames 2460-3660   = 61.5-91.5 s
+  So the engineered AUC ratios use a bounded 30 s post-odour window, offset by
+  ~0.5 s from the signal-family bounds.
+
+CONSEQUENCE FOR THE TABLE: the caption "three 30 s trial periods: before
+(0-30 s), during (30-60 s), after (60-90 s)" is wrong on all three counts.
+Suggested caption wording is given in section 5.
+
+(The newer pipeline can override these per trial from rig sidecars via
+`trial_odor_on_s` / `trial_odor_off_s` / `trial_duration_s`; those columns are
+absent from the training CSV, so the constants above are what the trained model
+actually saw.)
+
+--------------------------------------------------------------------------------
+3. POST-PROCESSING APPLIED TO THE FEATURE MATRIX
+--------------------------------------------------------------------------------
+After assembly (`preprocess_features`): +/-inf -> NaN, then every column is
+median-imputed with the column median of the batch being scored. This matters
+for the two AUC ratios, which are NaN whenever the pre-odour supra-threshold area
+is zero: only 2783 / 4394 rows have a finite AUC-During-Before-Ratio, so ~37 % of
+rows receive the median for those two features.
+
+--------------------------------------------------------------------------------
+4. PER-FEATURE VERIFIED DEFINITIONS
+--------------------------------------------------------------------------------
+
+--- ENGINEERED / ENVELOPE FAMILY (11) ------------------------------------------
+
+global_max
+  Per-FLY maximum eye->proboscis distance in PIXELS, read from the cached
+  class-2 distance-statistics sidecar for that fly/slot (falls back to the
+  observed envelope span when the sidecar is missing). Constant across all trials
+  of a fly; it is a rig/animal-scale covariate, not a trial-level response.
+  Observed range 39.9-250.0 px.
+  [DRAFT SAID: "Maximum of the extension in pxs over the whole trial" -- wrong on
+   both "whole trial" (it is per fly) and on it being a trial-level quantity.]
+
+trimmed_global_min
+  Per-FLY retracted-baseline estimate in PIXELS: the 0.01th percentile of all
+  raw class-2 eye->proboscis distances pooled over that fly's trials (fallback:
+  1st percentile of the envelope samples). Also constant within a fly.
+  Observed range 18.2-100.9 px.
+  [DRAFT was broadly right but implied per-trial; state that it is per fly and
+   that the trimming is percentile-based on the raw pixel distances.]
+
+local_min
+  Minimum of the envelope over the WHOLE trial (all finite frames), normalised
+  units.
+  [DRAFT SAID "within the stimulus epoch" -- WRONG. It is whole-trial.]
+
+local_max
+  Maximum of the envelope over the WHOLE trial (all finite frames), normalised
+  units.
+  [DRAFT SAID "within the stimulus epoch" -- WRONG. It is whole-trial.]
+
+local_min_before
+  Minimum of the envelope within the pre-odour epoch (frames 0-1260). Correct in
+  draft.
+
+local_max_before
+  Maximum of the envelope within the pre-odour epoch (frames 0-1260). Correct in
+  draft.
+
+local_min_during
+  Minimum of the envelope within the odour epoch (frames 1260-2460). Correct in
+  draft.
+
+local_max_over_global_min
+  local_max (WHOLE-TRIAL envelope maximum, normalised units) divided by the
+  fly-level trimmed minimum (pixels). A dimensionless extension index; note it
+  deliberately mixes the normalised envelope numerator with the pixel-scale
+  denominator, so it is a scale-corrected ratio rather than a physical ratio.
+  [DRAFT SAID "stimulus-epoch maximum" -- WRONG, it is the whole-trial maximum.]
+
+local_max_during_over_global_min
+  local_max_during (maximum of the envelope within the odour epoch) divided by
+  the same fly-level trimmed minimum. Same mixed-unit caveat.
+  [Draft correct apart from the unit caveat. This is the 2nd most important
+   feature by permutation importance.]
+
+AUC-During-Before-Ratio
+  Ratio of the SUPRA-THRESHOLD envelope area during odour to that before odour.
+  The area is sum(max(env - threshold, 0)) * dt over the epoch, where
+  threshold = (fly-level median of all pre-odour envelope samples) + 3 * sigma,
+  and sigma = 1.4826 * MAD of THIS trial's pre-odour window. Undefined (NaN,
+  later median-imputed) whenever the pre-odour area is zero.
+  [DRAFT SAID "area under the curve" -- must say supra-threshold area, and the
+   threshold definition matters.]
+
+AUC-After-Before-Ratio
+  Same construction for the post-odour epoch (frames 2460-3660, 61.5-91.5 s)
+  over the pre-odour epoch.
+
+--- SIGNAL FAMILY (13) ---------------------------------------------------------
+All computed from the same envelope trace, on the 32 / 62 s epoch bounds, after
+linear interpolation of NaN gaps. eps = 1e-10 guards every denominator.
+
+mean_shift_z
+  (mean of during - mean of before) / SD of before. Correct in draft.
+
+std_ratio
+  SD of during / SD of before. Correct in draft.
+
+peak_z
+  (max of during - mean of before) / SD of before. Correct in draft.
+
+auc_ratio
+  Ratio of the MEAN-NORMALISED trapezoidal area of the during epoch to that of
+  the before epoch, i.e. trapz(seg)/len(seg) for each epoch. Because of the
+  length normalisation this is effectively a ratio of mean envelope levels, and
+  it is NOT thresholded (unlike AUC-During-Before-Ratio above).
+  [Draft's "ratio of during-odour to pre-odour trace area" is misleading without
+   the per-frame normalisation; also worth distinguishing from the engineered
+   AUC ratio, which is a different quantity with the same name.]
+
+total_power_ratio
+  Sum of the five band powers below for the during epoch divided by the same sum
+  for the before epoch -- i.e. the 0-10 Hz total-power ratio. It is the sum of
+  the band powers, not an independently integrated broadband power.
+
+power_ratio_vlow / low / mid / high / vhigh
+  During/before ratio of Welch power summed over the half-open bands
+  [0, 0.5), [0.5, 1), [1, 3), [3, 5), [5, 10) Hz.
+  Welch parameters: each epoch is mean-subtracted first; nperseg = min(256, n),
+  50 % overlap, fs = 40 Hz (so ~0.156 Hz resolution). Band powers are plain sums
+  of PSD bins in the band. Draft bands are correct.
+
+frac_above_baseline
+  Fraction of odour-epoch frames exceeding (mean of before + 2 * SD of before).
+  Correct in draft.
+
+persistence
+  (mean of after - mean of before) / (mean of during - mean of before).
+  A dimensionless RETENTION ratio: what fraction of the odour-evoked mean shift
+  is still present after odour offset. It is unbounded and can be negative, and
+  "after" here is 62 s to the end of the recording.
+  [DRAFT SAID "Duration for which extension remained above threshold once
+   exceeded" -- COMPLETELY WRONG. This is the single most important correction
+   in the table; it is a ratio, not a duration, and no threshold is involved.]
+
+time_to_peak_frac
+  argmax of the during epoch divided by the number of during-epoch frames, i.e.
+  latency to peak as a fraction of the odour epoch. Correct in draft.
+
+--------------------------------------------------------------------------------
+5. SUGGESTED REPLACEMENT CAPTION
+--------------------------------------------------------------------------------
+  Feature set supplied to the trial-level PER classifier. All features are
+  derived from a single per-trial trace: the Hilbert envelope of a 0.25 s
+  rolling RMS of the angle-weighted eye-to-proboscis distance, min-max
+  normalised per fly to 0-100 (arbitrary units, a.u.). Signal-family epochs are
+  before (pre-odour baseline, 0-32 s), during (odorant presentation, 32-62 s)
+  and after (post-odour, 62 s to the end of the ~150 s recording);
+  envelope-family epochs use the pipeline frame constants and are 0-31.5 s,
+  31.5-61.5 s and 61.5-91.5 s. Spectral features are ratios of during-epoch to
+  before-epoch Welch power (mean-subtracted segments, nperseg = min(256, n),
+  50 % overlap). global_max and trimmed_global_min are per-fly statistics of the
+  raw pixel distance and are constant across a fly's trials. Feature families
+  correspond to the engineered-only and signal-only arms of the ablation in
+  Table ref{tab:classifier-performance}.
+
+--------------------------------------------------------------------------------
+6. CORRECTED LONGTABLE (drop-in replacement)
+--------------------------------------------------------------------------------
+\begin{longtable}{@{}l l >{\raggedright\arraybackslash}p{0.52\textwidth}@{}}
+  \caption[Feature set supplied to the trial-level PER classifier]{%
+    \textbf{Feature set supplied to the trial-level PER classifier.}
+    All 24 features derive from one per-trial trace: the Hilbert envelope of a
+    0.25\,s rolling RMS of the angle-weighted eye-to-proboscis distance,
+    min--max normalised per fly to 0--100 (arbitrary units, a.u.).
+    Signal-family epochs are \textit{before} (pre-odour baseline, 0--32\,s),
+    \textit{during} (odorant presentation, 32--62\,s) and \textit{after}
+    (post-odour, 62\,s to the end of the $\sim$150\,s recording);
+    envelope-family epochs use the pipeline frame constants and span
+    0--31.5\,s, 31.5--61.5\,s and 61.5--91.5\,s. Spectral features are ratios of
+    during-epoch to before-epoch power obtained by Welch's method
+    \citep{welch1967} on mean-subtracted segments. \texttt{global\_max} and
+    \texttt{trimmed\_global\_min} are per-fly statistics of the raw pixel
+    distance and are constant across a fly's trials. Feature families are those
+    used in the ablation comparison of Table~\ref{tab:classifier-performance}.}
+  \label{tab:classifier-features} \\
+  \toprule
+  Feature & Family & Definition \\
+  \midrule
+  \endfirsthead
+  \multicolumn{3}{@{}l}{\textit{Table~\ref{tab:classifier-features}, continued}} \\
+  \toprule
+  Feature & Family & Definition \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endfoot
+
+  \texttt{global\_max}                       & Envelope & Per-fly maximum eye-to-proboscis distance (px), from the pooled raw class-2 distance statistics; constant across that fly's trials \\
+  \texttt{trimmed\_global\_min}              & Envelope & Per-fly retracted-baseline estimate (px): 0.01th percentile of the raw eye-to-proboscis distances pooled over the fly's trials \\
+  \texttt{local\_min}                        & Envelope & Minimum of the envelope over the whole trial (a.u.) \\
+  \texttt{local\_max}                        & Envelope & Maximum of the envelope over the whole trial (a.u.) \\
+  \texttt{local\_min\_before}                & Envelope & Minimum of the envelope within the pre-odour epoch \\
+  \texttt{local\_max\_before}                & Envelope & Maximum of the envelope within the pre-odour epoch \\
+  \texttt{local\_min\_during}                & Envelope & Minimum of the envelope within the odour epoch \\
+  \texttt{local\_max\_over\_global\_min}      & Envelope & Whole-trial envelope maximum divided by the per-fly trimmed minimum; a scale-corrected extension index \\
+  \texttt{local\_max\_during\_over\_global\_min} & Envelope & Odour-epoch envelope maximum divided by the per-fly trimmed minimum \\
+  \texttt{AUC-During-Before-Ratio}           & Envelope & Ratio of supra-threshold envelope area during odour to that before odour; threshold is the fly-level pre-odour median plus three robust (MAD-derived) standard deviations of the trial's pre-odour window \\
+  \texttt{AUC-After-Before-Ratio}            & Envelope & As above for the post-odour epoch relative to the pre-odour epoch \\
+  \addlinespace
+  \texttt{mean\_shift\_z}                    & Signal & Change in mean envelope from before to during odour, expressed in pre-odour standard deviations \\
+  \texttt{peak\_z}                           & Signal & Peak envelope during odour, expressed in pre-odour standard deviations \\
+  \texttt{std\_ratio}                        & Signal & Ratio of during-odour to pre-odour standard deviation \\
+  \texttt{auc\_ratio}                        & Signal & Ratio of during-odour to pre-odour trapezoidal area, each normalised by epoch length (equivalently, a ratio of mean envelope levels) \\
+  \texttt{frac\_above\_baseline}             & Signal & Fraction of odour-epoch frames exceeding the pre-odour mean by more than two pre-odour standard deviations \\
+  \texttt{persistence}                       & Signal & Fraction of the odour-evoked mean shift retained after odour offset: (after $-$ before) / (during $-$ before) epoch means \\
+  \texttt{time\_to\_peak\_frac}              & Signal & Latency to peak envelope, as a fraction of the odour epoch \\
+  \texttt{total\_power\_ratio}               & Signal & Ratio of during-odour to pre-odour spectral power summed over 0--10\,Hz \\
+  \texttt{power\_ratio\_vlow}                & Signal & During/before spectral power ratio, 0--0.5\,Hz \\
+  \texttt{power\_ratio\_low}                 & Signal & During/before spectral power ratio, 0.5--1\,Hz \\
+  \texttt{power\_ratio\_mid}                 & Signal & During/before spectral power ratio, 1--3\,Hz \\
+  \texttt{power\_ratio\_high}                & Signal & During/before spectral power ratio, 3--5\,Hz \\
+  \texttt{power\_ratio\_vhigh}               & Signal & During/before spectral power ratio, 5--10\,Hz \\
+\end{longtable}
+
+--------------------------------------------------------------------------------
+7. SUMMARY OF CORRECTIONS TO THE DRAFT TABLE
+--------------------------------------------------------------------------------
+ 1. persistence is a retention RATIO, not a duration above threshold. (critical)
+ 2. Epochs are 0-32 / 32-62 / 62-end s (signal) and 0-31.5 / 31.5-61.5 /
+    61.5-91.5 s (envelope), not three clean 30 s blocks at 0/30/60/90.
+ 3. local_min and local_max are whole-trial, not stimulus-epoch.
+ 4. local_max_over_global_min uses the whole-trial maximum, not the
+    stimulus-epoch maximum.
+ 5. Envelope features are in normalised a.u. (0-100), not pixels; only
+    global_max and trimmed_global_min are in pixels.
+ 6. global_max and trimmed_global_min are per-FLY constants, not per-trial.
+ 7. The engineered AUC ratios are supra-threshold areas with a specific
+    fly-median + 3*MAD threshold; the signal-family auc_ratio is a different,
+    unthresholded, length-normalised quantity.
+ 8. total_power_ratio is the sum of the five band powers, i.e. 0-10 Hz.
+ 9. The feature list itself (24 features, 11 + 13) is confirmed correct against
+    the deployed booster.

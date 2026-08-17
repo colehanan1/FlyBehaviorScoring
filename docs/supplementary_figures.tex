@@ -1,0 +1,206 @@
+% ============================================================================
+%  supplementary_figures.tex  --  AUTO-GENERATED, do not hand-edit.
+%
+%  Regenerate with:  python scripts/figures/make_thesis_figures.py
+%  Bibliography:     docs/supplementary_references.bib
+%
+%  Compiles standalone:
+%      pdflatex supplementary_figures && bibtex supplementary_figures \
+%          && pdflatex supplementary_figures && pdflatex supplementary_figures
+%
+%  To splice into an existing thesis instead, copy everything between
+%  "BEGIN FIGURES" and "END FIGURES" into your appendix and make sure your own
+%  preamble loads graphicx and points \graphicspath at the figure PDFs.
+%
+%  Figure PDFs live in outputs/thesis_figures/pdf/ (git-ignored). For Overleaf,
+%  copy that folder to docs/figures/ -- the \graphicspath below checks both.
+% ============================================================================
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{../outputs/thesis_figures/pdf/}{figures/}{./}}
+
+% Figure numbers are set literally per figure (S1..S8, M1..M6) so that the
+% cross-references inside the captions match the printed labels.
+\renewcommand{\figurename}{Figure}
+\setlength{\parskip}{0.4\baselineskip}
+\setlength{\parindent}{0pt}
+
+\title{Supplementary Figures\\[2pt]
+  \large Signal characterisation and feature construction for the automated
+  fly-behaviour scorer}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Overview}
+
+All supplementary figures were computed on the same trials the combined multiclass scorer is trained on: both blinded-scoring sources merged to their human labels, 1,342 scored trials. The signal figures (S1--S8) use the 90~s window that every recording covers, which excludes 21 truncated recordings; the model-feature figures (M1--M6) use each trace at full length, exactly as the model receives it. All model figures come from a single fresh training run of the pipeline (fixed split seed, boundary-aware ordinal objective).
+
+\paragraph{Software.} Analysis was carried out in Python~3 \citep{python3} using NumPy \citep{harris2020}, SciPy \citep{virtanen2020} and pandas \citep{mckinney2010}. Models were fitted with XGBoost \citep{chen2016} and evaluated with scikit-learn \citep{pedregosa2011}. Figures were drawn with Matplotlib \citep{hunter2007}.
+
+\paragraph{Figure design.} Human score is an ordered quantity, so it is encoded throughout with a single-hue blue ramp running light (low) to dark (high) rather than a rainbow or a set of categorical hues, following current guidance on colour in scientific figures \citep{crameri2020,rougier2014}. Nominal groups (feature family, feature set) use fixed categorical slots; signed quantities (log ratios, correlations, differences) use a blue-to-red diverging ramp with a neutral grey midpoint at zero. Every palette was checked against colour-vision-deficiency separation and surface-contrast thresholds before use \citep{okabe2008}.
+
+\paragraph{Related methods used elsewhere in the pipeline.} Pairwise band-power comparisons in the exploratory analysis used the Mann--Whitney $U$ test \citep{mann1947}; where many bands are tested at once, false-discovery-rate control \citep{benjamini1995} is appropriate. Exploratory notebook figures used seaborn \citep{waskom2021}, and the blinded video-scoring interface used OpenCV \citep{bradski2000} for video decoding.
+
+\clearpage
+
+% ---------------------------------------------------------------- BEGIN FIGURES
+
+% ---- Figure S1: Envelope traces by human score
+\renewcommand{\thefigure}{S1}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{S1_trace_overview_by_score}
+  \caption[Envelope traces by human score]{\textbf{Envelope traces by human score.} Median (line) and interquartile range (shaded) of the proboscis-extension envelope for each human score, over the 90 s window every recording covers; the grey band marks the 30--60 s odor presentation. The final panel overlays all seven medians on one axis. \textbf{Why it is here:} it establishes the basic premise of the feature set. From score 0 upward the amplitude of the odor-evoked deflection grows with score, and score $-$1 is the one level whose median \textit{falls} during odor. But scores 0, 1 and 2 are barely separable by deflection height and the interquartile bands overlap heavily throughout, so a single amplitude threshold cannot recover the human scale --- which is what motivates a multi-feature model.}
+  \label{fig:s1}
+\end{figure}
+\clearpage
+
+% ---- Figure S2: Whole-trial power spectrum by score
+\renewcommand{\thefigure}{S2}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{S2_psd_by_score}
+  \caption[Whole-trial power spectrum by score]{\textbf{Whole-trial power spectrum by score.} Mean Welch power spectral density (512-sample segments, 50\% overlap, mean-removed) over the whole 90 s trial, averaged within each score group and plotted on a log power axis. \textbf{Why it is here:} the groups differ across the whole 0--10 Hz range rather than at one narrow peak --- score 5 pulls away from the rest above roughly 2 Hz and stays separated out to 10 Hz. There is no single dominant frequency to key on, which is the justification for summarising the spectrum with five broad band-power features rather than a peak frequency~\citep{welch1967,harris1978}.}
+  \label{fig:s2}
+\end{figure}
+\clearpage
+
+% ---- Figure S3: Spectral power relative to non-responders
+\renewcommand{\thefigure}{S3}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{S3_psd_ratio_to_score0}
+  \caption[Spectral power relative to non-responders]{\textbf{Spectral power relative to non-responders.} Each score group's mean power spectrum divided by the score-0 (no response) mean spectrum, on a log$_2$ axis, so 0 means ``same power as a non-responder'' and +1 means ``double''. \textbf{Why it is here:} it isolates what changes with response strength rather than what is common to every trace. Almost every group has more power than score 0 at almost every frequency, and scores 3, 4 and 5 separate cleanly and in order. Scores $-$1, 1 and 2 instead sit together in a band around +1 log$_2$ unit and are \textit{not} ordered --- a first warning that the low end of the scale is where the model will struggle, borne out in M6. The figure also shows that the informative quantity is a power \textit{ratio} rather than absolute power, which is exactly the form the five \texttt{power\_ratio\_*} features take~\citep{welch1967}.}
+  \label{fig:s3}
+\end{figure}
+\clearpage
+
+% ---- Figure S4: Time–frequency structure by score
+\renewcommand{\thefigure}{S4}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{S4_spectrogram_by_score}
+  \caption[Time--frequency structure by score]{\textbf{Time--frequency structure by score.} Group-average spectrograms (256-sample windows, 50\% overlap), one panel per human score, on a shared log-power colour scale; the vertical rules bracket the odor presentation. \textbf{Why it is here:} it shows \textit{when} the spectral change happens. Power rises at odor onset and decays after offset in the responding groups, which is what licenses splitting every trace into before / during / after epochs and comparing them, rather than computing one spectrum per trial~\citep{oppenheim2010,cooley1965}.}
+  \label{fig:s4}
+\end{figure}
+\clearpage
+
+% ---- Figure S5: Odor-evoked spectral change relative to score 0
+\renewcommand{\thefigure}{S5}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{S5_spectrogram_difference}
+  \caption[Odor-evoked spectral change relative to score 0]{\textbf{Odor-evoked spectral change relative to score 0.} The same group-average spectrograms as S4, each with the score-0 spectrogram subtracted, on a diverging scale where neutral grey is ``no difference from a non-responder''. \textbf{Why it is here:} it localises the discriminative signal to the odor window and the seconds following it, and shows the effect scaling with score. Any feature that averages over the whole trial would dilute this; it is the direct argument for the during-vs-before ratio features (\texttt{auc\_ratio}, \texttt{std\_ratio}, \texttt{power\_ratio\_*}, \texttt{total\_power\_ratio})~\citep{oppenheim2010}.}
+  \label{fig:s5}
+\end{figure}
+\clearpage
+
+% ---- Figure S6: Power spectrum per epoch
+\renewcommand{\thefigure}{S6}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{S6_psd_by_epoch}
+  \caption[Power spectrum per epoch]{\textbf{Power spectrum per epoch.} Mean Welch spectra computed separately on the pre-odor (0--30 s), odor (30--60 s) and post-odor (60--90 s) epochs, overlaid by score. \textbf{Why it is here:} it shows that the score signal lives almost entirely in the odor epoch. Before onset the groups are nearly indistinguishable apart from score $-$1, which is elevated above about 3 Hz; during odor they fan out in score order; after offset they re-converge. Because baseline activity varies between animals without carrying score information, every spectral feature in the model is expressed as a during $\div$ before ratio, and the amplitude features are normalised by baseline statistics (\texttt{mean\_shift\_z}, \texttt{peak\_z} and \texttt{std\_ratio} all divide by the pre-odor mean or standard deviation)~\citep{welch1967}.}
+  \label{fig:s6}
+\end{figure}
+\clearpage
+
+% ---- Figure S7: Odor-evoked spectral gain and the band definitions
+\renewcommand{\thefigure}{S7}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{S7_during_before_gain}
+  \caption[Odor-evoked spectral gain and the band definitions]{\textbf{Odor-evoked spectral gain and the band definitions.} Ratio of odor-epoch to pre-odor power, per score, on a log$_2$ axis; the vertical hairlines and top labels mark the five frequency bands the model uses. \textbf{Why it is here:} this is the most direct picture of the model's spectral features. Each \texttt{power\_ratio\_*} feature is the area of one of these curves within one band, so the figure shows both what those features measure and that they order by score across the whole range. It also shows why five bands rather than one summary number: the middle-score curves cross zero at different frequencies, so \textit{where} a fly gains power --- not only how much --- carries information~\citep{welch1967,harris1978}.}
+  \label{fig:s7}
+\end{figure}
+\clearpage
+
+% ---- Figure S8: Band power distributions and their significance
+\renewcommand{\thefigure}{S8}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{S8_band_power_by_score}
+  \caption[Band power distributions and their significance]{\textbf{Band power distributions and their significance.} Whole-trial power summed within each of the five model bands, distributed by human score (box = interquartile range, whisker = 1.5 $\times$ IQR, outliers omitted, log power axis). Each panel reports a Kruskal--Wallis test of whether band power differs across scores. \textbf{Why it is here:} it converts the spectral picture into the per-trial numbers the model actually receives, and shows that every band carries a significant, ordered effect --- so none of the five is redundant on statistical grounds. The heavy overlap between adjacent scores is the reason the spectral features alone are not sufficient (see M5)~\citep{kruskal1952}.}
+  \label{fig:s8}
+\end{figure}
+\clearpage
+
+% ---- Figure M1: All 24 model features across the score scale
+\renewcommand{\thefigure}{M1}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{M1_feature_score_profiles}
+  \caption[All 24 model features across the score scale]{\textbf{All 24 model features across the score scale.} Every feature the model receives, rows ordered by the model's own gain importance and colour-coded by family in the axis labels. Each feature is rank-transformed to percentiles (robust to the heavy tails of the ratio features) and averaged within each score group; the diverging scale is centred on the overall median, so grey means ``typical'' and the two poles mean ``systematically high / low for this score''. \textbf{Why it is here:} it is the single-page summary of the whole feature set. Features whose rows run smoothly from one pole to the other are the ones carrying ordinal information; flat rows are features that contribute only in interaction with others, which is what the gain ranking in M4 then quantifies.}
+  \label{fig:m1}
+\end{figure}
+\clearpage
+
+% ---- Figure M2: Distribution of the six most-used features
+\renewcommand{\thefigure}{M2}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{M2_top_feature_distributions}
+  \caption[Distribution of the six most-used features]{\textbf{Distribution of the six most-used features.} The six features with the highest gain in the trained combined model, shown as per-score distributions (box = IQR, whiskers = 1.5 $\times$ IQR, outliers omitted), with a Kruskal--Wallis p-value per feature. \textbf{Why it is here:} M1 shows direction; this shows \textit{spread}. The medians rise with score, but the boxes for adjacent scores overlap substantially, and at the low end ($-$1, 0, 1) several features are almost indistinguishable. That is the quantitative statement of why the model is asked to predict an ordinal score under a cost-sensitive objective (M6) rather than to hit exact classes~\citep{kruskal1952}.}
+  \label{fig:m2}
+\end{figure}
+\clearpage
+
+% ---- Figure M3: Redundancy within the feature set
+\renewcommand{\thefigure}{M3}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.86\textwidth]{M3_feature_correlation}
+  \caption[Redundancy within the feature set]{\textbf{Redundancy within the feature set.} Spearman rank correlation between all 24 features, with engineered features (blue labels) in the upper-left block and signal features (orange labels) in the lower-right; the light rules separate the two families. \textbf{Why it is here:} it is the redundancy audit. The strong within-family blocks (particularly among the local-extremum features and among the five band-power ratios) show that neither family is 24 independent measurements, while the weak between-family correlations show the two families are measuring genuinely different things. That off-block weakness is the mechanistic reason the combined model beats either family alone in M5~\citep{spearman1904}.}
+  \label{fig:m3}
+\end{figure}
+\clearpage
+
+% ---- Figure M4: Which features the model actually uses
+\renewcommand{\thefigure}{M4}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{M4_feature_importance}
+  \caption[Which features the model actually uses]{\textbf{Which features the model actually uses.} Gain --- the average reduction in the boundary-aware ordinal loss contributed by each feature's splits --- for the trained combined model, coloured by feature family. \textbf{Why it is here:} it separates ``features that discriminate'' from ``features the model relies on''. Importance is heavily concentrated in a single baseline-normalised amplitude feature, with the spectral ratio features forming the bulk of the remaining useful signal. It also documents which features could be dropped in a reduced model, and pairs with M3: several near-zero features are near-zero because a correlated partner absorbs their splits, not because they are uninformative~\citep{chen2016,breiman1984,friedman2001}.}
+  \label{fig:m4}
+\end{figure}
+\clearpage
+
+% ---- Figure M5: What each feature family contributes
+\renewcommand{\thefigure}{M5}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.8\textwidth]{M5_feature_set_ablation}
+  \caption[What each feature family contributes]{\textbf{What each feature family contributes.} The same model architecture and split trained three times --- on the 11 engineered features only, the 13 signal features only, and both together --- evaluated on the held-out test set; each row is one metric, each dot one feature set, and the combined model's value is labelled. ``Within $\pm$1'' is the fraction of trials predicted within one score of the human label. \textbf{Why it is here:} it is the justification for the whole spectral pipeline in one chart. Neither family is sufficient alone, and the combined set beats both on every metric, which is what the weak between-family correlation in M3 predicts~\citep{chen2016,pedregosa2011}.}
+  \label{fig:m5}
+\end{figure}
+\clearpage
+
+% ---- Figure M6: Model errors and the cost structure that shapes them
+\renewcommand{\thefigure}{M6}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1.0\textwidth]{M6_confusion_and_cost}
+  \caption[Model errors and the cost structure that shapes them]{\textbf{Model errors and the cost structure that shapes them.} \textbf{Left:} held-out confusion matrix for the combined model --- cell text is the trial count, shading is the fraction of each true class, so a perfect model would be a solid diagonal. Exact accuracy is 0.70 and 0.92 of trials fall within one score of the human label. \textbf{Right:} the misclassification cost supplied to the custom training objective, which charges the model an expected cost rather than a flat log-loss. \textbf{Why it is here:} the two panels have to be read together, because the shape of the confusion matrix is a designed outcome rather than an accident. The cost matrix is deliberately \textbf{asymmetric}: rows are the true score and columns the prediction, so a column is the cost of \textit{saying} that score. Under-calling a responder is charged heavily and scaled by distance --- a true 2 called 0 costs 8.0 against 3.0 for calling it 1, so when the model must err on a responder it is pushed to the nearer, smaller error --- while over-calling a non-responder is charged only moderately (a true 0 called 2 costs 2.0). That asymmetry is load-bearing. Because score 0 is roughly half the labelled data, any cost that is large in the true-0 row makes the corresponding column unaffordable everywhere and that class becomes unpredictable: an earlier symmetric matrix left score 1 unreachable, and raising 0/2 symmetrically to compensate did the same to score 2. Charging 3.0 for missing a true 1 downward against 0.5 for guessing 1 on a true 0 is what makes score 1 reachable at all~\citep{frank2001,elkan2001,pedregosa2011}.}
+  \label{fig:m6}
+\end{figure}
+\clearpage
+
+\renewcommand{\thefigure}{\arabic{figure}}  % restore normal numbering
+% ------------------------------------------------------------------ END FIGURES
+
+\bibliographystyle{unsrtnat}
+\bibliography{supplementary_references}
+
+\end{document}

@@ -19,6 +19,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -41,7 +42,7 @@ from PIL import Image, ImageTk
 # Envelope & flagged tables may be .csv or .parquet (auto-detected by extension).
 # Each dataset's scores/seed/skipped/excluded live in its own output dir, so you
 # can switch back to any dataset later to review the scores you made there.
-DATASETS: dict[str, dict[str, str]] = {
+DATASETS: dict[str, dict[str, str | None]] = {
     "new": {
         "data_dir": "/home/ramanlab/Documents/cole/Data/CSVs-New-Opto-Flys",
         "input": "all_envelope_rows_wide_combined_base.csv",
@@ -59,6 +60,24 @@ DATASETS: dict[str, dict[str, str]] = {
 }
 DEFAULT_DATASET = "new"
 
+# RandomPanel datasets share the "new" opto dataset's envelope table, video root,
+# and scores/state dir, but label trials ``training_<N>_<odor>`` instead of
+# ``testing_<N>``. Register one preset per dataset (so ``--dataset RandomPanel-24-1``
+# scores just that one) plus a "randompanel" preset that scores all three. The
+# ``training_\d+_`` pattern requires an odour suffix, which also skips the
+# light-only ``training_15..20`` trials.
+_RANDOMPANEL_BASE: dict[str, str | None] = {
+    "data_dir": "/home/ramanlab/Documents/cole/Data/CSVs-New-Opto-Flys",
+    "input": "all_envelope_rows_wide_combined_base.csv",
+    "distance": "all_envelope_rows_wide_distance.csv",
+    "flagged": "flagged-flys-truth.csv",
+    "videos_root": "/securedstorage/DATAsec/cole/Data-secured-New",
+    "label_pattern": r"training_\d+_",
+}
+for _rp_name in ("RandomPanel-24-0.1", "RandomPanel-24-1", "RandomPanel-Training-24-10"):
+    DATASETS[_rp_name] = {**_RANDOMPANEL_BASE, "dataset_filter": _rp_name}
+DATASETS["randompanel"] = {**_RANDOMPANEL_BASE, "dataset_filter": None}
+
 # Output artifact filenames (written into the active dataset's output dir).
 SCORES_NAME = "blinded_video_scores.csv"
 SEED_NAME = "blinded_video_scoring_seed.json"
@@ -74,6 +93,8 @@ OUTPUT_CSV: Path
 SEED_FILE: Path
 SKIPPED_FILE: Path
 EXCLUDED_FILE: Path
+LABEL_PATTERN: str
+DATASET_FILTER: str | None
 
 
 def configure_paths(
@@ -88,6 +109,7 @@ def configure_paths(
     """Bind the path globals from a named preset plus any explicit overrides."""
     global INPUT_CSV, INPUT_CSV_DISTANCE, FLAGGED_CSV, VIDEOS_ROOT
     global OUTPUT_CSV, SEED_FILE, SKIPPED_FILE, EXCLUDED_FILE
+    global LABEL_PATTERN, DATASET_FILTER
 
     if dataset not in DATASETS:
         raise SystemExit(
@@ -106,6 +128,9 @@ def configure_paths(
     SEED_FILE = out / SEED_NAME
     SKIPPED_FILE = out / SKIPPED_NAME
     EXCLUDED_FILE = out / EXCLUDED_NAME
+
+    LABEL_PATTERN = str(cfg.get("label_pattern") or r"testing_\d+")
+    DATASET_FILTER = cfg.get("dataset_filter")
 
 
 # Bind the default dataset so the module is importable/usable without main().
@@ -151,36 +176,58 @@ VIDEO_W, VIDEO_H = 1080, 1080
 # Data loading
 # ---------------------------------------------------------------------------
 
+def filter_scorable_trials(
+    df: pd.DataFrame,
+    *,
+    label_pattern: str,
+    dataset_filter: str | None = None,
+) -> pd.DataFrame:
+    """Return the blind-scorable trials from an envelope table.
+
+    Keeps rows that are testing-type and whose ``trial_label`` matches
+    ``label_pattern`` — ``testing_\\d+`` for the opto datasets, ``training_\\d+_``
+    for RandomPanel (the trailing ``_`` demands an odour suffix, so the light-only
+    ``training_15..20`` trials are dropped). Light-only and ``testing_11`` trials
+    are always excluded. When ``dataset_filter`` is set, only that dataset's rows
+    are kept, so a single RandomPanel concentration can be scored on its own.
+    """
+    df = df[df["trial_type"].astype(str).str.strip().str.lower() == "testing"].copy()
+    if dataset_filter:
+        df = df[df["dataset"].astype(str).str.strip() == dataset_filter].copy()
+
+    df = df[df["trial_label"].str.match(label_pattern, case=False, na=False)].copy()
+
+    # Light-only controls carry no odour — not meaningful to score blind.
+    df = df[~df["trial_label"].str.contains("light", case=False, na=False)].copy()
+
+    # testing_11 is excluded from the opto panel (harmless for training_ labels).
+    keep_t11 = [not re.match(r"testing_11(?:\D|$)", str(tl).strip()) for tl in df["trial_label"]]
+    df = df[pd.Series(keep_t11, index=df.index)].copy()
+    return df
+
+
+def _video_core_label(trial_label: str) -> str:
+    """Odour-free trial stem used to build the annotated-video filename.
+
+    ``training_5_hexanol`` -> ``training_5`` (the mp4 is named
+    ``..._training_5_distance_annotated.mp4``); ``testing_1_fly1_...`` ->
+    ``testing_1``. A label without a leading ``testing_N``/``training_N`` is
+    returned unchanged. Note this differs from the *stored* trial label, which
+    keeps the odour suffix so scores join to the odour reaction matrix.
+    """
+    m = re.match(r"((?:testing|training)_\d+)", str(trial_label))
+    return m.group(1) if m else str(trial_label)
+
+
 def load_data() -> pd.DataFrame:
     print("Loading envelope data …")
     df = _read_table(INPUT_CSV)
-    df = df[df["trial_type"].str.strip().str.lower() == "testing"].copy()
-    print(f"  Testing rows: {len(df)}")
-
-    # Keep only real testing_<N> trials. New-data labels look like
-    # "testing_3_citral"; some rows are training_* mislabeled as
-    # trial_type="testing" and have no scoring video — drop those.
-    mask_testing = df["trial_label"].str.match(r"testing_\d+", case=False, na=False)
     before = len(df)
-    df = df[mask_testing].copy()
-    print(f"  Keeping only testing_<N> rows: {before} → {len(df)} rows ({before - len(df)} removed)")
-
-    # Exclude light-only control trials (no odor — not meaningful to score blind)
-    mask_light = df["trial_label"].str.contains("light", case=False, na=False)
-    before = len(df)
-    df = df[~mask_light].copy()
-    print(f"  Excluding light-only trials: {before} → {len(df)} rows ({before - len(df)} removed)")
-
-    # Exclude testing_11 trials
-    import re
-    mask = pd.Series([
-        not re.match(r'testing_11(?:\D|$)', str(tl).strip())
-        for tl in df["trial_label"]
-    ], index=df.index)
-    before = len(df)
-    df = df[mask].copy()
-    print(f"  Excluding testing_11: {before} → {len(df)} rows ({before - len(df)} removed)")
-
+    df = filter_scorable_trials(
+        df, label_pattern=LABEL_PATTERN, dataset_filter=DATASET_FILTER
+    )
+    scope = f" [{DATASET_FILTER}]" if DATASET_FILTER else ""
+    print(f"  Scorable trials{scope}: {len(df)} (from {before} rows, pattern {LABEL_PATTERN!r})")
     return df
 
 
@@ -254,10 +301,9 @@ def resolve_video_path(dataset: str, fly: str, trial_label: str) -> Path | None:
     """
     import re
 
-    # Extract the core trial ID from trial_label
-    # E.g., "testing_1_fly1_angle_distance_rms_envelope" -> "testing_1"
-    match = re.match(r'(testing_\d+)', trial_label)
-    core_trial_label = match.group(1) if match else trial_label
+    # Extract the odour-free core trial ID used to build the video filename.
+    # "testing_1_fly1_..." -> "testing_1"; "training_5_hexanol" -> "training_5".
+    core_trial_label = _video_core_label(trial_label)
 
     # Dataset roots to search: normal + flagged/
     dataset_roots = [VIDEOS_ROOT / dataset]
